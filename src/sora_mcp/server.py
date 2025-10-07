@@ -39,6 +39,15 @@ class ListResult(TypedDict):
     last: str | None
 
 
+class ReferenceImage(TypedDict):
+    """Metadata for a reference image file."""
+
+    filename: str
+    size_bytes: int
+    modified_timestamp: int
+    file_type: str
+
+
 # ---------- logging ----------
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
@@ -63,6 +72,9 @@ mcp = FastMCP("Sora MCP")
 # ---------- Global video download path ----------
 VIDEO_DOWNLOAD_PATH: pathlib.Path | None = None
 
+# ---------- Global reference image path ----------
+REFERENCE_IMAGE_PATH: pathlib.Path | None = None
+
 
 def _suffix_for_variant(variant: str) -> str:
     return {"video": "mp4", "thumbnail": "webp", "spritesheet": "jpg"}[variant]
@@ -80,7 +92,7 @@ Parameters:
 - model: "sora-2" (faster, cheaper) or "sora-2-pro" (higher quality). Default: "sora-2"
 - seconds: Duration as string "4", "8", or "12" (NOT an integer). Default: varies by model
 - size: Resolution as "720x1280" (portrait), "1280x720" (landscape), "1024x1792", or "1792x1024". Default: "720x1280"
-- input_reference_path: Path to reference image (must match size). Optional.
+- input_reference_filename: Filename of reference image in SORA_REFERENCE_PATH (e.g., "cat.png"). Use sora_list_references to find available images. Image must match target size. Supported: JPEG, PNG, WEBP. Optional.
 
 Returns Video object with fields: id, status, progress, model, seconds, size."""
 )
@@ -89,7 +101,7 @@ async def sora_create_video(
     model: VideoModel = "sora-2",
     seconds: VideoSeconds | None = None,
     size: VideoSize | None = None,
-    input_reference_path: str | None = None,
+    input_reference_filename: str | None = None,
 ) -> Video:
     """Create a new video generation job.
 
@@ -98,23 +110,44 @@ async def sora_create_video(
         model: Video generation model to use
         seconds: Duration as string literal "4", "8", or "12"
         size: Output resolution (width x height)
-        input_reference_path: Optional path to reference image
+        input_reference_filename: Filename of reference image (not full path)
 
     Returns:
         Video object with job details (id, status, progress)
 
     Raises:
-        RuntimeError: If OPENAI_API_KEY not set
+        RuntimeError: If OPENAI_API_KEY not set or REFERENCE_IMAGE_PATH not initialized
+        ValueError: If reference image invalid or path traversal detected
     """
+    if REFERENCE_IMAGE_PATH is None:
+        raise RuntimeError("REFERENCE_IMAGE_PATH not initialized")
+
     client = get_client()
 
     # Convert None to omit for OpenAI SDK
     seconds_param = omit if seconds is None else seconds
     size_param = omit if size is None else size
 
-    if input_reference_path:
+    if input_reference_filename:
+        # Security: validate filename and construct safe path
+        reference_file = REFERENCE_IMAGE_PATH / input_reference_filename
+        reference_file = reference_file.resolve()
+
+        # Security: prevent path traversal - ensure resolved path is within REFERENCE_IMAGE_PATH
+        if not str(reference_file).startswith(str(REFERENCE_IMAGE_PATH)):
+            raise ValueError("Invalid reference filename: path traversal detected")
+
+        # Validate file exists
+        if not reference_file.exists():
+            raise ValueError(f"Reference image not found: {input_reference_filename}")
+
+        # Validate file extension (Sora supports JPEG, PNG, WEBP)
+        allowed_extensions = {".jpg", ".jpeg", ".png", ".webp"}
+        if reference_file.suffix.lower() not in allowed_extensions:
+            raise ValueError(f"Unsupported file type: {reference_file.suffix}. Use: JPEG, PNG, or WEBP")
+
         # Sora expects the input reference to match the target video size.
-        with open(input_reference_path, "rb") as f:
+        with open(reference_file, "rb") as f:
             video = await client.videos.create(
                 model=model,
                 prompt=prompt,
@@ -122,6 +155,7 @@ async def sora_create_video(
                 size=size_param,
                 input_reference=f,
             )
+        logger.info("Started job %s (%s) with reference: %s", video.id, video.status, input_reference_filename)
     else:
         video = await client.videos.create(
             model=model,
@@ -129,8 +163,8 @@ async def sora_create_video(
             seconds=seconds_param,
             size=size_param,
         )
+        logger.info("Started job %s (%s)", video.id, video.status)
 
-    logger.info("Started job %s (%s)", video.id, video.status)
     return video
 
 
@@ -346,12 +380,116 @@ async def sora_remix(previous_video_id: str, prompt: str) -> Video:
     return video
 
 
+@mcp.tool(
+    description="""Search and list reference images available for video generation.
+
+Use this to discover what reference images are available in the SORA_REFERENCE_PATH directory.
+These images can be used with sora_create_video's input_reference_filename parameter.
+
+The reference image must match your target video size:
+- "720x1280" or "1280x720" videos -> use 720x1280 or 1280x720 images
+- "1024x1792" or "1792x1024" videos -> use 1024x1792 or 1792x1024 images
+
+Parameters:
+- pattern: Glob pattern to filter filenames (e.g., "cat*.png", "*.jpg"). Default: all files
+- file_type: Filter by type: "jpeg", "png", "webp", or "all". Default: "all"
+- sort_by: Sort results by "name", "size", or "modified". Default: "modified"
+- order: "desc" for newest/largest/Z-A first, "asc" for oldest/smallest/A-Z. Default: "desc"
+- limit: Max results to return. Default: 50
+
+Returns list of ReferenceImage objects with: filename, size_bytes, modified_timestamp, file_type.
+
+Example workflow:
+1. sora_list_references(pattern="dog*", file_type="png") -> find dog images
+2. Choose "dog_1280x720.png" from results
+3. sora_create_video(prompt="...", size="1280x720", input_reference_filename="dog_1280x720.png")"""
+)
+async def sora_list_references(
+    pattern: str | None = None,
+    file_type: Literal["jpeg", "png", "webp", "all"] = "all",
+    sort_by: Literal["name", "size", "modified"] = "modified",
+    order: Literal["asc", "desc"] = "desc",
+    limit: int = 50,
+) -> dict:
+    """List reference images available for video generation.
+
+    Args:
+        pattern: Glob pattern to filter filenames (e.g., "*.png", "cat*")
+        file_type: Filter by image type
+        sort_by: Sort criterion (name, size, or modified timestamp)
+        order: Sort order (asc or desc)
+        limit: Maximum number of results to return
+
+    Returns:
+        Dict with "data" key containing list of ReferenceImage objects
+
+    Raises:
+        RuntimeError: If REFERENCE_IMAGE_PATH not initialized
+    """
+    if REFERENCE_IMAGE_PATH is None:
+        raise RuntimeError("REFERENCE_IMAGE_PATH not initialized")
+
+    # Map file_type to extensions
+    type_to_extensions = {
+        "jpeg": {".jpg", ".jpeg"},
+        "png": {".png"},
+        "webp": {".webp"},
+        "all": {".jpg", ".jpeg", ".png", ".webp"},
+    }
+    allowed_extensions = type_to_extensions[file_type]
+
+    # Collect matching files
+    glob_pattern = pattern if pattern else "*"
+    files: list[tuple[pathlib.Path, os.stat_result]] = []
+
+    for file_path in REFERENCE_IMAGE_PATH.glob(glob_pattern):
+        if file_path.is_file() and file_path.suffix.lower() in allowed_extensions:
+            # Security: ensure file is within REFERENCE_IMAGE_PATH
+            try:
+                file_path.resolve().relative_to(REFERENCE_IMAGE_PATH)
+            except ValueError:
+                continue  # Skip files outside reference path
+            files.append((file_path, file_path.stat()))
+
+    # Sort files
+    if sort_by == "name":
+        files.sort(key=lambda x: x[0].name, reverse=(order == "desc"))
+    elif sort_by == "size":
+        files.sort(key=lambda x: x[1].st_size, reverse=(order == "desc"))
+    elif sort_by == "modified":
+        files.sort(key=lambda x: x[1].st_mtime, reverse=(order == "desc"))
+
+    # Build result list
+    results: list[ReferenceImage] = []
+    for file_path, stat in files[:limit]:
+        # Determine file type
+        ext = file_path.suffix.lower()
+        if ext in {".jpg", ".jpeg"}:
+            img_type = "jpeg"
+        elif ext == ".png":
+            img_type = "png"
+        else:
+            img_type = "webp"
+
+        results.append(
+            {
+                "filename": file_path.name,
+                "size_bytes": stat.st_size,
+                "modified_timestamp": int(stat.st_mtime),
+                "file_type": img_type,
+            }
+        )
+
+    logger.info("Listed %d reference images (pattern=%s, type=%s)", len(results), glob_pattern, file_type)
+    return {"data": results}
+
+
 # -------- Entrypoint --------
 def main():
     from dotenv import load_dotenv
 
     load_dotenv()
-    global VIDEO_DOWNLOAD_PATH
+    global VIDEO_DOWNLOAD_PATH, REFERENCE_IMAGE_PATH
 
     # Get and validate video download path
     video_path_str = os.getenv("SORA_VIDEO_PATH", "./sora-videos")
@@ -368,6 +506,22 @@ def main():
 
     VIDEO_DOWNLOAD_PATH = video_path
     logger.info("Video download path: %s", VIDEO_DOWNLOAD_PATH)
+
+    # Get and validate reference image path
+    reference_path_str = os.getenv("SORA_REFERENCE_PATH", "./sora-references")
+    reference_path = pathlib.Path(reference_path_str).resolve()
+
+    if not reference_path.exists():
+        logger.error("Reference image directory does not exist: %s", reference_path)
+        logger.error("Please create the directory or set SORA_REFERENCE_PATH to an existing directory")
+        raise RuntimeError(f"Reference image directory does not exist: {reference_path}")
+
+    if not reference_path.is_dir():
+        logger.error("SORA_REFERENCE_PATH is not a directory: %s", reference_path)
+        raise RuntimeError(f"SORA_REFERENCE_PATH is not a directory: {reference_path}")
+
+    REFERENCE_IMAGE_PATH = reference_path
+    logger.info("Reference image path: %s", REFERENCE_IMAGE_PATH)
     logger.info("Starting MCP server over stdio")
     mcp.run()
 
