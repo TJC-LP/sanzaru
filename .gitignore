@@ -1,0 +1,16 @@
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.DS_Store
+.env
+.venv
+.uv/
+dist/
+build/
+*.egg-info/
+.ruff_cache/
+.idea/
+*.mp4
+*.webp
+*.jpg
