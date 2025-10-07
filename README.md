@@ -12,7 +12,8 @@ A **stateless**, lightweight **FastMCP** server that wraps the **OpenAI Sora Vid
 
 ## Requirements
 - Python 3.10+
-- `OPENAI_API_KEY` in env
+- `OPENAI_API_KEY` environment variable
+- `SORA_VIDEO_PATH` environment variable (directory for downloaded videos)
 
 ## Install with `uv`
 ```bash
@@ -22,20 +23,32 @@ uv sync
 
 ## Run
 ```bash
+# Create a directory for downloaded videos
+mkdir -p ~/sora-videos
+
+# Set environment variables and run
 export OPENAI_API_KEY=sk-...
+export SORA_VIDEO_PATH=~/sora-videos
 uv run sora-mcp
 ```
+
+The server defaults to `./sora-videos` if `SORA_VIDEO_PATH` is not set. The directory must exist before starting the server.
+
+## MCP Tools
+
 This runs an MCP server over stdio that exposes these tools:
+
 - `sora_create_video(prompt, model="sora-2", seconds?, size?, input_reference_path?)`
   - Note: `seconds` must be a string: `"4"`, `"8"`, or `"12"` (not an integer)
   - Note: `size` must be one of: `"720x1280"`, `"1280x720"`, `"1024x1792"`, `"1792x1024"`
   - Note: `model` must be one of: `"sora-2"`, `"sora-2-pro"`
-- `sora_get_status(video_id)` - Returns Video object
-- `sora_wait(video_id, poll_every=5, timeout=600)` - Returns Video object
-- `sora_download(video_id, variant="video", path?)` - Downloads to disk
+- `sora_get_status(video_id)` - Returns Video object with status/progress
+- `sora_download(video_id, variant="video")` - Downloads to `SORA_VIDEO_PATH`
 - `sora_list(limit=20, after?, order="desc")` - Returns paginated list
-- `sora_delete(video_id)` - Deletes video
+- `sora_delete(video_id)` - Deletes video from OpenAI storage
 - `sora_remix(previous_video_id, prompt)` - Creates a remix
+
+> **Note:** To wait for video completion, poll `sora_get_status` periodically rather than blocking. This keeps the LLM session responsive.
 
 ## Download variants
 - `variant="video"` → `mp4`

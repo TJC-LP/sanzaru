@@ -1,9 +1,7 @@
 # SPDX-License-Identifier: MIT
-import asyncio
 import logging
 import os
 import pathlib
-import time
 from typing import Literal, TypedDict
 
 from mcp.server.fastmcp import FastMCP
@@ -60,6 +58,9 @@ def get_client() -> AsyncOpenAI:
 # ---------- MCP server ----------
 mcp = FastMCP("Sora MCP")
 
+# ---------- Global video download path ----------
+VIDEO_DOWNLOAD_PATH: pathlib.Path | None = None
+
 
 def _suffix_for_variant(variant: str) -> str:
     return {"video": "mp4", "thumbnail": "webp", "spritesheet": "jpg"}[variant]
@@ -114,49 +115,21 @@ async def sora_get_status(video_id: str) -> Video:
 
 
 @mcp.tool()
-async def sora_wait(
-    video_id: str,
-    poll_every: int = 5,
-    timeout: int = 600,
-) -> Video:
-    """
-    Poll until job completes/fails or timeout.
-    Returns the Video object. Check video.status to see if it completed or failed.
-    """
-    client = get_client()
-    start = time.monotonic()
-    last_progress = -1
-    while True:
-        video = await client.videos.retrieve(video_id)
-        progress = video.progress
-        if progress != last_progress:
-            logger.info("Job %s progress: %s%% (status=%s)", video_id, progress, video.status)
-            last_progress = progress
-
-        if video.status in ("completed", "failed"):
-            logger.info("Job %s finished: %s", video_id, video.status)
-            return video
-
-        if time.monotonic() - start > timeout:
-            logger.warning("Job %s timed out after %ss", video_id, timeout)
-            return video
-
-        await asyncio.sleep(poll_every)
-
-
-@mcp.tool()
 async def sora_download(
     video_id: str,
     variant: Literal["video", "thumbnail", "spritesheet"] = "video",
-    path: str | None = None,
 ) -> DownloadResult:
     """
     Download the asset to disk and return its absolute path.
+    Files are saved to the directory specified by SORA_VIDEO_PATH environment variable.
     """
+    if VIDEO_DOWNLOAD_PATH is None:
+        raise RuntimeError("VIDEO_DOWNLOAD_PATH not initialized")
+
     client = get_client()
     content = await client.videos.download_content(video_id, variant=variant)
     suffix = _suffix_for_variant(variant)
-    out_path = pathlib.Path(path or f"{video_id}.{suffix}").resolve()
+    out_path = VIDEO_DOWNLOAD_PATH / f"{video_id}.{suffix}"
     content.write_to_file(str(out_path))
     logger.info("Wrote %s (%s)", out_path, variant)
     return {"path": str(out_path), "variant": variant}
@@ -206,5 +179,22 @@ async def sora_remix(previous_video_id: str, prompt: str) -> Video:
 
 # -------- Entrypoint --------
 def main():
+    global VIDEO_DOWNLOAD_PATH
+
+    # Get and validate video download path
+    video_path_str = os.getenv("SORA_VIDEO_PATH", "./sora-videos")
+    video_path = pathlib.Path(video_path_str).resolve()
+
+    if not video_path.exists():
+        logger.error("Video download directory does not exist: %s", video_path)
+        logger.error("Please create the directory or set SORA_VIDEO_PATH to an existing directory")
+        raise RuntimeError(f"Video download directory does not exist: {video_path}")
+
+    if not video_path.is_dir():
+        logger.error("SORA_VIDEO_PATH is not a directory: %s", video_path)
+        raise RuntimeError(f"SORA_VIDEO_PATH is not a directory: {video_path}")
+
+    VIDEO_DOWNLOAD_PATH = video_path
+    logger.info("Video download path: %s", VIDEO_DOWNLOAD_PATH)
     logger.info("Starting MCP server over stdio")
     mcp.run()
