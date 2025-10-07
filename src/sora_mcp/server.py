@@ -2,6 +2,7 @@
 import logging
 import os
 import pathlib
+import sys
 from typing import Literal, TypedDict
 
 from mcp.server.fastmcp import FastMCP
@@ -43,6 +44,7 @@ LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=LOG_LEVEL,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    stream=sys.stderr,  # Log to stderr to avoid interfering with stdio MCP transport
 )
 logger = logging.getLogger("sora-mcp")
 
@@ -346,6 +348,9 @@ async def sora_remix(previous_video_id: str, prompt: str) -> Video:
 
 # -------- Entrypoint --------
 def main():
+    from dotenv import load_dotenv
+
+    load_dotenv()
     global VIDEO_DOWNLOAD_PATH
 
     # Get and validate video download path
@@ -365,3 +370,7 @@ def main():
     logger.info("Video download path: %s", VIDEO_DOWNLOAD_PATH)
     logger.info("Starting MCP server over stdio")
     mcp.run()
+
+
+if __name__ == "__main__":
+    main()
