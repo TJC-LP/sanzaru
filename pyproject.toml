@@ -44,7 +44,8 @@ select = [
   "C4",  # flake8-comprehensions
   "SIM", # flake8-simplify
 ]
-ignore = []
+# Ignore line-too-long for strings (allows readable multi-line tool descriptions)
+ignore = ["E501"]
 
 [tool.ruff.format]
 quote-style = "double"
