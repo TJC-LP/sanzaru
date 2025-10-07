@@ -53,6 +53,7 @@ This runs an MCP server over stdio that exposes these tools:
 - `sora_download(video_id, variant="video")` - Downloads to `SORA_VIDEO_PATH`
 - `sora_list(limit=20, after?, order="desc")` - Returns paginated list of videos
 - `sora_list_references(pattern?, file_type="all", sort_by="modified", order="desc", limit=50)` - Search reference images
+- `sora_prepare_reference(input_filename, target_size, output_filename?, resize_mode="crop")` - Resize images to match Sora dimensions
 - `sora_delete(video_id)` - Deletes video from OpenAI storage
 - `sora_remix(previous_video_id, prompt)` - Creates a remix
 
@@ -69,6 +70,20 @@ This runs an MCP server over stdio that exposes these tools:
 - Use `sora_list_references` to discover available images
 - Reference image dimensions must match target video `size` parameter
 - LLMs can only access images in the configured reference directory (security sandbox)
+
+### Automatic Image Resizing
+Use `sora_prepare_reference` to automatically resize any image to match Sora's required dimensions:
+
+**Workflow:**
+1. List available images: `sora_list_references()`
+2. Prepare image: `sora_prepare_reference("photo.jpg", "1280x720", resize_mode="crop")`
+3. Create video: `sora_create_video(prompt="...", size="1280x720", input_reference_filename="photo_1280x720.png")`
+
+**Resize modes:**
+- `crop` (default): Scale to cover target dimensions, center crop excess. No distortion, but may lose edges.
+- `pad`: Scale to fit inside target, add black letterbox bars. No distortion, preserves full image.
+
+The original image is preserved; a new resized PNG is created with dimensions in the filename.
 
 ## Notes
 - Download URLs from OpenAI are time-limited

@@ -9,6 +9,7 @@ from mcp.server.fastmcp import FastMCP
 from openai import AsyncOpenAI
 from openai._types import Omit, omit
 from openai.types import Video, VideoDeleteResponse, VideoModel, VideoSeconds, VideoSize
+from PIL import Image
 
 
 # ---------- TypedDict definitions ----------
@@ -46,6 +47,16 @@ class ReferenceImage(TypedDict):
     size_bytes: int
     modified_timestamp: int
     file_type: str
+
+
+class PrepareResult(TypedDict):
+    """Result from preparing a reference image."""
+
+    output_filename: str
+    original_size: tuple[int, int]
+    target_size: tuple[int, int]
+    resize_mode: str
+    path: str
 
 
 # ---------- logging ----------
@@ -482,6 +493,148 @@ async def sora_list_references(
 
     logger.info("Listed %d reference images (pattern=%s, type=%s)", len(results), glob_pattern, file_type)
     return {"data": results}
+
+
+@mcp.tool(
+    description="""Automatically resize a reference image to match Sora's required dimensions.
+
+This tool prepares images for use with sora_create_video by resizing them to exact Sora dimensions.
+The original image is preserved; a new resized copy is created.
+
+Parameters:
+- input_filename: Source image filename in SORA_REFERENCE_PATH (required)
+- target_size: Target video size: "720x1280", "1280x720", "1024x1792", or "1792x1024" (required)
+- output_filename: Custom output filename (optional, defaults to "{original_name}_{width}x{height}.png")
+- resize_mode: How to handle aspect ratio (default: "crop")
+  * "crop": Scale to cover target, center crop excess (no distortion, may lose edges)
+  * "pad": Scale to fit inside target, add black bars (no distortion, preserves full image)
+
+Returns PrepareResult with: output_filename, original_size, target_size, resize_mode, path
+
+Example workflow:
+1. sora_list_references() -> find "photo.jpg"
+2. sora_prepare_reference("photo.jpg", "1280x720", resize_mode="crop") -> "photo_1280x720.png"
+3. sora_create_video(prompt="...", size="1280x720", input_reference_filename="photo_1280x720.png")"""
+)
+async def sora_prepare_reference(
+    input_filename: str,
+    target_size: VideoSize,
+    output_filename: str | None = None,
+    resize_mode: Literal["crop", "pad"] = "crop",
+) -> PrepareResult:
+    """Prepare a reference image by resizing to match Sora dimensions.
+
+    Args:
+        input_filename: Source image filename (not path) in SORA_REFERENCE_PATH
+        target_size: Target Sora video size
+        output_filename: Optional custom output name (defaults to auto-generated)
+        resize_mode: Resizing strategy - "crop" (cover + crop) or "pad" (fit + letterbox)
+
+    Returns:
+        PrepareResult with output filename, sizes, mode, and absolute path
+
+    Raises:
+        RuntimeError: If REFERENCE_IMAGE_PATH not initialized
+        ValueError: If input file invalid or path traversal detected
+    """
+    if REFERENCE_IMAGE_PATH is None:
+        raise RuntimeError("REFERENCE_IMAGE_PATH not initialized")
+
+    # Security: validate input filename and construct safe path
+    input_path = REFERENCE_IMAGE_PATH / input_filename
+    input_path = input_path.resolve()
+
+    # Security: prevent path traversal
+    if not str(input_path).startswith(str(REFERENCE_IMAGE_PATH)):
+        raise ValueError("Invalid input filename: path traversal detected")
+
+    # Validate input file exists
+    if not input_path.exists():
+        raise ValueError(f"Input image not found: {input_filename}")
+
+    # Parse target dimensions from VideoSize string (e.g., "1280x720" -> (1280, 720))
+    width_str, height_str = target_size.split("x")
+    target_width, target_height = int(width_str), int(height_str)
+
+    # Generate output filename if not provided
+    if output_filename is None:
+        input_stem = input_path.stem
+        output_filename = f"{input_stem}_{target_size}.png"
+
+    # Security: validate output filename and construct safe path
+    output_path = REFERENCE_IMAGE_PATH / output_filename
+    output_path = output_path.resolve()
+
+    # Security: prevent path traversal
+    if not str(output_path).startswith(str(REFERENCE_IMAGE_PATH)):
+        raise ValueError("Invalid output filename: path traversal detected")
+
+    # Load image with Pillow
+    img = Image.open(input_path)
+    original_size = img.size  # (width, height)
+
+    # Convert to RGB if necessary (handles RGBA, grayscale, etc.)
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+
+    # Resize based on mode
+    if resize_mode == "crop":
+        # Scale to cover target dimensions, then center crop
+        img_ratio = img.width / img.height
+        target_ratio = target_width / target_height
+
+        if img_ratio > target_ratio:
+            # Image is wider than target - fit height, crop width
+            new_height = target_height
+            new_width = int(img.width * (target_height / img.height))
+        else:
+            # Image is taller than target - fit width, crop height
+            new_width = target_width
+            new_height = int(img.height * (target_width / img.width))
+
+        # Resize
+        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+        # Center crop
+        left = (new_width - target_width) // 2
+        top = (new_height - target_height) // 2
+        right = left + target_width
+        bottom = top + target_height
+        img = img.crop((left, top, right, bottom))
+
+    else:  # resize_mode == "pad"
+        # Scale to fit inside target dimensions, then pad with black bars
+        img.thumbnail((target_width, target_height), Image.Resampling.LANCZOS)
+
+        # Create black background
+        result = Image.new("RGB", (target_width, target_height), (0, 0, 0))
+
+        # Paste resized image centered
+        paste_x = (target_width - img.width) // 2
+        paste_y = (target_height - img.height) // 2
+        result.paste(img, (paste_x, paste_y))
+        img = result
+
+    # Save as PNG
+    img.save(output_path, "PNG")
+    logger.info(
+        "Prepared reference: %s -> %s (%s, %dx%d -> %dx%d)",
+        input_filename,
+        output_filename,
+        resize_mode,
+        original_size[0],
+        original_size[1],
+        target_width,
+        target_height,
+    )
+
+    return {
+        "output_filename": output_filename,
+        "original_size": original_size,
+        "target_size": (target_width, target_height),
+        "resize_mode": resize_mode,
+        "path": str(output_path),
+    }
 
 
 # -------- Entrypoint --------
