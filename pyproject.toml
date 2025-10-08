@@ -1,5 +1,5 @@
 [project]
-name = "sora-mcp"
+name = "sora-mcp-server"
 version = "0.1.0"
 description = "Lightweight FastMCP wrapper around the OpenAI Sora Video API"
 readme = "README.md"
@@ -20,7 +20,7 @@ dev = [
 ]
 
 [project.scripts]
-sora-mcp = "sora_mcp.server:main"
+sora-mcp-server = "sora_mcp_server.server:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

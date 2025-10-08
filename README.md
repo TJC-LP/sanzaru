@@ -1,4 +1,4 @@
-# sora-mcp
+# sora-mcp-server
 
 A **stateless**, lightweight **FastMCP** server that wraps the **OpenAI Sora Video API** via the OpenAI Python SDK.
 
@@ -31,7 +31,7 @@ mkdir -p ~/sora-videos ~/sora-references
 export OPENAI_API_KEY=sk-...
 export SORA_VIDEO_PATH=~/sora-videos
 export SORA_REFERENCE_PATH=~/sora-references
-uv run sora-mcp
+uv run sora-mcp-server
 ```
 
 **Defaults:**

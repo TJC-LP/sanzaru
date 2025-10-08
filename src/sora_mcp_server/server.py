@@ -66,7 +66,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     stream=sys.stderr,  # Log to stderr to avoid interfering with stdio MCP transport
 )
-logger = logging.getLogger("sora-mcp")
+logger = logging.getLogger("sora-mcp-server")
 
 
 # ---------- OpenAI client (stateless) ----------
