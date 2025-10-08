@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "sora-mcp-server": {
+      "command": "uv",
+      "args": [
+        "run",
+        "sora-mcp-server"
+      ]
+    }
+  }
+}
