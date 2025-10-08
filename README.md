@@ -16,16 +16,38 @@ A **stateless**, lightweight **FastMCP** server that wraps the **OpenAI Sora Vid
 - `SORA_VIDEO_PATH` environment variable (directory for downloaded videos)
 - `SORA_REFERENCE_PATH` environment variable (directory for reference images)
 
-## Install with `uv`
+## Quick Start
+
+1. **Clone the repository:**
+   ```bash
+   git clone https://github.com/TJC-LP/sora-mcp-server.git
+   cd sora-mcp-server
+   ```
+
+2. **Run the setup script:**
+   ```bash
+   ./setup.sh
+   ```
+   The script will:
+   - Prompt for your OpenAI API key with hidden input (or use `$OPENAI_API_KEY` if set)
+   - Create default directories with absolute paths in project root
+   - Generate `.env` configuration file
+   - Install dependencies with `uv sync`
+
+3. **Start generating videos:**
+   ```bash
+   claude
+   ```
+
+That's it! Claude Code will automatically connect to the Sora MCP server and you can start generating videos.
+
+## Manual Installation (without Claude Code)
+
+If you want to run the server manually or integrate it with other MCP clients:
+
 ```bash
 uv venv
 uv sync
-```
-
-## Run
-```bash
-# Create directories for videos and reference images
-mkdir -p ~/sora-videos ~/sora-references
 
 # Set environment variables and run
 export OPENAI_API_KEY=sk-...
