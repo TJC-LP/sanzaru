@@ -74,7 +74,9 @@ This runs an MCP server over stdio that exposes these tools:
   - Note: `model` must be one of: `"sora-2"`, `"sora-2-pro"`
   - Note: `input_reference_filename` is a filename (not path) from `SORA_REFERENCE_PATH`
 - `sora_get_status(video_id)` - Returns Video object with status/progress
-- `sora_download(video_id, variant="video")` - Downloads to `SORA_VIDEO_PATH`
+- `sora_download(video_id, filename?, variant="video")` - Downloads to `SORA_VIDEO_PATH`
+  - `filename` is optional - defaults to `{video_id}.{extension}` if not provided
+  - Example: `sora_download(video_id, filename="my_video.mp4")`
 - `sora_list(limit=20, after?, order="desc")` - Returns paginated list of videos
 - `sora_delete(video_id)` - Deletes video from OpenAI storage
 - `sora_remix(previous_video_id, prompt)` - Creates a remix

@@ -18,6 +18,7 @@ from PIL import Image
 class DownloadResult(TypedDict):
     """Result from downloading a video asset."""
 
+    filename: str
     path: str
     variant: Literal["video", "thumbnail", "spritesheet"]
 
@@ -243,6 +244,7 @@ Returns the absolute path to the downloaded file.
 
 Parameters:
 - video_id: The ID from sora_create_video or sora_remix (required)
+- filename: Custom filename (optional, defaults to video_id with appropriate extension)
 - variant: What to download (default: "video")
   * "video" -> MP4 video file
   * "thumbnail" -> WEBP thumbnail image
@@ -251,23 +253,28 @@ Parameters:
 Typical workflow:
 1. Create: sora_create_video() -> video_id
 2. Poll: sora_get_status(video_id) until status='completed'
-3. Download: sora_download(video_id) -> returns local file path"""
+3. Download: sora_download(video_id, filename="my_video.mp4") -> returns local file path
+
+Returns DownloadResult with: filename, path, variant"""
 )
 async def sora_download(
     video_id: str,
+    filename: str | None = None,
     variant: Literal["video", "thumbnail", "spritesheet"] = "video",
 ) -> DownloadResult:
     """Download a completed video asset to disk.
 
     Args:
         video_id: Video ID from sora_create_video or sora_remix
+        filename: Optional custom filename
         variant: Asset type to download (video, thumbnail, or spritesheet)
 
     Returns:
-        DownloadResult with absolute path and variant
+        DownloadResult with filename, absolute path, and variant
 
     Raises:
         RuntimeError: If VIDEO_DOWNLOAD_PATH not initialized or OPENAI_API_KEY not set
+        ValueError: If invalid filename or path traversal detected
     """
     if VIDEO_DOWNLOAD_PATH is None:
         raise RuntimeError("VIDEO_DOWNLOAD_PATH not initialized")
@@ -275,10 +282,22 @@ async def sora_download(
     client = get_client()
     content = await client.videos.download_content(video_id, variant=variant)
     suffix = _suffix_for_variant(variant)
-    out_path = VIDEO_DOWNLOAD_PATH / f"{video_id}.{suffix}"
+
+    # Auto-generate filename if not provided
+    if filename is None:
+        filename = f"{video_id}.{suffix}"
+
+    # Security: validate filename and construct safe path
+    out_path = VIDEO_DOWNLOAD_PATH / filename
+    out_path = out_path.resolve()
+
+    # Security: prevent path traversal
+    if not str(out_path).startswith(str(VIDEO_DOWNLOAD_PATH)):
+        raise ValueError("Invalid filename: path traversal detected")
+
     content.write_to_file(str(out_path))
     logger.info("Wrote %s (%s)", out_path, variant)
-    return {"path": str(out_path), "variant": variant}
+    return {"filename": filename, "path": str(out_path), "variant": variant}
 
 
 @mcp.tool(

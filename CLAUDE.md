@@ -48,6 +48,7 @@ Both are validated on server start and must exist.
 - Status progression: `queued` → `in_progress` → `completed` or `failed`
 - Progress tracking: 0-100 integer
 - Uses OpenAI SDK types: `Video`, `VideoModel`, `VideoSize`, `VideoSeconds`
+- Download supports optional custom filenames with path traversal protection
 
 **2. Responses API (client.responses.*)**
 - Background image generation: `create(background=True)` with `tools=[{"type": "image_generation"}]`
