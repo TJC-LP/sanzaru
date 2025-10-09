@@ -4,12 +4,12 @@
 import pytest
 
 from sora_mcp_server.tools.video import (
-    sora_create_video,
-    sora_delete,
-    sora_download,
-    sora_get_status,
-    sora_list,
-    sora_remix,
+    create_video,
+    delete_video,
+    download_video,
+    get_video_status,
+    list_videos,
+    remix_video,
 )
 
 
@@ -19,7 +19,7 @@ async def test_sora_create_video_without_reference(mocker, mock_video_queued):
     mock_get_client = mocker.patch("sora_mcp_server.tools.video.get_client")
     mock_get_client.return_value.videos.create = mocker.AsyncMock(return_value=mock_video_queued)
 
-    result = await sora_create_video(prompt="test video", model="sora-2", seconds="8", size="1280x720")
+    result = await create_video(prompt="test video", model="sora-2", seconds="8", size="1280x720")
 
     assert result.id == "vid_queued"
     assert result.status == "queued"
@@ -33,7 +33,7 @@ async def test_sora_get_status(mocker, mock_video_response):
     mock_get_client = mocker.patch("sora_mcp_server.tools.video.get_client")
     mock_get_client.return_value.videos.retrieve = mocker.AsyncMock(return_value=mock_video_response)
 
-    result = await sora_get_status("vid_test123")
+    result = await get_video_status("vid_test123")
 
     assert result.id == "vid_test123"
     assert result.status == "completed"
@@ -52,7 +52,7 @@ async def test_sora_download(mocker, tmp_video_path):
     mock_get_client = mocker.patch("sora_mcp_server.tools.video.get_client")
     mock_get_client.return_value.videos.download_content = mocker.AsyncMock(return_value=mock_content)
 
-    result = await sora_download("vid_test123", filename="test.mp4", variant="video")
+    result = await download_video("vid_test123", filename="test.mp4", variant="video")
 
     assert result["filename"] == "test.mp4"
     assert result["variant"] == "video"
@@ -93,7 +93,7 @@ async def test_sora_list(mocker):
     mock_get_client = mocker.patch("sora_mcp_server.tools.video.get_client")
     mock_get_client.return_value.videos.list = mocker.AsyncMock(return_value=mock_page)
 
-    result = await sora_list(limit=20, order="desc")
+    result = await list_videos(limit=20, order="desc")
 
     assert len(result["data"]) == 2
     assert result["data"][0]["id"] == "vid1"
@@ -112,7 +112,7 @@ async def test_sora_delete(mocker):
     mock_get_client = mocker.patch("sora_mcp_server.tools.video.get_client")
     mock_get_client.return_value.videos.delete = mocker.AsyncMock(return_value=mock_response)
 
-    result = await sora_delete("vid_test123")
+    result = await delete_video("vid_test123")
 
     assert result.id == "vid_test123"
     assert result.deleted is True
@@ -125,7 +125,7 @@ async def test_sora_remix(mocker, mock_video_queued):
     mock_get_client = mocker.patch("sora_mcp_server.tools.video.get_client")
     mock_get_client.return_value.videos.remix = mocker.AsyncMock(return_value=mock_video_queued)
 
-    result = await sora_remix("vid_original", "new prompt")
+    result = await remix_video("vid_original", "new prompt")
 
     assert result.id == "vid_queued"
     assert result.status == "queued"

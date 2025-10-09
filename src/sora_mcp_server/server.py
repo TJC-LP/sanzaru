@@ -13,91 +13,90 @@ from openai.types import VideoModel, VideoSeconds, VideoSize
 
 from .config import logger
 from .descriptions import (
-    IMAGE_CREATE,
-    IMAGE_DOWNLOAD,
-    IMAGE_GET_STATUS,
-    SORA_CREATE_VIDEO,
-    SORA_DELETE,
-    SORA_DOWNLOAD,
-    SORA_GET_STATUS,
-    SORA_LIST,
-    SORA_LIST_REFERENCES,
-    SORA_PREPARE_REFERENCE,
-    SORA_REMIX,
+    CREATE_IMAGE,
+    CREATE_VIDEO,
+    DELETE_VIDEO,
+    DOWNLOAD_IMAGE,
+    DOWNLOAD_VIDEO,
+    GET_IMAGE_STATUS,
+    GET_VIDEO_STATUS,
+    LIST_REFERENCE_IMAGES,
+    LIST_VIDEOS,
+    PREPARE_REFERENCE_IMAGE,
+    REMIX_VIDEO,
 )
 from .tools import image, reference, video
-
 
 # Initialize FastMCP server
 mcp = FastMCP("sora-mcp-server")  # Consistent naming with repo
 
 
 # ==================== VIDEO TOOLS ====================
-@mcp.tool(description=SORA_CREATE_VIDEO)
-async def sora_create_video(
+@mcp.tool(description=CREATE_VIDEO)
+async def create_video(
     prompt: str,
     model: VideoModel = "sora-2",
     seconds: VideoSeconds | None = None,
     size: VideoSize | None = None,
     input_reference_filename: str | None = None,
 ):
-    return await video.sora_create_video(prompt, model, seconds, size, input_reference_filename)
+    return await video.create_video(prompt, model, seconds, size, input_reference_filename)
 
 
-@mcp.tool(description=SORA_GET_STATUS)
-async def sora_get_status(video_id: str):
-    return await video.sora_get_status(video_id)
+@mcp.tool(description=GET_VIDEO_STATUS)
+async def get_video_status(video_id: str):
+    return await video.get_video_status(video_id)
 
 
-@mcp.tool(description=SORA_DOWNLOAD)
-async def sora_download(
+@mcp.tool(description=DOWNLOAD_VIDEO)
+async def download_video(
     video_id: str,
     filename: str | None = None,
     variant: Literal["video", "thumbnail", "spritesheet"] = "video",
 ):
-    return await video.sora_download(video_id, filename, variant)
+    return await video.download_video(video_id, filename, variant)
 
 
-@mcp.tool(description=SORA_LIST)
-async def sora_list(limit: int = 20, after: str | None = None, order: Literal["asc", "desc"] = "desc"):
-    return await video.sora_list(limit, after, order)
+@mcp.tool(description=LIST_VIDEOS)
+async def list_videos(limit: int = 20, after: str | None = None, order: Literal["asc", "desc"] = "desc"):
+    return await video.list_videos(limit, after, order)
 
 
-@mcp.tool(description=SORA_DELETE)
-async def sora_delete(video_id: str):
-    return await video.sora_delete(video_id)
+@mcp.tool(description=DELETE_VIDEO)
+async def delete_video(video_id: str):
+    return await video.delete_video(video_id)
 
 
-@mcp.tool(description=SORA_REMIX)
-async def sora_remix(previous_video_id: str, prompt: str):
-    return await video.sora_remix(previous_video_id, prompt)
+@mcp.tool(description=REMIX_VIDEO)
+async def remix_video(previous_video_id: str, prompt: str):
+    return await video.remix_video(previous_video_id, prompt)
 
 
 # ==================== REFERENCE IMAGE TOOLS ====================
-@mcp.tool(description=SORA_LIST_REFERENCES)
-async def sora_list_references(
+@mcp.tool(description=LIST_REFERENCE_IMAGES)
+async def list_reference_images(
     pattern: str | None = None,
     file_type: Literal["jpeg", "png", "webp", "all"] = "all",
     sort_by: Literal["name", "size", "modified"] = "modified",
     order: Literal["asc", "desc"] = "desc",
     limit: int = 50,
 ):
-    return await reference.sora_list_references(pattern, file_type, sort_by, order, limit)
+    return await reference.list_reference_images(pattern, file_type, sort_by, order, limit)
 
 
-@mcp.tool(description=SORA_PREPARE_REFERENCE)
-async def sora_prepare_reference(
+@mcp.tool(description=PREPARE_REFERENCE_IMAGE)
+async def prepare_reference_image(
     input_filename: str,
     target_size: VideoSize,
     output_filename: str | None = None,
     resize_mode: Literal["crop", "pad", "rescale"] = "crop",
 ):
-    return await reference.sora_prepare_reference(input_filename, target_size, output_filename, resize_mode)
+    return await reference.prepare_reference_image(input_filename, target_size, output_filename, resize_mode)
 
 
 # ==================== IMAGE GENERATION TOOLS ====================
-@mcp.tool(description=IMAGE_CREATE)
-async def image_create(
+@mcp.tool(description=CREATE_IMAGE)
+async def create_image(
     prompt: str,
     model: str = "gpt-5",
     size: Literal["auto", "1024x1024", "1024x1536", "1536x1024"] | None = None,
@@ -106,17 +105,17 @@ async def image_create(
     background: Literal["transparent", "opaque", "auto"] | None = None,
     previous_response_id: str | None = None,
 ):
-    return await image.image_create(prompt, model, size, quality, output_format, background, previous_response_id)
+    return await image.create_image(prompt, model, size, quality, output_format, background, previous_response_id)
 
 
-@mcp.tool(description=IMAGE_GET_STATUS)
-async def image_get_status(response_id: str):
-    return await image.image_get_status(response_id)
+@mcp.tool(description=GET_IMAGE_STATUS)
+async def get_image_status(response_id: str):
+    return await image.get_image_status(response_id)
 
 
-@mcp.tool(description=IMAGE_DOWNLOAD)
-async def image_download(response_id: str, filename: str | None = None):
-    return await image.image_download(response_id, filename)
+@mcp.tool(description=DOWNLOAD_IMAGE)
+async def download_image(response_id: str, filename: str | None = None):
+    return await image.download_image(response_id, filename)
 
 
 # ==================== SERVER ENTRYPOINT ====================

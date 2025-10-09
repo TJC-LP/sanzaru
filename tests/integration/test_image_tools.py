@@ -5,7 +5,7 @@ import base64
 
 import pytest
 
-from sora_mcp_server.tools.image import image_create, image_download, image_get_status
+from sora_mcp_server.tools.image import create_image, download_image, get_image_status
 
 
 @pytest.mark.integration
@@ -19,7 +19,7 @@ async def test_image_create(mocker):
     mock_get_client = mocker.patch("sora_mcp_server.tools.image.get_client")
     mock_get_client.return_value.responses.create = mocker.AsyncMock(return_value=mock_response)
 
-    result = await image_create(prompt="test image", model="gpt-5", size="1024x1024", quality="high")
+    result = await create_image(prompt="test image", model="gpt-5", size="1024x1024", quality="high")
 
     assert result["id"] == "resp_test123"
     assert result["status"] == "queued"
@@ -44,7 +44,7 @@ async def test_image_get_status(mocker):
     mock_get_client = mocker.patch("sora_mcp_server.tools.image.get_client")
     mock_get_client.return_value.responses.retrieve = mocker.AsyncMock(return_value=mock_response)
 
-    result = await image_get_status("resp_test123")
+    result = await get_image_status("resp_test123")
 
     assert result["id"] == "resp_test123"
     assert result["status"] == "completed"
@@ -77,7 +77,7 @@ async def test_image_download(mocker, tmp_reference_path):
     mock_img.format = "PNG"
     mocker.patch("sora_mcp_server.tools.image.Image.open", return_value=mock_img)
 
-    result = await image_download("resp_test123", filename="test.png")
+    result = await download_image("resp_test123", filename="test.png")
 
     assert result["filename"] == "test.png"
     assert result["size"] == (1024, 1024)

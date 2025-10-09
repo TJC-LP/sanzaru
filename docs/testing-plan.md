@@ -29,31 +29,31 @@ This document outlines testing strategies for the Sora MCP server, including edg
 ### Security Tests
 
 **Path Traversal Protection:**
-- [ ] `../` in filename rejected in `sora_create_video`
-- [ ] `../` in filename rejected in `sora_download`
-- [ ] `../` in filename rejected in `sora_prepare_reference`
-- [ ] `../` in filename rejected in `image_download`
+- [ ] `../` in filename rejected in `create_video`
+- [ ] `../` in filename rejected in `download_video`
+- [ ] `../` in filename rejected in `prepare_reference_image`
+- [ ] `../` in filename rejected in `download_image`
 - [ ] Absolute paths in filenames rejected
 - [ ] Symlinks in user-provided filenames (separate from env var symlinks)
 
 **Reference Image Validation:**
-- [ ] Invalid file extension rejected in `sora_create_video`
+- [ ] Invalid file extension rejected in `create_video`
 - [ ] Non-existent reference file raises clear error
 - [ ] Path traversal via reference filename blocked
 
 ### File Operations
 
 **Download Operations:**
-- [ ] `sora_download` creates file with correct name
-- [ ] `sora_download` with custom filename works
-- [ ] `sora_download` rejects path traversal in custom filename
-- [ ] `image_download` creates file with correct dimensions
-- [ ] `image_download` handles all output formats (png, jpeg, webp)
+- [ ] `download_video` creates file with correct name
+- [ ] `download_video` with custom filename works
+- [ ] `download_video` rejects path traversal in custom filename
+- [ ] `download_image` creates file with correct dimensions
+- [ ] `download_image` handles all output formats (png, jpeg, webp)
 
 **Image Preparation:**
-- [ ] `sora_prepare_reference` crop mode preserves aspect ratio
-- [ ] `sora_prepare_reference` pad mode adds letterboxing
-- [ ] `sora_prepare_reference` rescale mode stretches image
+- [ ] `prepare_reference_image` crop mode preserves aspect ratio
+- [ ] `prepare_reference_image` pad mode adds letterboxing
+- [ ] `prepare_reference_image` rescale mode stretches image
 - [ ] Output filename auto-generation works correctly
 - [ ] Custom output filename is respected
 
@@ -65,29 +65,29 @@ This document outlines testing strategies for the Sora MCP server, including edg
 ```bash
 # Prerequisites: OPENAI_API_KEY, SORA_VIDEO_PATH set
 1. Start server: uv run sora-mcp-server
-2. Call sora_create_video(prompt="test video", model="sora-2", seconds="4")
-3. Poll sora_get_status until completed
-4. Call sora_download
+2. Call create_video(prompt="test video", model="sora-2", seconds="4")
+3. Poll get_video_status until completed
+4. Call download_video
 5. Verify: Video file exists in SORA_VIDEO_PATH
 ```
 
 **Test 2: Video Creation (With Reference)**
 ```bash
 # Prerequisites: Reference image in SORA_REFERENCE_PATH
-1. Call sora_list_references to find available images
-2. Call sora_create_video with input_reference_filename
+1. Call list_videos_references to find available images
+2. Call create_video with input_reference_filename
 3. Poll until completed
 4. Download and verify
 ```
 
 **Test 3: Image Generation → Video**
 ```bash
-1. Call image_create(prompt="test image")
-2. Poll image_get_status until completed
-3. Call image_download with custom filename
+1. Call create_image(prompt="test image")
+2. Poll get_image_status until completed
+3. Call download_image with custom filename
 4. Verify: Image exists in SORA_REFERENCE_PATH
-5. Call sora_prepare_reference to resize
-6. Call sora_create_video using prepared image
+5. Call prepare_reference_image to resize
+6. Call create_video using prepared image
 7. Poll and download final video
 ```
 
@@ -96,14 +96,14 @@ This document outlines testing strategies for the Sora MCP server, including edg
 **Test 4: Missing Environment Variables**
 ```bash
 # Unset SORA_VIDEO_PATH
-1. Call sora_download
+1. Call download_video
 2. Expected: RuntimeError with message "SORA_VIDEO_PATH environment variable is not set"
 ```
 
 **Test 5: Invalid Directory**
 ```bash
 # Set SORA_VIDEO_PATH to non-existent directory
-1. Call sora_download
+1. Call download_video
 2. Expected: RuntimeError with "does not exist" message
 ```
 
@@ -117,14 +117,14 @@ This document outlines testing strategies for the Sora MCP server, including edg
 
 **Test 7: Path Traversal Attempt**
 ```bash
-1. Call sora_download(video_id, filename="../../../etc/passwd.mp4")
+1. Call download_video(video_id, filename="../../../etc/passwd.mp4")
 2. Expected: ValueError with "path traversal detected" message
 ```
 
 **Test 8: Whitespace in Env Var**
 ```bash
 # Set SORA_VIDEO_PATH="  /path/to/videos  " (with spaces)
-1. Call sora_download
+1. Call download_video
 2. Expected: Works correctly (whitespace stripped)
 ```
 
@@ -132,7 +132,7 @@ This document outlines testing strategies for the Sora MCP server, including edg
 ```bash
 1. Start server successfully
 2. Delete SORA_VIDEO_PATH directory externally
-3. Call sora_download
+3. Call download_video
 4. Expected: File operation fails (limitation of caching)
 5. Note: Documented limitation - server restart required if dirs deleted
 ```
@@ -142,7 +142,7 @@ This document outlines testing strategies for the Sora MCP server, including edg
 **Test 10: Parallel Image Preparations**
 ```bash
 # Using Python script or concurrent MCP client
-1. Call sora_prepare_reference 5 times in parallel
+1. Call prepare_reference_image 5 times in parallel
 2. Verify: All complete without blocking each other
 3. Verify: All output files created correctly
 ```
@@ -150,7 +150,7 @@ This document outlines testing strategies for the Sora MCP server, including edg
 **Test 11: Parallel Downloads**
 ```bash
 1. Have 3 completed videos
-2. Call sora_download 3 times in parallel
+2. Call download_video 3 times in parallel
 3. Verify: All download successfully
 4. Check: No file corruption or conflicts
 ```
@@ -172,14 +172,14 @@ export SORA_VIDEO_PATH=~/.sora-videos-link
 # Symlink to sensitive file inside SORA_REFERENCE_PATH
 cd sora-references
 ln -s /etc/passwd evil.png
-# Try to use in sora_create_video
+# Try to use in create_video
 # Current behavior: Would follow symlink (potential issue)
 # Consider: Add symlink check for user filenames too
 ```
 
 **Scenario 3: Path traversal via filename**
 ```bash
-sora_download(video_id, filename="../../sensitive/file.mp4")
+download_video(video_id, filename="../../sensitive/file.mp4")
 # Expected: ValueError "path traversal detected"
 ```
 
@@ -196,8 +196,8 @@ sora_download(video_id, filename="../../sensitive/file.mp4")
 ### Concurrent Load
 ```bash
 # With Python 3.14 free-threading
-1. 10 concurrent image_create calls
-2. 10 concurrent sora_prepare_reference calls
+1. 10 concurrent create_image calls
+2. 10 concurrent prepare_reference_image calls
 3. 10 concurrent downloads
 4. Measure: Total time, CPU usage, memory usage
 ```

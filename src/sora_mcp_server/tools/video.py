@@ -20,7 +20,7 @@ from ..types import DownloadResult, ListResult, VideoSummary
 from ..utils import generate_filename, suffix_for_variant
 
 
-async def sora_create_video(
+async def create_video(
     prompt: str,
     model: VideoModel = "sora-2",
     seconds: VideoSeconds | None = None,
@@ -83,7 +83,7 @@ async def sora_create_video(
     return video
 
 
-async def sora_get_status(video_id: str) -> Video:
+async def get_video_status(video_id: str) -> Video:
     """Get current status and progress of a video job.
 
     Args:
@@ -100,7 +100,7 @@ async def sora_get_status(video_id: str) -> Video:
     return video
 
 
-async def sora_download(
+async def download_video(
     video_id: str,
     filename: str | None = None,
     variant: Literal["video", "thumbnail", "spritesheet"] = "video",
@@ -137,7 +137,7 @@ async def sora_download(
     return {"filename": filename, "path": str(out_path), "variant": variant}
 
 
-async def sora_list(limit: int = 20, after: str | None = None, order: Literal["asc", "desc"] = "desc") -> ListResult:
+async def list_videos(limit: int = 20, after: str | None = None, order: Literal["asc", "desc"] = "desc") -> ListResult:
     """List video jobs with pagination.
 
     Args:
@@ -170,7 +170,7 @@ async def sora_list(limit: int = 20, after: str | None = None, order: Literal["a
     return {"data": items, "has_more": page.has_more, "last": items[-1]["id"] if items else None}
 
 
-async def sora_delete(video_id: str) -> VideoDeleteResponse:
+async def delete_video(video_id: str) -> VideoDeleteResponse:
     """Permanently delete a video from OpenAI storage.
 
     Args:
@@ -188,7 +188,7 @@ async def sora_delete(video_id: str) -> VideoDeleteResponse:
     return resp
 
 
-async def sora_remix(previous_video_id: str, prompt: str) -> Video:
+async def remix_video(previous_video_id: str, prompt: str) -> Video:
     """Create a new video by remixing an existing one.
 
     Args:

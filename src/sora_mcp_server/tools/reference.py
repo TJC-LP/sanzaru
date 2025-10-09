@@ -167,7 +167,7 @@ RESIZE_STRATEGIES = {
 }
 
 
-async def sora_list_references(
+async def list_reference_images(
     pattern: str | None = None,
     file_type: Literal["jpeg", "png", "webp", "all"] = "all",
     sort_by: Literal["name", "size", "modified"] = "modified",
@@ -246,7 +246,7 @@ async def sora_list_references(
     return {"data": results}
 
 
-async def sora_prepare_reference(
+async def prepare_reference_image(
     input_filename: str,
     target_size: VideoSize,
     output_filename: str | None = None,

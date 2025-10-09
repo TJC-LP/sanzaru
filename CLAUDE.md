@@ -117,7 +117,7 @@ Additional security:
 
 ❌ **Bad**: Re-describing what's already in the image
 ```python
-sora_create_video(
+create_video(
     prompt="A pilot in orange suit sitting in cockpit with instruments glowing...",
     input_reference_filename="pilot.png"
 )
@@ -125,7 +125,7 @@ sora_create_video(
 
 ✅ **Good**: Describing only the action/transformation
 ```python
-sora_create_video(
+create_video(
     prompt="The pilot glances up, takes a breath, then returns focus to the instruments.",
     input_reference_filename="pilot.png"
 )
@@ -141,15 +141,15 @@ See `docs/sora-prompting-guide.md` and `docs/sora2_prompting_guide.ipynb` for co
 ### Generate Reference Image → Animate with Sora
 ```python
 # 1. Generate reference image
-resp = image_create(prompt="futuristic pilot in mech cockpit", size="1536x1024")
-image_get_status(resp.id)  # poll until completed
-image_download(resp.id, filename="pilot.png")
+resp = create_image(prompt="futuristic pilot in mech cockpit", size="1536x1024")
+get_image_status(resp.id)  # poll until completed
+download_image(resp.id, filename="pilot.png")
 
 # 2. Resize for Sora if needed
-sora_prepare_reference("pilot.png", target_size="1280x720", resize_mode="crop")
+prepare_reference_image("pilot.png", target_size="1280x720", resize_mode="crop")
 
 # 3. Create video with simple motion prompt
-sora_create_video(
+create_video(
     prompt="The pilot looks up and smiles.",
     input_reference_filename="pilot_1280x720.png",
     size="1280x720",
@@ -160,16 +160,16 @@ sora_create_video(
 ### Iterative Image Refinement
 ```python
 # Generate initial concept
-resp1 = image_create(prompt="a cyberpunk character")
+resp1 = create_image(prompt="a cyberpunk character")
 
 # Refine with previous_response_id
-resp2 = image_create(
+resp2 = create_image(
     prompt="add more neon details and a cityscape background",
     previous_response_id=resp1.id
 )
 
 # Continue refining
-resp3 = image_create(
+resp3 = create_image(
     prompt="change camera angle to show profile",
     previous_response_id=resp2.id
 )
@@ -177,7 +177,7 @@ resp3 = image_create(
 
 ## Image Resize Modes
 
-Three modes available in `sora_prepare_reference`:
+Three modes available in `prepare_reference_image`:
 - **crop**: Preserve aspect ratio, scale to cover target, center crop excess (no distortion, may lose edges)
 - **pad**: Preserve aspect ratio, scale to fit, add black letterbox bars (no distortion, full image preserved)
 - **rescale**: Stretch/squash to exact dimensions (may distort, no cropping/padding)
@@ -220,6 +220,25 @@ Use `./setup.sh` for interactive setup, or manually copy `.env.example` to `.env
 - Tool descriptions support E501 ignore for readability
 - Comprehensive docstrings on all MCP tools
 - Security-first: path traversal protection on all file operations
+
+### Naming Conventions
+
+**Function Names: Verb-First (Predicate-First)**
+- Internal functions use `verb_noun` pattern (action comes first)
+- Examples:
+  - ✅ `create_video()` - verb first
+  - ✅ `download_image()` - verb first
+  - ✅ `list_reference_images()` - verb first
+  - ✅ `get_video_status()` - verb first
+
+**MCP Tool Names (Public API): Keep "sora" prefix for branding**
+- Server wrapper functions can keep descriptive names for MCP tools
+- Example: MCP tool `create_video` → calls internal `create_video()`
+
+**Description Constants: Match tool names**
+- `CREATE_VIDEO`, `DOWNLOAD_IMAGE`, `LIST_REFERENCE_IMAGES`
+- ALL_CAPS with underscores
+- Verb comes first, matches function structure
 
 ## Testing
 

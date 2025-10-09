@@ -16,10 +16,10 @@ This document helps contributors work effectively in this repository.
 - Smoke test (via MCP tools): create a video/image, poll status, then download (see README for tool list).
 
 ## Sora Toolkit & Prompting
-- Tools: `sora_create_video`, `sora_get_status`, `sora_download`, `sora_list`, `sora_delete`, `sora_remix`; images: `image_create`, `image_get_status`, `image_download`; refs: `sora_list_references`, `sora_prepare_reference`.
+- Tools: `create_video`, `get_video_status`, `download_video`, `list_videos`, `delete_video`, `remix_video`; images: `create_image`, `get_image_status`, `download_image`; refs: `list_videos_references`, `prepare_reference_image`.
 - Flows: Video only (create → poll → download) or Image → Video (generate image → download → use as `input_reference_filename`).
 - Prompting: see `docs/sora2-prompting-guide.md`. Think “action + subject + scene + style + camera + lighting + mood”.
-- Example: `sora_create_video(prompt="wide tracking shot of a neon-lit rainy alley, cinematic, 35mm", size="1280x720", seconds="8")`
+- Example: `create_video(prompt="wide tracking shot of a neon-lit rainy alley, cinematic, 35mm", size="1280x720", seconds="8")`
 
 ## Coding Style & Naming Conventions
 - Python 3.10+, typed (prefer `TypedDict`, explicit return types).
@@ -31,7 +31,7 @@ This document helps contributors work effectively in this repository.
 - Verify files land in `sora-videos/` and `sora-references/`; include exact steps in PRs.
 
 ## Commit & Pull Request Guidelines
-- Commits: imperative mood, concise scope first (e.g., `feat: add image_create tool`).
+- Commits: imperative mood, concise scope first (e.g., `feat: add create_image tool`).
 - Group related changes; avoid drive-by refactors.
 - PRs: include purpose, screenshots/paths of created files, and testing steps (commands + observed output).
 - Link issues when applicable; note any follow-ups.

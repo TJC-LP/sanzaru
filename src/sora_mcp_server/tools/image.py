@@ -20,7 +20,7 @@ from ..types import ImageDownloadResult, ImageResponse
 from ..utils import generate_filename
 
 
-async def image_create(
+async def create_image(
     prompt: str,
     model: str = "gpt-5",
     size: Literal["auto", "1024x1024", "1024x1536", "1536x1024"] | None = None,
@@ -84,7 +84,7 @@ async def image_create(
     }
 
 
-async def image_get_status(response_id: str) -> ImageResponse:
+async def get_image_status(response_id: str) -> ImageResponse:
     """Get current status of an image generation job.
 
     Args:
@@ -106,7 +106,7 @@ async def image_get_status(response_id: str) -> ImageResponse:
     }
 
 
-async def image_download(
+async def download_image(
     response_id: str,
     filename: str | None = None,
 ) -> ImageDownloadResult:

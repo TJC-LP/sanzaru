@@ -4,7 +4,7 @@
 import pytest
 from PIL import Image
 
-from sora_mcp_server.tools.reference import sora_list_references, sora_prepare_reference
+from sora_mcp_server.tools.reference import list_reference_images, prepare_reference_image
 
 
 @pytest.mark.integration
@@ -19,7 +19,7 @@ async def test_sora_list_references_with_multiple_files(mocker, tmp_reference_pa
     # Create a non-image file (should be ignored)
     (tmp_reference_path / "readme.txt").write_text("ignore me")
 
-    result = await sora_list_references()
+    result = await list_reference_images()
 
     assert len(result["data"]) == 3
     filenames = [r["filename"] for r in result["data"]]
@@ -46,7 +46,7 @@ async def test_sora_prepare_reference_end_to_end(mocker, tmp_reference_path):
     Image.new("RGB", (400, 200)).save(source, "PNG")
 
     # Prepare for 1280x720 (landscape) using crop mode
-    result = await sora_prepare_reference("source.png", "1280x720", resize_mode="crop")
+    result = await prepare_reference_image("source.png", "1280x720", resize_mode="crop")
 
     assert result["output_filename"] == "source_1280x720.png"
     assert result["original_size"] == (400, 200)
@@ -75,7 +75,7 @@ async def test_sora_list_references_with_filtering(mocker, tmp_reference_path):
     Image.new("RGB", (100, 100)).save(tmp_reference_path / "bird.jpg")
 
     # Filter for cat* pattern and png only
-    result = await sora_list_references(pattern="cat*.png", file_type="png")
+    result = await list_reference_images(pattern="cat*.png", file_type="png")
 
     assert len(result["data"]) == 2
     filenames = [r["filename"] for r in result["data"]]
