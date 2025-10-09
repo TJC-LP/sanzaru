@@ -1,12 +1,12 @@
 # SPDX-License-Identifier: MIT
 """Unit tests for security utilities."""
-import pathlib
 
 import pytest
 
 from sora_mcp_server.security import check_not_symlink, safe_open_file, validate_safe_path
 
 
+@pytest.mark.unit
 class TestValidateSafePath:
     """Test path validation and traversal protection."""
 
@@ -62,6 +62,7 @@ class TestValidateSafePath:
         assert result == test_file.resolve()
 
 
+@pytest.mark.unit
 class TestCheckNotSymlink:
     """Test symlink detection."""
 
@@ -97,6 +98,7 @@ class TestCheckNotSymlink:
         check_not_symlink(nonexistent, "Test file")
 
 
+@pytest.mark.unit
 class TestSafeOpenFile:
     """Test safe file opening context manager."""
 

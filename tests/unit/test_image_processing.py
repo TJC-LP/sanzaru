@@ -1,6 +1,5 @@
 # SPDX-License-Identifier: MIT
 """Unit tests for image processing helpers."""
-import pathlib
 
 import pytest
 from PIL import Image
@@ -15,6 +14,7 @@ from sora_mcp_server.tools.reference import (
 )
 
 
+@pytest.mark.unit
 class TestParseVideoDimensions:
     """Test VideoSize string parsing."""
 
@@ -39,6 +39,7 @@ class TestParseVideoDimensions:
         assert parse_video_dimensions("1792x1024") == (1792, 1024)
 
 
+@pytest.mark.unit
 class TestLoadAndConvertImage:
     """Test image loading and RGB conversion."""
 
@@ -71,6 +72,7 @@ class TestLoadAndConvertImage:
         assert img.size == (50, 50)
 
 
+@pytest.mark.unit
 class TestResizeCrop:
     """Test crop resize strategy."""
 
@@ -107,6 +109,7 @@ class TestResizeCrop:
         assert result.size == (200, 200)
 
 
+@pytest.mark.unit
 class TestResizePad:
     """Test pad resize strategy."""
 
@@ -143,6 +146,7 @@ class TestResizePad:
         assert result.size == (200, 200)
 
 
+@pytest.mark.unit
 class TestResizeRescale:
     """Test rescale (stretch) resize strategy."""
 
@@ -169,6 +173,7 @@ class TestResizeRescale:
         assert result.size == (640, 480)
 
 
+@pytest.mark.unit
 class TestSaveImage:
     """Test image saving functionality."""
 

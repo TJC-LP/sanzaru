@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 """Unit tests for utility functions."""
+
 from unittest.mock import patch
 
 import pytest
@@ -7,6 +8,7 @@ import pytest
 from sora_mcp_server.utils import generate_filename, suffix_for_variant
 
 
+@pytest.mark.unit
 class TestSuffixForVariant:
     """Test file extension mapping for video variants."""
 
@@ -20,6 +22,7 @@ class TestSuffixForVariant:
         assert suffix_for_variant("spritesheet") == "jpg"
 
 
+@pytest.mark.unit
 class TestGenerateFilename:
     """Test filename generation logic."""
 
