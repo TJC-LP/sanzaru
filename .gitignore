@@ -16,3 +16,4 @@ build/
 *.jpg
 sora-videos/
 sora-references/
+.coverage

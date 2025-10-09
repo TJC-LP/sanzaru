@@ -31,8 +31,29 @@ claude  # in this directory with .mcp.json configured
 
 ## Core Architecture
 
-### Single-file Server Design
-All MCP tools are defined in `src/sora_mcp_server/server.py` using FastMCP decorators. The server is intentionally simple and stateless.
+### Modular Server Design
+The server is organized into focused modules for maintainability and code reuse:
+
+```
+src/sora_mcp_server/
+├── server.py           # FastMCP initialization & tool registration (~320 lines)
+├── types.py            # TypedDict definitions (~70 lines)
+├── config.py           # OpenAI client + path configuration (~110 lines)
+├── security.py         # File security utilities (~90 lines)
+├── utils.py            # Shared helpers (~30 lines)
+└── tools/              # Tool implementations
+    ├── __init__.py
+    ├── video.py        # 6 video tools (~200 lines)
+    ├── reference.py    # 2 reference image tools (~230 lines)
+    └── image.py        # 3 image generation tools (~180 lines)
+```
+
+**server.py** registers all tools with FastMCP decorators and delegates to tool implementations
+**types.py** defines all return types (DownloadResult, VideoSummary, etc.)
+**config.py** provides `get_client()` and `get_path()` with validation
+**security.py** provides reusable functions: `validate_safe_path()`, `check_not_symlink()`, `safe_open_file()`
+**utils.py** provides helpers: `suffix_for_variant()`, `generate_filename()`
+**tools/*.py** contain the actual tool implementations as plain async functions
 
 ### Runtime Path Configuration
 Paths are validated lazily via the `get_path()` function when tools are called:
@@ -57,13 +78,32 @@ Both environment variables are required (no defaults). Paths are cached with `@l
 - Base64-encoded image in `ImageGenerationCall.result`
 
 ### Security Model
-All file operations use path traversal protection:
+All file operations use centralized security utilities from `security.py`:
+
+**`validate_safe_path(base_path, filename, allow_create=False)`**
+- Prevents path traversal attacks (e.g., `../../etc/passwd`)
+- Ensures resolved path stays within base_path
+- Optionally validates file existence
+
+**`check_not_symlink(path, error_context)`**
+- Prevents symlink exploitation
+- Raises ValueError if path is a symbolic link
+
+**`safe_open_file(path, mode, error_context, check_symlink=True)`**
+- Context manager for safe file I/O
+- Standardized error handling (FileNotFoundError, PermissionError, OSError)
+- Optional symlink checking
+
+Example usage:
 ```python
-base_path = get_path("reference")  # or get_path("video")
-file_path = base_path / user_filename
-file_path = file_path.resolve()
-if not str(file_path).startswith(str(base_path)):
-    raise ValueError("path traversal detected")
+from security import validate_safe_path, safe_open_file
+from config import get_path
+
+base_path = get_path("reference")
+file_path = validate_safe_path(base_path, user_filename)
+
+with safe_open_file(file_path, "rb", "reference image") as f:
+    data = f.read()
 ```
 
 Additional security:
@@ -77,7 +117,7 @@ Additional security:
 
 ❌ **Bad**: Re-describing what's already in the image
 ```python
-sora_create_video(
+create_video(
     prompt="A pilot in orange suit sitting in cockpit with instruments glowing...",
     input_reference_filename="pilot.png"
 )
@@ -85,7 +125,7 @@ sora_create_video(
 
 ✅ **Good**: Describing only the action/transformation
 ```python
-sora_create_video(
+create_video(
     prompt="The pilot glances up, takes a breath, then returns focus to the instruments.",
     input_reference_filename="pilot.png"
 )
@@ -101,15 +141,15 @@ See `docs/sora-prompting-guide.md` and `docs/sora2_prompting_guide.ipynb` for co
 ### Generate Reference Image → Animate with Sora
 ```python
 # 1. Generate reference image
-resp = image_create(prompt="futuristic pilot in mech cockpit", size="1536x1024")
-image_get_status(resp.id)  # poll until completed
-image_download(resp.id, filename="pilot.png")
+resp = create_image(prompt="futuristic pilot in mech cockpit", size="1536x1024")
+get_image_status(resp.id)  # poll until completed
+download_image(resp.id, filename="pilot.png")
 
 # 2. Resize for Sora if needed
-sora_prepare_reference("pilot.png", target_size="1280x720", resize_mode="crop")
+prepare_reference_image("pilot.png", target_size="1280x720", resize_mode="crop")
 
 # 3. Create video with simple motion prompt
-sora_create_video(
+create_video(
     prompt="The pilot looks up and smiles.",
     input_reference_filename="pilot_1280x720.png",
     size="1280x720",
@@ -120,16 +160,16 @@ sora_create_video(
 ### Iterative Image Refinement
 ```python
 # Generate initial concept
-resp1 = image_create(prompt="a cyberpunk character")
+resp1 = create_image(prompt="a cyberpunk character")
 
 # Refine with previous_response_id
-resp2 = image_create(
+resp2 = create_image(
     prompt="add more neon details and a cityscape background",
     previous_response_id=resp1.id
 )
 
 # Continue refining
-resp3 = image_create(
+resp3 = create_image(
     prompt="change camera angle to show profile",
     previous_response_id=resp2.id
 )
@@ -137,7 +177,7 @@ resp3 = image_create(
 
 ## Image Resize Modes
 
-Three modes available in `sora_prepare_reference`:
+Three modes available in `prepare_reference_image`:
 - **crop**: Preserve aspect ratio, scale to cover target, center crop excess (no distortion, may lose edges)
 - **pad**: Preserve aspect ratio, scale to fit, add black letterbox bars (no distortion, full image preserved)
 - **rescale**: Stretch/squash to exact dimensions (may distort, no cropping/padding)
@@ -180,3 +220,58 @@ Use `./setup.sh` for interactive setup, or manually copy `.env.example` to `.env
 - Tool descriptions support E501 ignore for readability
 - Comprehensive docstrings on all MCP tools
 - Security-first: path traversal protection on all file operations
+
+### Naming Conventions
+
+**Function Names: Verb-First (Predicate-First)**
+- Internal functions use `verb_noun` pattern (action comes first)
+- Examples:
+  - ✅ `create_video()` - verb first
+  - ✅ `download_image()` - verb first
+  - ✅ `list_reference_images()` - verb first
+  - ✅ `get_video_status()` - verb first
+
+**MCP Tool Names (Public API): Keep "sora" prefix for branding**
+- Server wrapper functions can keep descriptive names for MCP tools
+- Example: MCP tool `create_video` → calls internal `create_video()`
+
+**Description Constants: Match tool names**
+- `CREATE_VIDEO`, `DOWNLOAD_IMAGE`, `LIST_REFERENCE_IMAGES`
+- ALL_CAPS with underscores
+- Verb comes first, matches function structure
+
+## Testing
+
+**Test Structure:**
+```
+tests/
+├── conftest.py          # Shared fixtures
+├── unit/                # Unit tests for pure functions (46 tests)
+│   ├── test_utils.py
+│   ├── test_security.py
+│   └── test_image_processing.py
+└── integration/         # Integration tests with mocked clients (12 tests)
+    ├── test_video_tools.py
+    ├── test_image_tools.py
+    └── test_reference_tools.py
+```
+
+**Style Notes:**
+- **NO `__init__.py` files in test directories** - tests are not a package
+- Use `@pytest.mark.unit` for unit tests (pure functions, no mocking)
+- Use `@pytest.mark.integration` for integration tests (mocked OpenAI client)
+- Use `pytest-mock` (mocker fixture) for all mocking
+- Ignore SIM117 in tests (nested `with` intentional for pytest.raises)
+
+**Running Tests:**
+```bash
+pytest                        # All tests
+pytest tests/unit -m unit     # Unit tests only (fast)
+pytest tests/integration      # Integration tests only
+pytest --cov=src              # With coverage report
+```
+
+**Coverage Goals:**
+- Pure functions: 100% (achieved)
+- Tools (business logic): 80%+ (achieved: 82-88%)
+- Overall: 65%+ (achieved)

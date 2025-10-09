@@ -8,7 +8,7 @@ This document outlines a plan to make the Sora MCP server fully asynchronous usi
 
 ### File I/O (Needs `aiofiles`)
 
-**`sora_create_video`**
+**`create_video`**
 ```python
 with open(reference_file, "rb") as f:
     video = await client.videos.create(..., input_reference=f)
@@ -16,7 +16,7 @@ with open(reference_file, "rb") as f:
 - Blocks on reading reference image from disk
 - Affects: Videos with reference images only
 
-**`sora_download`**
+**`download_video`**
 ```python
 content.write_to_file(str(out_path))
 ```
@@ -24,7 +24,7 @@ content.write_to_file(str(out_path))
 - Affects: All video downloads
 - Note: May need custom async wrapper since this is SDK code
 
-**`sora_prepare_reference`**
+**`prepare_reference_image`**
 ```python
 img = Image.open(input_path)
 # ... processing ...
@@ -33,7 +33,7 @@ img.save(output_path, "PNG")
 - Blocks on reading and writing image files
 - Affects: All image resize operations
 
-**`image_download`**
+**`download_image`**
 ```python
 with open(output_path, "wb") as f:
     f.write(image_bytes)
@@ -43,7 +43,7 @@ with open(output_path, "wb") as f:
 
 ### CPU-Bound Operations (Needs `anyio.to_thread`)
 
-**`sora_prepare_reference`**
+**`prepare_reference_image`**
 ```python
 img = Image.open(input_path)
 img = img.convert("RGB")
@@ -56,7 +56,7 @@ img.save(...)
 - Blocks event loop during resize/crop/convert operations
 - Affects: All image resize operations
 
-**`image_download`**
+**`download_image`**
 ```python
 image_bytes = base64.b64decode(image_base64)
 img = Image.open(output_path)  # for dimension checking
@@ -80,7 +80,7 @@ dependencies = [
 
 ### Refactoring Strategy
 
-#### 1. `sora_create_video` - Async Reference Image Reading
+#### 1. `create_video` - Async Reference Image Reading
 
 **Current:**
 ```python
@@ -100,7 +100,7 @@ async with aiofiles.open(reference_file, "rb") as f:
 
 ---
 
-#### 2. `sora_download` - Async Video Writing
+#### 2. `download_video` - Async Video Writing
 
 **Current:**
 ```python
@@ -123,13 +123,13 @@ await anyio.to_thread.run_sync(content.write_to_file, str(out_path))
 
 ---
 
-#### 3. `sora_prepare_reference` - Fully Async Image Processing
+#### 3. `prepare_reference_image` - Fully Async Image Processing
 
 **Current:** All synchronous PIL operations
 
 **Proposed:**
 ```python
-async def sora_prepare_reference(...) -> PrepareResult:
+async def prepare_reference_image(...) -> PrepareResult:
     reference_image_path = get_path("reference")
     # ... validation (still sync, fast) ...
 
@@ -171,7 +171,7 @@ async def sora_prepare_reference(...) -> PrepareResult:
 
 ---
 
-#### 4. `image_download` - Async Base64 + File Write
+#### 4. `download_image` - Async Base64 + File Write
 
 **Current:**
 ```python
@@ -211,9 +211,9 @@ size, output_format = await anyio.to_thread.run_sync(_get_dimensions)
 ```python
 # Should not block each other
 tasks = [
-    sora_prepare_reference("img1.png", "1280x720"),
-    sora_prepare_reference("img2.png", "1280x720"),
-    sora_prepare_reference("img3.png", "1280x720"),
+    prepare_reference_image("img1.png", "1280x720"),
+    prepare_reference_image("img2.png", "1280x720"),
+    prepare_reference_image("img3.png", "1280x720"),
 ]
 results = await asyncio.gather(*tasks)
 ```
@@ -222,9 +222,9 @@ results = await asyncio.gather(*tasks)
 ```python
 # Download multiple videos simultaneously
 tasks = [
-    sora_download(video_id_1),
-    sora_download(video_id_2),
-    sora_download(video_id_3),
+    download_video(video_id_1),
+    download_video(video_id_2),
+    download_video(video_id_3),
 ]
 results = await asyncio.gather(*tasks)
 ```
@@ -233,10 +233,10 @@ results = await asyncio.gather(*tasks)
 ```python
 # Image gen + video creation + downloads all at once
 tasks = [
-    image_create("prompt1"),
-    sora_create_video("prompt2"),
-    sora_download(completed_video_id),
-    sora_prepare_reference("ref.png", "1280x720"),
+    create_image("prompt1"),
+    create_video("prompt2"),
+    download_video(completed_video_id),
+    prepare_reference_image("ref.png", "1280x720"),
 ]
 results = await asyncio.gather(*tasks)
 ```
@@ -253,10 +253,10 @@ Before/after measurements:
 
 - [ ] Add `anyio>=4.0.0` to dependencies
 - [ ] Add `aiofiles>=24.0.0` to dependencies
-- [ ] Refactor `sora_create_video` reference image reading
-- [ ] Refactor `sora_download` file writing
-- [ ] Refactor `sora_prepare_reference` with thread pool
-- [ ] Refactor `image_download` base64 decode + file write
+- [ ] Refactor `create_video` reference image reading
+- [ ] Refactor `download_video` file writing
+- [ ] Refactor `prepare_reference_image` with thread pool
+- [ ] Refactor `download_image` base64 decode + file write
 - [ ] Update tests/smoke tests for concurrent operations
 - [ ] Benchmark before/after performance
 - [ ] Update documentation with concurrency notes
@@ -282,8 +282,8 @@ Before/after measurements:
 **Priority:** Medium-High
 
 The biggest wins will be:
-1. **`sora_prepare_reference`** - High CPU usage, frequently called
-2. **`image_download`** - Multiple users downloading images simultaneously
-3. **`sora_download`** - Large video files benefit from async writes
+1. **`prepare_reference_image`** - High CPU usage, frequently called
+2. **`download_image`** - Multiple users downloading images simultaneously
+3. **`download_video`** - Large video files benefit from async writes
 
-Start with `sora_prepare_reference` as it has the most blocking CPU work and is easiest to isolate.
+Start with `prepare_reference_image` as it has the most blocking CPU work and is easiest to isolate.
