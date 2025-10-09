@@ -124,7 +124,7 @@ class TestSafeOpenFile:
         """Test that missing files raise ValueError with context."""
         nonexistent = tmp_reference_path / "missing.txt"
 
-        with pytest.raises(ValueError, match="Test file not found: missing.txt"):
+        with pytest.raises(ValueError, match="test file not found: missing.txt"):
             with safe_open_file(nonexistent, "rb", "test file"):
                 pass
 
@@ -152,9 +152,11 @@ class TestSafeOpenFile:
             content = f.read()
             assert content == b"symlink target content"
 
+    @pytest.mark.skip(reason="Platform-dependent: cannot reliably trigger PermissionError in tests")
     def test_permission_error_handling(self, tmp_reference_path):
-        """Test that permission errors are handled gracefully."""
-        # This test is platform-dependent and may not work everywhere
-        # On most systems, we can't easily trigger PermissionError in tests
-        # So we'll skip detailed permission testing here
+        """Test that permission errors are handled gracefully.
+
+        Note: Permission error handling is tested manually on real systems.
+        Difficult to test reliably across platforms (Unix vs Windows, container environments).
+        """
         pass

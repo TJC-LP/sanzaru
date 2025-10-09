@@ -10,7 +10,7 @@ This module provides reusable functions to prevent common security issues:
 import pathlib
 from collections.abc import Iterator
 from contextlib import contextmanager
-from typing import BinaryIO
+from typing import IO, Any
 
 
 def validate_safe_path(base_path: pathlib.Path, filename: str, *, allow_create: bool = False) -> pathlib.Path:
@@ -74,7 +74,7 @@ def check_not_symlink(path: pathlib.Path, error_context: str) -> None:
 @contextmanager
 def safe_open_file(
     path: pathlib.Path, mode: str, error_context: str, *, check_symlink: bool = True
-) -> Iterator[BinaryIO]:
+) -> Iterator[IO[Any]]:
     """Context manager for safe file operations with standardized error handling.
 
     Provides consistent error messages across the codebase and handles common failure modes.
@@ -93,13 +93,13 @@ def safe_open_file(
     """
     # Security check: prevent symlink exploitation
     if check_symlink:
-        check_not_symlink(path, error_context.capitalize())
+        check_not_symlink(path, error_context)
 
     try:
         with open(path, mode) as f:
             yield f
     except FileNotFoundError as e:
-        raise ValueError(f"{error_context.capitalize()} not found: {path.name}") from e
+        raise ValueError(f"{error_context} not found: {path.name}") from e
     except PermissionError as e:
         action = "reading" if "r" in mode else "writing"
         raise ValueError(f"Permission denied {action} {error_context}: {path.name}") from e

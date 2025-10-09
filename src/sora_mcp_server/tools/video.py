@@ -152,6 +152,7 @@ async def list_videos(limit: int = 20, after: str | None = None, order: Literal[
         RuntimeError: If OPENAI_API_KEY not set
     """
     client = get_client()
+    # Convert None to omit for OpenAI SDK (omit = field not sent in API request)
     after_param: str | Omit = omit if after is None else after
     page = await client.videos.list(limit=limit, after=after_param, order=order)
     items: list[VideoSummary] = []
