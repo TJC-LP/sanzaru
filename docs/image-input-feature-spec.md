@@ -964,6 +964,192 @@ See [OpenAI Vision Guide](https://platform.openai.com/docs/guides/vision/calcula
 3. Use `input_fidelity="low"` unless faces/logos critical
 4. Batch workflows to minimize API calls
 
+## Environment Variable Rename: `SORA_REFERENCE_PATH` → `REFERENCE_IMAGE_PATH`
+
+### Motivation
+
+The current `SORA_REFERENCE_PATH` environment variable name implies the directory is Sora-specific, but with the image input feature, this directory will be used for:
+1. **User-provided reference images** for `create_image` tool
+2. **Downloaded generated images** from `download_image`
+3. **Reference images for Sora videos** (existing use case)
+
+The new name `REFERENCE_IMAGE_PATH` better reflects that this is a general-purpose directory for all reference images, not just Sora-specific content.
+
+### Changes Required
+
+**Total Impact:** 64+ occurrences across 23 files
+**Complexity:** Medium (mostly mechanical string replacements)
+**Breaking Change:** Yes - users must update their `.env` files
+
+#### Critical Code Changes (7 locations)
+
+1. **`src/sora_mcp_server/config.py`** (lines 70-71)
+   ```python
+   # OLD
+   path_str = os.getenv("SORA_REFERENCE_PATH")
+   env_var = "SORA_REFERENCE_PATH"
+
+   # NEW
+   path_str = os.getenv("REFERENCE_IMAGE_PATH")
+   env_var = "REFERENCE_IMAGE_PATH"
+   ```
+
+2. **`setup.sh`** (line 102)
+   ```bash
+   # OLD
+   SORA_REFERENCE_PATH="$REFERENCE_PATH"
+
+   # NEW
+   REFERENCE_IMAGE_PATH="$REFERENCE_PATH"
+   ```
+
+3. **`tests/unit/test_config.py`** (4 locations)
+   - Update mock env var patches: `{"SORA_REFERENCE_PATH": ...}` → `{"REFERENCE_IMAGE_PATH": ...}`
+   - Update error message assertions: `"SORA_REFERENCE_PATH"` → `"REFERENCE_IMAGE_PATH"`
+
+#### Documentation Updates (52+ locations)
+
+- **Tool descriptions** (5 files in `descriptions.py`): Update all mentions
+- **User documentation** (README.md, CLAUDE.md, AGENTS.md): ~25 references
+- **Specifications** (testing-plan.md, this file): ~15 references
+- **Comments and docstrings** (tools/*.py): ~10 references
+
+#### Configuration Files (3 locations)
+
+- **`.env.example`**: Update example env var name
+- **`.gitignore`**: Keep `sora-references/` directory pattern (see below)
+- **`setup.sh`**: Update generated `.env` file
+
+### Design Decisions
+
+#### Default Directory Name: Keep `sora-references/`
+
+**Decision:** Keep the default directory name as `sora-references/` for backward compatibility.
+
+**Rationale:**
+- Existing users don't need to rename their directories
+- Only the *environment variable name* changes
+- Git ignore patterns remain valid
+- Less disruptive migration path
+
+**Example `.env` after change:**
+```bash
+REFERENCE_IMAGE_PATH="/absolute/path/to/sora-references"
+```
+
+#### Internal API: Keep `get_path("reference")`
+
+**Decision:** Keep the internal API parameter as `"reference"` (not `"reference_image"`).
+
+**Rationale:**
+- Shorter, cleaner API
+- Less code churn (12+ call sites unchanged)
+- Internal abstraction doesn't need to match env var name exactly
+
+### Migration Guide for Users
+
+**Breaking Change Notice:**
+```markdown
+## Breaking Change: Environment Variable Renamed
+
+**OLD:** `SORA_REFERENCE_PATH`
+**NEW:** `REFERENCE_IMAGE_PATH`
+
+### Action Required
+
+1. **Update your `.env` file:**
+   ```diff
+   - SORA_REFERENCE_PATH="/path/to/sora-references"
+   + REFERENCE_IMAGE_PATH="/path/to/sora-references"
+   ```
+
+2. **No directory rename needed:**
+   - You can keep your `sora-references/` directory
+   - Only the environment variable name changed
+
+3. **Restart the MCP server** after updating `.env`
+
+### Why This Change?
+
+Better reflects that this directory is for all reference images (including
+user-provided images for the new image input feature), not just Sora-specific content.
+```
+
+### Implementation Checklist
+
+**Phase 1: Code Changes**
+- [ ] Update `config.py` lines 70-71 (env var name)
+- [ ] Update `setup.sh` line 102 (generated .env file)
+- [ ] Update all 5 tool descriptions in `descriptions.py`
+- [ ] Update all docstrings in tools/*.py (4 files, ~10 locations)
+- [ ] Update test mocks in `test_config.py` (4 locations)
+- [ ] Update test assertions in `test_config.py` (1 error message)
+
+**Phase 2: Configuration**
+- [ ] Update `.env.example` line 3
+- [ ] Verify `.gitignore` keeps `sora-references/` pattern
+- [ ] Test `setup.sh` generates correct `.env`
+
+**Phase 3: Documentation**
+- [ ] Update README.md (~7 occurrences)
+- [ ] Update CLAUDE.md (~3 occurrences)
+- [ ] Update AGENTS.md (~4 occurrences)
+- [ ] Update docs/testing-plan.md (~7 occurrences)
+- [ ] Update this spec (~7+ occurrences)
+- [ ] Add migration section to README
+
+**Phase 4: Testing**
+- [ ] Run full test suite: `pytest`
+- [ ] Verify `get_path("reference")` still works
+- [ ] Test setup.sh generates correct .env
+- [ ] Test error messages display new env var name
+- [ ] Manual smoke test with actual server
+
+### Testing Requirements
+
+```bash
+# Automated tests
+pytest tests/unit/test_config.py::TestGetPath::test_get_path_reference_valid
+pytest tests/unit/test_config.py::TestGetPath::test_missing_reference_path_error
+pytest tests/integration -v
+
+# Manual verification
+./setup.sh  # Verify .env contains REFERENCE_IMAGE_PATH
+uv run sora-mcp-server  # Test server starts correctly
+```
+
+### Risk Assessment
+
+**Low Risk:**
+- Documentation updates (can't break functionality)
+- Docstring updates (don't affect runtime)
+
+**Medium Risk:**
+- Env var name change in `config.py` (core functionality)
+  - **Mitigation:** Comprehensive test coverage exists
+- Setup script change (affects new installations)
+  - **Mitigation:** Test script manually before release
+
+**User Impact:**
+- **Breaking change** for existing installations
+  - **Mitigation:** Clear migration docs, prominent release notes
+
+### Estimated Effort
+
+- **Code changes:** 2 hours
+- **Testing:** 1 hour
+- **Total:** 3 hours
+
+### Recommendation
+
+✅ **Implement alongside image input feature in the same PR**
+
+**Rationale:**
+1. Both changes relate to reference images
+2. Semantic improvement makes more sense with image input feature
+3. Single migration point for users (update once for both features)
+4. Clear narrative: "Expanding reference images beyond Sora"
+
 ## Future Enhancements
 
 ### Phase 2: File ID Support
