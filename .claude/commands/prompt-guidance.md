@@ -1,1 +1,1 @@
-Read the entirety of @docs/sora2-prompting-guide and await further instruction.
+Read the entirety of @docs/sora2-prompting-guide.md and await further instruction.
