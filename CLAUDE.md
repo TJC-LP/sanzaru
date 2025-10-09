@@ -34,12 +34,12 @@ claude  # in this directory with .mcp.json configured
 ### Single-file Server Design
 All MCP tools are defined in `src/sora_mcp_server/server.py` using FastMCP decorators. The server is intentionally simple and stateless.
 
-### Global Path Configuration
-Two global Path variables initialized at startup from environment:
-- `VIDEO_DOWNLOAD_PATH`: Where Sora videos are saved
-- `REFERENCE_IMAGE_PATH`: Sandboxed directory for reference images
+### Runtime Path Configuration
+Paths are validated lazily via the `get_path()` function when tools are called:
+- `get_path("video")`: Returns validated SORA_VIDEO_PATH for video downloads
+- `get_path("reference")`: Returns validated SORA_REFERENCE_PATH for reference images
 
-Both are validated on server start and must exist.
+Both environment variables are required (no defaults). Paths are cached with `@lru_cache` for performance.
 
 ### Two API Integration Patterns
 
@@ -57,13 +57,19 @@ Both are validated on server start and must exist.
 - Base64-encoded image in `ImageGenerationCall.result`
 
 ### Security Model
-All reference image operations use path traversal protection:
+All file operations use path traversal protection:
 ```python
-file_path = REFERENCE_IMAGE_PATH / user_filename
+base_path = get_path("reference")  # or get_path("video")
+file_path = base_path / user_filename
 file_path = file_path.resolve()
-if not str(file_path).startswith(str(REFERENCE_IMAGE_PATH)):
+if not str(file_path).startswith(str(base_path)):
     raise ValueError("path traversal detected")
 ```
+
+Additional security:
+- Symlinks rejected in environment variable paths (`get_path()` validation)
+- Empty/whitespace-only env vars rejected
+- User filenames validated against allowed extensions where applicable
 
 ## Prompting Sora with Reference Images
 

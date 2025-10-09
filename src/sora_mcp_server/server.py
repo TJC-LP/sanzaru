@@ -133,14 +133,20 @@ def get_path(path_type: Literal["video", "reference"]) -> pathlib.Path:
     if not path_str or not path_str.strip():
         raise RuntimeError(f"{env_var} environment variable is not set or is empty")
 
-    # Strip whitespace and resolve path
-    path = pathlib.Path(path_str.strip()).resolve()
+    # Strip whitespace and resolve path with error handling
+    try:
+        path = pathlib.Path(path_str.strip()).resolve()
+    except (ValueError, OSError) as e:
+        raise RuntimeError(f"Invalid {error_name} path '{path_str}': {e}") from e
 
     # Security: Reject symlinks in configured paths (env vars only, not user filenames)
     # Check the original path before resolution to catch symlinks
     original_path = pathlib.Path(path_str.strip())
-    if original_path.exists() and original_path.is_symlink():
-        raise RuntimeError(f"{error_name} cannot be a symbolic link: {path_str}")
+    try:
+        if original_path.exists() and original_path.is_symlink():
+            raise RuntimeError(f"{error_name} cannot be a symbolic link: {path_str}")
+    except PermissionError as e:
+        raise RuntimeError(f"Cannot validate {error_name}: permission denied for {path_str}") from e
 
     # Validate path exists and is a directory
     if not path.exists():
@@ -216,24 +222,31 @@ async def sora_create_video(
         if not str(reference_file).startswith(str(reference_image_path)):
             raise ValueError("Invalid reference filename: path traversal detected")
 
-        # Validate file exists
-        if not reference_file.exists():
-            raise ValueError(f"Reference image not found: {input_reference_filename}")
+        # Security: prevent symlink exploitation
+        if reference_file.exists() and reference_file.is_symlink():
+            raise ValueError(f"Reference image cannot be a symbolic link: {input_reference_filename}")
 
         # Validate file extension (Sora supports JPEG, PNG, WEBP)
         allowed_extensions = {".jpg", ".jpeg", ".png", ".webp"}
         if reference_file.suffix.lower() not in allowed_extensions:
             raise ValueError(f"Unsupported file type: {reference_file.suffix}. Use: JPEG, PNG, or WEBP")
 
-        # Sora expects the input reference to match the target video size.
-        with open(reference_file, "rb") as f:
-            video = await client.videos.create(
-                model=model,
-                prompt=prompt,
-                seconds=seconds_param,
-                size=size_param,
-                input_reference=f,
-            )
+        # Open and send reference image (TOCTOU-safe: open directly, handle errors)
+        try:
+            with open(reference_file, "rb") as f:
+                video = await client.videos.create(
+                    model=model,
+                    prompt=prompt,
+                    seconds=seconds_param,
+                    size=size_param,
+                    input_reference=f,
+                )
+        except FileNotFoundError as e:
+            raise ValueError(f"Reference image not found: {input_reference_filename}") from e
+        except PermissionError as e:
+            raise ValueError(f"Permission denied reading reference image: {input_reference_filename}") from e
+        except OSError as e:
+            raise ValueError(f"Error reading reference image: {e}") from e
         logger.info("Started job %s (%s) with reference: %s", video.id, video.status, input_reference_filename)
     else:
         video = await client.videos.create(
@@ -632,9 +645,9 @@ async def sora_prepare_reference(
     if not str(input_path).startswith(str(reference_image_path)):
         raise ValueError("Invalid input filename: path traversal detected")
 
-    # Validate input file exists
-    if not input_path.exists():
-        raise ValueError(f"Input image not found: {input_filename}")
+    # Security: prevent symlink exploitation
+    if input_path.exists() and input_path.is_symlink():
+        raise ValueError(f"Input image cannot be a symbolic link: {input_filename}")
 
     # Parse target dimensions from VideoSize string (e.g., "1280x720" -> (1280, 720))
     width_str, height_str = target_size.split("x")
@@ -653,9 +666,16 @@ async def sora_prepare_reference(
     if not str(output_path).startswith(str(reference_image_path)):
         raise ValueError("Invalid output filename: path traversal detected")
 
-    # Load image with Pillow
-    img = Image.open(input_path)
-    original_size = img.size  # (width, height)
+    # Load image with Pillow (TOCTOU-safe: handle file errors gracefully)
+    try:
+        img = Image.open(input_path)
+        original_size = img.size  # (width, height)
+    except FileNotFoundError as e:
+        raise ValueError(f"Input image not found: {input_filename}") from e
+    except PermissionError as e:
+        raise ValueError(f"Permission denied reading input image: {input_filename}") from e
+    except OSError as e:
+        raise ValueError(f"Error reading input image: {e}") from e
 
     # Convert to RGB if necessary (handles RGBA, grayscale, etc.)
     if img.mode != "RGB":
@@ -702,8 +722,14 @@ async def sora_prepare_reference(
         # Simple stretch/squash to exact dimensions (may distort)
         img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
 
-    # Save as PNG
-    img.save(output_path, "PNG")
+    # Save as PNG with error handling
+    try:
+        img.save(output_path, "PNG")
+    except PermissionError as e:
+        raise ValueError(f"Permission denied writing output image: {output_filename}") from e
+    except OSError as e:
+        raise ValueError(f"Error writing output image: {e}") from e
+
     logger.info(
         "Prepared reference: %s -> %s (%s, %dx%d -> %dx%d)",
         input_filename,
@@ -920,14 +946,22 @@ async def image_download(
     if not str(output_path).startswith(str(reference_image_path)):
         raise ValueError("Invalid filename: path traversal detected")
 
-    # Write image to disk
-    with open(output_path, "wb") as f:
-        f.write(image_bytes)
+    # Write image to disk with error handling
+    try:
+        with open(output_path, "wb") as f:
+            f.write(image_bytes)
+    except PermissionError as e:
+        raise ValueError(f"Permission denied writing image: {filename}") from e
+    except OSError as e:
+        raise ValueError(f"Error writing image: {e}") from e
 
     # Get image dimensions using PIL
-    img = Image.open(output_path)
-    size = img.size  # (width, height)
-    output_format = img.format.lower() if img.format else "unknown"
+    try:
+        img = Image.open(output_path)
+        size = img.size  # (width, height)
+        output_format = img.format.lower() if img.format else "unknown"
+    except OSError as e:
+        raise ValueError(f"Error reading saved image dimensions: {e}") from e
 
     logger.info("Downloaded image %s to %s (%dx%d, %s)", response_id, filename, size[0], size[1], output_format)
 
