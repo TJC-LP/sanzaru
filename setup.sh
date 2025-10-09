@@ -111,7 +111,7 @@ echo "============================================"
 
 # Run uv sync
 if command -v uv &> /dev/null; then
-    uv sync
+    uv sync --dev
     echo "✓ Dependencies installed"
 else
     echo "⚠️  'uv' command not found. Please install uv and run 'uv sync' manually."
