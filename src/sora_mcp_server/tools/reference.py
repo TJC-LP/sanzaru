@@ -17,6 +17,155 @@ from ..config import get_path, logger
 from ..security import validate_safe_path
 from ..types import PrepareResult, ReferenceImage
 
+# ==================== Helper Functions for Image Processing ====================
+
+
+def parse_video_dimensions(size: VideoSize) -> tuple[int, int]:
+    """Parse VideoSize string to width/height tuple.
+
+    Args:
+        size: VideoSize string like "1280x720"
+
+    Returns:
+        Tuple of (width, height)
+
+    Example:
+        >>> parse_video_dimensions("1920x1080")
+        (1920, 1080)
+    """
+    width_str, height_str = size.split("x")
+    return int(width_str), int(height_str)
+
+
+def load_and_convert_image(path: pathlib.Path, filename: str) -> Image.Image:
+    """Load image and convert to RGB if needed.
+
+    Args:
+        path: Path to image file
+        filename: Original filename for error messages
+
+    Returns:
+        PIL Image in RGB mode
+
+    Raises:
+        ValueError: If file can't be loaded
+    """
+    try:
+        img = Image.open(path)
+        if img.mode != "RGB":
+            img = img.convert("RGB")
+        return img
+    except FileNotFoundError as e:
+        raise ValueError(f"Input image not found: {filename}") from e
+    except PermissionError as e:
+        raise ValueError(f"Permission denied reading input image: {filename}") from e
+    except OSError as e:
+        raise ValueError(f"Error reading input image: {e}") from e
+
+
+def resize_crop(img: Image.Image, target_width: int, target_height: int) -> Image.Image:
+    """Resize image using crop strategy (cover target, center crop excess).
+
+    This strategy scales the image to cover the target dimensions completely,
+    then crops the excess from the center. No distortion occurs, but edges may be lost.
+
+    Args:
+        img: Source PIL Image
+        target_width: Target width in pixels
+        target_height: Target height in pixels
+
+    Returns:
+        Resized and cropped PIL Image
+    """
+    img_ratio = img.width / img.height
+    target_ratio = target_width / target_height
+
+    if img_ratio > target_ratio:
+        # Image is wider than target - fit height, crop width
+        new_height = target_height
+        new_width = int(img.width * (target_height / img.height))
+    else:
+        # Image is taller than target - fit width, crop height
+        new_width = target_width
+        new_height = int(img.height * (target_width / img.width))
+
+    # Resize
+    img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
+
+    # Center crop
+    left = (new_width - target_width) // 2
+    top = (new_height - target_height) // 2
+    right = left + target_width
+    bottom = top + target_height
+    return img.crop((left, top, right, bottom))
+
+
+def resize_pad(img: Image.Image, target_width: int, target_height: int) -> Image.Image:
+    """Resize image using pad strategy (fit inside, add black bars).
+
+    This strategy scales the image to fit inside the target dimensions,
+    then adds black letterbox bars. No distortion occurs, full image is preserved.
+
+    Args:
+        img: Source PIL Image
+        target_width: Target width in pixels
+        target_height: Target height in pixels
+
+    Returns:
+        Resized and padded PIL Image
+    """
+    img.thumbnail((target_width, target_height), Image.Resampling.LANCZOS)
+
+    result = Image.new("RGB", (target_width, target_height), (0, 0, 0))
+    paste_x = (target_width - img.width) // 2
+    paste_y = (target_height - img.height) // 2
+    result.paste(img, (paste_x, paste_y))
+    return result
+
+
+def resize_rescale(img: Image.Image, target_width: int, target_height: int) -> Image.Image:
+    """Resize image using rescale strategy (stretch to exact dimensions).
+
+    This strategy stretches or squashes the image to exactly match the target dimensions.
+    May cause distortion if aspect ratios don't match.
+
+    Args:
+        img: Source PIL Image
+        target_width: Target width in pixels
+        target_height: Target height in pixels
+
+    Returns:
+        Resized PIL Image
+    """
+    return img.resize((target_width, target_height), Image.Resampling.LANCZOS)
+
+
+def save_image(img: Image.Image, path: pathlib.Path, filename: str) -> None:
+    """Save PIL Image to disk as PNG.
+
+    Args:
+        img: PIL Image to save
+        path: Destination path
+        filename: Original filename for error messages
+
+    Raises:
+        ValueError: If save fails
+    """
+    try:
+        img.save(path, "PNG")
+    except PermissionError as e:
+        raise ValueError(f"Permission denied writing output image: {filename}") from e
+    except OSError as e:
+        raise ValueError(f"Error writing output image: {e}") from e
+
+
+# Mapping of resize mode strings to functions
+RESIZE_STRATEGIES = {
+    "crop": resize_crop,
+    "pad": resize_pad,
+    "rescale": resize_rescale,
+}
+
 
 async def sora_list_references(
     pattern: str | None = None,
@@ -120,84 +269,26 @@ async def sora_prepare_reference(
     """
     reference_image_path = get_path("reference")
 
-    # Security: validate input filename and construct safe path
+    # Validate paths
     input_path = validate_safe_path(reference_image_path, input_filename)
+    target_width, target_height = parse_video_dimensions(target_size)
 
-    # Parse target dimensions from VideoSize string (e.g., "1280x720" -> (1280, 720))
-    width_str, height_str = target_size.split("x")
-    target_width, target_height = int(width_str), int(height_str)
-
-    # Generate output filename if not provided
+    # Generate output filename if needed
     if output_filename is None:
-        input_stem = input_path.stem
-        output_filename = f"{input_stem}_{target_size}.png"
+        output_filename = f"{input_path.stem}_{target_size}.png"
 
-    # Security: validate output filename and construct safe path
     output_path = validate_safe_path(reference_image_path, output_filename, allow_create=True)
 
-    # Load image with Pillow
-    try:
-        img = Image.open(input_path)
-        original_size = img.size  # (width, height)
-    except FileNotFoundError as e:
-        raise ValueError(f"Input image not found: {input_filename}") from e
-    except PermissionError as e:
-        raise ValueError(f"Permission denied reading input image: {input_filename}") from e
-    except OSError as e:
-        raise ValueError(f"Error reading input image: {e}") from e
+    # Load and process image
+    img = load_and_convert_image(input_path, input_filename)
+    original_size = img.size
 
-    # Convert to RGB if necessary (handles RGBA, grayscale, etc.)
-    if img.mode != "RGB":
-        img = img.convert("RGB")
+    # Apply resize strategy
+    resize_fn = RESIZE_STRATEGIES[resize_mode]
+    img = resize_fn(img, target_width, target_height)
 
-    # Resize based on mode
-    if resize_mode == "crop":
-        # Scale to cover target dimensions, then center crop
-        img_ratio = img.width / img.height
-        target_ratio = target_width / target_height
-
-        if img_ratio > target_ratio:
-            # Image is wider than target - fit height, crop width
-            new_height = target_height
-            new_width = int(img.width * (target_height / img.height))
-        else:
-            # Image is taller than target - fit width, crop height
-            new_width = target_width
-            new_height = int(img.height * (target_width / img.width))
-
-        # Resize
-        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-
-        # Center crop
-        left = (new_width - target_width) // 2
-        top = (new_height - target_height) // 2
-        right = left + target_width
-        bottom = top + target_height
-        img = img.crop((left, top, right, bottom))
-
-    elif resize_mode == "pad":
-        # Scale to fit inside target dimensions, then pad with black bars
-        img.thumbnail((target_width, target_height), Image.Resampling.LANCZOS)
-
-        # Create black background
-        result = Image.new("RGB", (target_width, target_height), (0, 0, 0))
-
-        # Paste resized image centered
-        paste_x = (target_width - img.width) // 2
-        paste_y = (target_height - img.height) // 2
-        result.paste(img, (paste_x, paste_y))
-        img = result
-    else:  # resize_mode == "rescale"
-        # Simple stretch/squash to exact dimensions (may distort)
-        img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
-
-    # Save as PNG with error handling
-    try:
-        img.save(output_path, "PNG")
-    except PermissionError as e:
-        raise ValueError(f"Permission denied writing output image: {output_filename}") from e
-    except OSError as e:
-        raise ValueError(f"Error writing output image: {e}") from e
+    # Save result
+    save_image(img, output_path, output_filename)
 
     logger.info(
         "Prepared reference: %s -> %s (%s, %dx%d -> %dx%d)",
