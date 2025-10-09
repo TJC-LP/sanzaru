@@ -109,6 +109,8 @@ def get_path(path_type: Literal["video", "reference"]) -> pathlib.Path:
     Requires explicit environment variable configuration - no defaults.
     Creates paths lazily at runtime, so this works with both `uv run` and `mcp run`.
 
+    Security: Rejects symlinks in environment variable paths to prevent directory traversal.
+
     Args:
         path_type: Either "video" for SORA_VIDEO_PATH or "reference" for SORA_REFERENCE_PATH
 
@@ -116,7 +118,7 @@ def get_path(path_type: Literal["video", "reference"]) -> pathlib.Path:
         Validated absolute path
 
     Raises:
-        RuntimeError: If environment variable not set, path doesn't exist, or isn't a directory
+        RuntimeError: If environment variable not set, malformed, path doesn't exist, isn't a directory, or is a symlink
     """
     if path_type == "video":
         path_str = os.getenv("SORA_VIDEO_PATH")
@@ -127,10 +129,20 @@ def get_path(path_type: Literal["video", "reference"]) -> pathlib.Path:
         env_var = "SORA_REFERENCE_PATH"
         error_name = "Reference image directory"
 
-    if not path_str:
-        raise RuntimeError(f"{env_var} environment variable is not set")
+    # Validate env var is set and not empty/whitespace
+    if not path_str or not path_str.strip():
+        raise RuntimeError(f"{env_var} environment variable is not set or is empty")
 
-    path = pathlib.Path(path_str).resolve()
+    # Strip whitespace and resolve path
+    path = pathlib.Path(path_str.strip()).resolve()
+
+    # Security: Reject symlinks in configured paths (env vars only, not user filenames)
+    # Check the original path before resolution to catch symlinks
+    original_path = pathlib.Path(path_str.strip())
+    if original_path.exists() and original_path.is_symlink():
+        raise RuntimeError(f"{error_name} cannot be a symbolic link: {path_str}")
+
+    # Validate path exists and is a directory
     if not path.exists():
         raise RuntimeError(f"{error_name} does not exist: {path}")
     if not path.is_dir():
