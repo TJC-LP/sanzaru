@@ -42,6 +42,21 @@ A **stateless**, lightweight **FastMCP** server that wraps the **OpenAI Sora Vid
 
 That's it! Claude Code will automatically connect to the Sora MCP server and you can start generating videos.
 
+## Alternative Installation Methods
+
+**Claude Desktop:**
+```bash
+# From the repo root
+mcp install src/sora_mcp_server/server.py --env-file .env --with-editable "$(pwd)"
+```
+
+**Codex MCP Setup:**
+```bash
+# From the repo root
+codex mcp add sora-mcp-server -- uv run --directory "$(pwd)" sora-mcp-server
+```
+Ensure your `.env` is configured or relevant env vars are exported before starting.
+
 ## Manual Installation (without Claude Code)
 
 If you want to run the server manually or integrate it with other MCP clients:
@@ -57,11 +72,7 @@ export SORA_REFERENCE_PATH=~/sora-references
 uv run sora-mcp-server
 ```
 
-**Defaults:**
-- `SORA_VIDEO_PATH` defaults to `./sora-videos`
-- `SORA_REFERENCE_PATH` defaults to `./sora-references`
-
-Both directories must exist before starting the server.
+**Important:** Both `SORA_VIDEO_PATH` and `SORA_REFERENCE_PATH` environment variables are required. The directories must exist before starting the server.
 
 ## MCP Tools
 
@@ -92,6 +103,9 @@ This runs an MCP server over stdio that exposes these tools:
 - `sora_prepare_reference(input_filename, target_size, output_filename?, resize_mode="crop")` - Resize images to match Sora dimensions
 
 > **Note:** To wait for completion, poll `sora_get_status` or `image_get_status` periodically rather than blocking. This keeps the LLM session responsive.
+
+## Prompting Guide
+For practical tips and examples to craft effective Sora prompts, see `docs/sora2-prompting-guide.md`.
 
 ## Download variants
 - `variant="video"` → `mp4`
@@ -163,4 +177,4 @@ Generate a reference image and create a video from it:
 - Videos are automatically saved to `SORA_VIDEO_PATH` when downloaded
 
 ## License
-MIT
+[MIT](LICENSE)

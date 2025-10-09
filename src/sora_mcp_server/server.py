@@ -3,15 +3,19 @@ import logging
 import os
 import pathlib
 import sys
+from functools import lru_cache
 from typing import Literal, TypedDict
 
+from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from openai import AsyncOpenAI
 from openai._types import Omit, omit
 from openai.types import Video, VideoDeleteResponse, VideoModel, VideoSeconds, VideoSize
-from openai.types.responses import Response
 from openai.types.responses.response_output_item import ImageGenerationCall
 from PIL import Image
+
+# Load environment variables for mcp run compatibility
+load_dotenv()
 
 
 # ---------- TypedDict definitions ----------
@@ -97,14 +101,64 @@ def get_client() -> AsyncOpenAI:
     return AsyncOpenAI(api_key=api_key)
 
 
+# ---------- Path configuration (runtime) ----------
+@lru_cache(maxsize=2)
+def get_path(path_type: Literal["video", "reference"]) -> pathlib.Path:
+    """Get and validate a configured path from environment.
+
+    Requires explicit environment variable configuration - no defaults.
+    Creates paths lazily at runtime, so this works with both `uv run` and `mcp run`.
+
+    Security: Rejects symlinks in environment variable paths to prevent directory traversal.
+
+    Args:
+        path_type: Either "video" for SORA_VIDEO_PATH or "reference" for SORA_REFERENCE_PATH
+
+    Returns:
+        Validated absolute path
+
+    Raises:
+        RuntimeError: If environment variable not set, malformed, path doesn't exist, isn't a directory, or is a symlink
+    """
+    if path_type == "video":
+        path_str = os.getenv("SORA_VIDEO_PATH")
+        env_var = "SORA_VIDEO_PATH"
+        error_name = "Video download directory"
+    else:  # reference
+        path_str = os.getenv("SORA_REFERENCE_PATH")
+        env_var = "SORA_REFERENCE_PATH"
+        error_name = "Reference image directory"
+
+    # Validate env var is set and not empty/whitespace
+    if not path_str or not path_str.strip():
+        raise RuntimeError(f"{env_var} environment variable is not set or is empty")
+
+    # Strip whitespace and resolve path with error handling
+    try:
+        path = pathlib.Path(path_str.strip()).resolve()
+    except (ValueError, OSError) as e:
+        raise RuntimeError(f"Invalid {error_name} path '{path_str}': {e}") from e
+
+    # Security: Reject symlinks in configured paths (env vars only, not user filenames)
+    # Check the original path before resolution to catch symlinks
+    original_path = pathlib.Path(path_str.strip())
+    try:
+        if original_path.exists() and original_path.is_symlink():
+            raise RuntimeError(f"{error_name} cannot be a symbolic link: {path_str}")
+    except PermissionError as e:
+        raise RuntimeError(f"Cannot validate {error_name}: permission denied for {path_str}") from e
+
+    # Validate path exists and is a directory
+    if not path.exists():
+        raise RuntimeError(f"{error_name} does not exist: {path}")
+    if not path.is_dir():
+        raise RuntimeError(f"{error_name} is not a directory: {path}")
+
+    return path
+
+
 # ---------- MCP server ----------
-mcp = FastMCP("Sora MCP")
-
-# ---------- Global video download path ----------
-VIDEO_DOWNLOAD_PATH: pathlib.Path | None = None
-
-# ---------- Global reference image path ----------
-REFERENCE_IMAGE_PATH: pathlib.Path | None = None
+mcp = FastMCP("Sora")
 
 
 def _suffix_for_variant(variant: str) -> str:
@@ -147,12 +201,9 @@ async def sora_create_video(
         Video object with job details (id, status, progress)
 
     Raises:
-        RuntimeError: If OPENAI_API_KEY not set or REFERENCE_IMAGE_PATH not initialized
+        RuntimeError: If OPENAI_API_KEY not set or SORA_REFERENCE_PATH not configured
         ValueError: If reference image invalid or path traversal detected
     """
-    if REFERENCE_IMAGE_PATH is None:
-        raise RuntimeError("REFERENCE_IMAGE_PATH not initialized")
-
     client = get_client()
 
     # Convert None to omit for OpenAI SDK
@@ -160,32 +211,42 @@ async def sora_create_video(
     size_param = omit if size is None else size
 
     if input_reference_filename:
+        # Get reference image path at runtime
+        reference_image_path = get_path("reference")
+
         # Security: validate filename and construct safe path
-        reference_file = REFERENCE_IMAGE_PATH / input_reference_filename
+        reference_file = reference_image_path / input_reference_filename
         reference_file = reference_file.resolve()
 
-        # Security: prevent path traversal - ensure resolved path is within REFERENCE_IMAGE_PATH
-        if not str(reference_file).startswith(str(REFERENCE_IMAGE_PATH)):
+        # Security: prevent path traversal - ensure resolved path is within reference_image_path
+        if not str(reference_file).startswith(str(reference_image_path)):
             raise ValueError("Invalid reference filename: path traversal detected")
 
-        # Validate file exists
-        if not reference_file.exists():
-            raise ValueError(f"Reference image not found: {input_reference_filename}")
+        # Security: prevent symlink exploitation
+        if reference_file.exists() and reference_file.is_symlink():
+            raise ValueError(f"Reference image cannot be a symbolic link: {input_reference_filename}")
 
         # Validate file extension (Sora supports JPEG, PNG, WEBP)
         allowed_extensions = {".jpg", ".jpeg", ".png", ".webp"}
         if reference_file.suffix.lower() not in allowed_extensions:
             raise ValueError(f"Unsupported file type: {reference_file.suffix}. Use: JPEG, PNG, or WEBP")
 
-        # Sora expects the input reference to match the target video size.
-        with open(reference_file, "rb") as f:
-            video = await client.videos.create(
-                model=model,
-                prompt=prompt,
-                seconds=seconds_param,
-                size=size_param,
-                input_reference=f,
-            )
+        # Open and send reference image (TOCTOU-safe: open directly, handle errors)
+        try:
+            with open(reference_file, "rb") as f:
+                video = await client.videos.create(
+                    model=model,
+                    prompt=prompt,
+                    seconds=seconds_param,
+                    size=size_param,
+                    input_reference=f,
+                )
+        except FileNotFoundError as e:
+            raise ValueError(f"Reference image not found: {input_reference_filename}") from e
+        except PermissionError as e:
+            raise ValueError(f"Permission denied reading reference image: {input_reference_filename}") from e
+        except OSError as e:
+            raise ValueError(f"Error reading reference image: {e}") from e
         logger.info("Started job %s (%s) with reference: %s", video.id, video.status, input_reference_filename)
     else:
         video = await client.videos.create(
@@ -273,11 +334,10 @@ async def sora_download(
         DownloadResult with filename, absolute path, and variant
 
     Raises:
-        RuntimeError: If VIDEO_DOWNLOAD_PATH not initialized or OPENAI_API_KEY not set
+        RuntimeError: If SORA_VIDEO_PATH not configured or OPENAI_API_KEY not set
         ValueError: If invalid filename or path traversal detected
     """
-    if VIDEO_DOWNLOAD_PATH is None:
-        raise RuntimeError("VIDEO_DOWNLOAD_PATH not initialized")
+    video_download_path = get_path("video")
 
     client = get_client()
     content = await client.videos.download_content(video_id, variant=variant)
@@ -288,11 +348,11 @@ async def sora_download(
         filename = f"{video_id}.{suffix}"
 
     # Security: validate filename and construct safe path
-    out_path = VIDEO_DOWNLOAD_PATH / filename
+    out_path = video_download_path / filename
     out_path = out_path.resolve()
 
     # Security: prevent path traversal
-    if not str(out_path).startswith(str(VIDEO_DOWNLOAD_PATH)):
+    if not str(out_path).startswith(str(video_download_path)):
         raise ValueError("Invalid filename: path traversal detected")
 
     content.write_to_file(str(out_path))
@@ -473,10 +533,9 @@ async def sora_list_references(
         Dict with "data" key containing list of ReferenceImage objects
 
     Raises:
-        RuntimeError: If REFERENCE_IMAGE_PATH not initialized
+        RuntimeError: If SORA_REFERENCE_PATH not configured
     """
-    if REFERENCE_IMAGE_PATH is None:
-        raise RuntimeError("REFERENCE_IMAGE_PATH not initialized")
+    reference_image_path = get_path("reference")
 
     # Map file_type to extensions
     type_to_extensions = {
@@ -491,11 +550,11 @@ async def sora_list_references(
     glob_pattern = pattern if pattern else "*"
     files: list[tuple[pathlib.Path, os.stat_result]] = []
 
-    for file_path in REFERENCE_IMAGE_PATH.glob(glob_pattern):
+    for file_path in reference_image_path.glob(glob_pattern):
         if file_path.is_file() and file_path.suffix.lower() in allowed_extensions:
-            # Security: ensure file is within REFERENCE_IMAGE_PATH
+            # Security: ensure file is within reference_image_path
             try:
-                file_path.resolve().relative_to(REFERENCE_IMAGE_PATH)
+                file_path.resolve().relative_to(reference_image_path)
             except ValueError:
                 continue  # Skip files outside reference path
             files.append((file_path, file_path.stat()))
@@ -573,23 +632,22 @@ async def sora_prepare_reference(
         PrepareResult with output filename, sizes, mode, and absolute path
 
     Raises:
-        RuntimeError: If REFERENCE_IMAGE_PATH not initialized
+        RuntimeError: If SORA_REFERENCE_PATH not configured
         ValueError: If input file invalid or path traversal detected
     """
-    if REFERENCE_IMAGE_PATH is None:
-        raise RuntimeError("REFERENCE_IMAGE_PATH not initialized")
+    reference_image_path = get_path("reference")
 
     # Security: validate input filename and construct safe path
-    input_path = REFERENCE_IMAGE_PATH / input_filename
+    input_path = reference_image_path / input_filename
     input_path = input_path.resolve()
 
     # Security: prevent path traversal
-    if not str(input_path).startswith(str(REFERENCE_IMAGE_PATH)):
+    if not str(input_path).startswith(str(reference_image_path)):
         raise ValueError("Invalid input filename: path traversal detected")
 
-    # Validate input file exists
-    if not input_path.exists():
-        raise ValueError(f"Input image not found: {input_filename}")
+    # Security: prevent symlink exploitation
+    if input_path.exists() and input_path.is_symlink():
+        raise ValueError(f"Input image cannot be a symbolic link: {input_filename}")
 
     # Parse target dimensions from VideoSize string (e.g., "1280x720" -> (1280, 720))
     width_str, height_str = target_size.split("x")
@@ -601,16 +659,23 @@ async def sora_prepare_reference(
         output_filename = f"{input_stem}_{target_size}.png"
 
     # Security: validate output filename and construct safe path
-    output_path = REFERENCE_IMAGE_PATH / output_filename
+    output_path = reference_image_path / output_filename
     output_path = output_path.resolve()
 
     # Security: prevent path traversal
-    if not str(output_path).startswith(str(REFERENCE_IMAGE_PATH)):
+    if not str(output_path).startswith(str(reference_image_path)):
         raise ValueError("Invalid output filename: path traversal detected")
 
-    # Load image with Pillow
-    img = Image.open(input_path)
-    original_size = img.size  # (width, height)
+    # Load image with Pillow (TOCTOU-safe: handle file errors gracefully)
+    try:
+        img = Image.open(input_path)
+        original_size = img.size  # (width, height)
+    except FileNotFoundError as e:
+        raise ValueError(f"Input image not found: {input_filename}") from e
+    except PermissionError as e:
+        raise ValueError(f"Permission denied reading input image: {input_filename}") from e
+    except OSError as e:
+        raise ValueError(f"Error reading input image: {e}") from e
 
     # Convert to RGB if necessary (handles RGBA, grayscale, etc.)
     if img.mode != "RGB":
@@ -657,8 +722,14 @@ async def sora_prepare_reference(
         # Simple stretch/squash to exact dimensions (may distort)
         img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
 
-    # Save as PNG
-    img.save(output_path, "PNG")
+    # Save as PNG with error handling
+    try:
+        img.save(output_path, "PNG")
+    except PermissionError as e:
+        raise ValueError(f"Permission denied writing output image: {output_filename}") from e
+    except OSError as e:
+        raise ValueError(f"Error writing output image: {e}") from e
+
     logger.info(
         "Prepared reference: %s -> %s (%s, %dx%d -> %dx%d)",
         input_filename,
@@ -831,11 +902,10 @@ async def image_download(
         ImageDownloadResult with filename, path, dimensions, and format
 
     Raises:
-        RuntimeError: If REFERENCE_IMAGE_PATH not initialized or OPENAI_API_KEY not set
+        RuntimeError: If SORA_REFERENCE_PATH not configured or OPENAI_API_KEY not set
         ValueError: If image generation not found or invalid filename
     """
-    if REFERENCE_IMAGE_PATH is None:
-        raise RuntimeError("REFERENCE_IMAGE_PATH not initialized")
+    reference_image_path = get_path("reference")
 
     client = get_client()
     response = await client.responses.retrieve(response_id)
@@ -869,21 +939,29 @@ async def image_download(
         filename = f"img_{timestamp}.{output_format}"
 
     # Security: validate filename and construct safe path
-    output_path = REFERENCE_IMAGE_PATH / filename
+    output_path = reference_image_path / filename
     output_path = output_path.resolve()
 
     # Security: prevent path traversal
-    if not str(output_path).startswith(str(REFERENCE_IMAGE_PATH)):
+    if not str(output_path).startswith(str(reference_image_path)):
         raise ValueError("Invalid filename: path traversal detected")
 
-    # Write image to disk
-    with open(output_path, "wb") as f:
-        f.write(image_bytes)
+    # Write image to disk with error handling
+    try:
+        with open(output_path, "wb") as f:
+            f.write(image_bytes)
+    except PermissionError as e:
+        raise ValueError(f"Permission denied writing image: {filename}") from e
+    except OSError as e:
+        raise ValueError(f"Error writing image: {e}") from e
 
     # Get image dimensions using PIL
-    img = Image.open(output_path)
-    size = img.size  # (width, height)
-    output_format = img.format.lower() if img.format else "unknown"
+    try:
+        img = Image.open(output_path)
+        size = img.size  # (width, height)
+        output_format = img.format.lower() if img.format else "unknown"
+    except OSError as e:
+        raise ValueError(f"Error reading saved image dimensions: {e}") from e
 
     logger.info("Downloaded image %s to %s (%dx%d, %s)", response_id, filename, size[0], size[1], output_format)
 
@@ -897,43 +975,12 @@ async def image_download(
 
 # -------- Entrypoint --------
 def main():
-    from dotenv import load_dotenv
+    """Run the MCP server.
 
-    load_dotenv()
-    global VIDEO_DOWNLOAD_PATH, REFERENCE_IMAGE_PATH
-
-    # Get and validate video download path
-    video_path_str = os.getenv("SORA_VIDEO_PATH", "./sora-videos")
-    video_path = pathlib.Path(video_path_str).resolve()
-
-    if not video_path.exists():
-        logger.error("Video download directory does not exist: %s", video_path)
-        logger.error("Please create the directory or set SORA_VIDEO_PATH to an existing directory")
-        raise RuntimeError(f"Video download directory does not exist: {video_path}")
-
-    if not video_path.is_dir():
-        logger.error("SORA_VIDEO_PATH is not a directory: %s", video_path)
-        raise RuntimeError(f"SORA_VIDEO_PATH is not a directory: {video_path}")
-
-    VIDEO_DOWNLOAD_PATH = video_path
-    logger.info("Video download path: %s", VIDEO_DOWNLOAD_PATH)
-
-    # Get and validate reference image path
-    reference_path_str = os.getenv("SORA_REFERENCE_PATH", "./sora-references")
-    reference_path = pathlib.Path(reference_path_str).resolve()
-
-    if not reference_path.exists():
-        logger.error("Reference image directory does not exist: %s", reference_path)
-        logger.error("Please create the directory or set SORA_REFERENCE_PATH to an existing directory")
-        raise RuntimeError(f"Reference image directory does not exist: {reference_path}")
-
-    if not reference_path.is_dir():
-        logger.error("SORA_REFERENCE_PATH is not a directory: %s", reference_path)
-        raise RuntimeError(f"SORA_REFERENCE_PATH is not a directory: {reference_path}")
-
-    REFERENCE_IMAGE_PATH = reference_path
-    logger.info("Reference image path: %s", REFERENCE_IMAGE_PATH)
-    logger.info("Starting MCP server over stdio")
+    Paths are validated lazily at runtime when tools are called.
+    This allows the server to work with both `uv run sora-mcp-server` and `mcp run`.
+    """
+    logger.info("Starting Sora MCP server over stdio")
     mcp.run()
 
 
