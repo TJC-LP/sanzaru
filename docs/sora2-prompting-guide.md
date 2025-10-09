@@ -1,12 +1,7 @@
-::: {.cell .markdown}
 # Sora 2: Prompting Guide
-:::
 
-::: {.cell .markdown}
 # Crafting a successful video prompt
-:::
 
-::: {#d07e0761 .cell .markdown}
 ## Before you prompt
 
 Think of prompting like briefing a cinematographer who has never seen
@@ -33,9 +28,7 @@ variations.
 
 This isn't an exact science---think of the guidance below as helpful
 suggestions we've learned from working with the model.
-:::
 
-::: {#97ca4e2e .cell .markdown}
 ## API Parameters
 
 The prompt controls the content of the video, but certain attributes are
@@ -57,27 +50,21 @@ These parameters are the video's container -- resolution, duration, and
 quality will not change based on prose like "make it longer." Set them
 explicitly in the API call; your prompt controls everything else
 (subject, motion, lighting, style).
-:::
 
-::: {#539e44f9 .cell .markdown}
 ### Video Resolution
 
 Video resolution directly influences visual fidelity and motion
 consistency in Sora. Higher resolutions generate detail, texture, and
 lighting transitions more accurately, while lower resolutions compress
 visual information, often introducing softness or artifacts.
-:::
 
-::: {#040df975 .cell .markdown}
 ### Video Length
 
 The model generally follows instructions more reliably in shorter clips.
 For best results, aim for concise shots. If your project allows, you may
 see better results by stitching together two 4 second clips in editing
 instead of generating a single 8 second clip.
-:::
 
-::: {#7d879cb4 .cell .markdown}
 ## Prompt anatomy that works
 
 A clear prompt describes a shot as if you were sketching it onto a
@@ -96,10 +83,10 @@ them play out as a sequence in one go.
 
 - Shorter prompts give the model more creative freedom. Expect
   surprising results.
-- Longer, more detailed prompts restrict the model\'s creativity. It
+- Longer, more detailed prompts restrict the model's creativity. It
   will try to follow your guidance, but might not always do so reliably.
 
-Here\'s an example for a short prompt:
+Here's an example for a short prompt:
 
 ``` text
 In a 90s documentary-style interview, an old Swedish man sits in a study and says, "I still remember when I was young."
@@ -121,9 +108,7 @@ open. For example, the prompt does not describe the time of day,
 weather, outfits, tone, look and age of the character, camera angles,
 cuts, set design and many other factors. Unless you describe these
 details, Sora will make them up.
-:::
 
-::: {#009d734f .cell .markdown}
 ### Going Ultra-Detailed
 
 For complex, cinematic shots, you can go beyond the standard prompt
@@ -141,10 +126,8 @@ approach works well when you want to match real cinematography styles
 maintain strict continuity across shots.
 
 #### Example
-:::
 
-::: {#23ab46e0 .cell .code vscode="{\"languageId\":\"plaintext\"}"}
-``` python
+``` text
 Format & Look
 Duration 4s; 180° shutter; digital capture emulating 65 mm photochemical contrast; fine grain; subtle halation on speculars; no gate weave.
 
@@ -198,9 +181,7 @@ Fine-grain overlay with mild chroma noise for realism; restrained halation on pr
 Mix: prioritize train and ambient detail over footstep transients.
 Poster frame: traveler mid-turn, golden rim light, arriving train soft-focus in background haze.
 ```
-:::
 
-::: {#44eda6dd .cell .markdown}
 ## Visual cues that steer the look
 
 When writing prompts, **style is one of the most powerful levers for
@@ -221,18 +202,11 @@ Clarity wins. Instead of vague cues like *"a beautiful street,"* write
 Verbs and nouns that point to visible results will always give you a
 clearer, more consistent output.
 
-  -----------------------------------------------------------------------
-  **Weak prompt**                     **Strong prompt**
-  ----------------------------------- -----------------------------------
-  "A beautiful street at night"       "Wet asphalt, zebra crosswalk, neon
-                                      signs reflecting in puddles"
-
-  "Person moves quickly"              "Cyclist pedals three times,
-                                      brakes, and stops at crosswalk"
-
-  "Cinematic look"                    "Anamorphic 2.0x lens, shallow DOF,
-                                      volumetric light"
-  -----------------------------------------------------------------------
+| **Weak prompt** | **Strong prompt** |
+|---|---|
+| "A beautiful street at night" | "Wet asphalt, zebra crosswalk, neon signs reflecting in puddles" |
+| "Person moves quickly" | "Cyclist pedals three times, brakes, and stops at crosswalk" |
+| "Cinematic look" | "Anamorphic 2.0x lens, shallow DOF, volumetric light" |
 
 Camera direction and framing shape how a shot feels. A wide shot from
 above will emphasize space and context, while a close-up at eye level
@@ -272,9 +246,7 @@ Some examples for good camera motion instructions:
 
 - slowly tilting camera
 - handheld eng camera
-:::
 
-::: {#ec75c8df .cell .markdown}
 ## Control motion and timing
 
 Movement is often the hardest part to get right, so keep it simple. Each
@@ -297,9 +269,7 @@ Actor walks across the room.
 ``` text
 Actor takes four steps to the window, pauses, and pulls the curtain in the final second.
 ```
-:::
 
-::: {#0e005a3d .cell .markdown}
 ## Lighting and color consistency
 
 Light determines mood as much as action or setting. Diffuse light across
@@ -323,12 +293,10 @@ Lighting + palette: brightly lit room
 **Strong**
 
 ``` text
-Lighting + palette: soft window light with warm lamp fill, cool rim from hallway 
+Lighting + palette: soft window light with warm lamp fill, cool rim from hallway
 Palette anchors: amber, cream, walnut brown
 ```
-:::
 
-::: {#b1b8ef38 .cell .markdown}
 ## Use image input for more control
 
 For even more fine-grained control over the **composition and style** of
@@ -346,18 +314,11 @@ Include an image file as the input_reference parameter in your POST
 - The image must match the target video's resolution (size).
 - Supported file formats are: `image/jpeg`, `image/png`, and
   `image/webp`.
-:::
 
-::: {#c04620d4 .cell .markdown}
-  ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-           Input image generated with [OpenAI GPT Image](https://platform.openai.com/docs/guides/image-generation)                                            Generated video using Sora 2 (converted to GIF)
-  -------------------------------------------------------------------------------------------------------------------------- ------------------------------------------------------------------------------------------------------------------
-   ![](https://cdn.openai.com/API/docs/images/sora/sora_woman_skyline_original_2.jpeg)`<p>`{=html}`<small>`{=html}[Download   ![](https://cdn.openai.com/API/docs/images/sora/sora_woman_skyline_video.gif)`<p>`{=html}`<small>`{=html}Prompt:
-   this image](https://cdn.openai.com/API/docs/images/sora/woman_skyline_original_720p.jpeg)`</small>`{=html}`</p>`{=html}           *"She turns around and smiles, then slowly walks out of the frame."*`</small>`{=html}`</p>`{=html}
-
-   ![](https://cdn.openai.com/API/docs/images/sora/sora_monster_original_2.jpeg)`<p>`{=html}`<small>`{=html}[Download this     ![](https://cdn.openai.com/API/docs/images/sora/sora_monster_original.gif) `<p>`{=html}`<small>`{=html}Prompt:
-         image](https://cdn.openai.com/API/docs/images/sora/monster_original_720p.jpeg)`</small>`{=html}`</p>`{=html}             *"The fridge door opens. A cute, chubby purple monster comes out of it."*`</small>`{=html}`</p>`{=html}
-  ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
+| Input image generated with [OpenAI GPT Image](https://platform.openai.com/docs/guides/image-generation) | Generated video using Sora 2 (converted to GIF) |
+|---|---|
+| ![](https://cdn.openai.com/API/docs/images/sora/sora_woman_skyline_original_2.jpeg)<br>[Download this image](https://cdn.openai.com/API/docs/images/sora/woman_skyline_original_720p.jpeg) | ![](https://cdn.openai.com/API/docs/images/sora/sora_woman_skyline_video.gif)<br>Prompt: *"She turns around and smiles, then slowly walks out of the frame."* |
+| ![](https://cdn.openai.com/API/docs/images/sora/sora_monster_original_2.jpeg)<br>[Download this image](https://cdn.openai.com/API/docs/images/sora/monster_original_720p.jpeg) | ![](https://cdn.openai.com/API/docs/images/sora/sora_monster_original.gif)<br>Prompt: *"The fridge door opens. A cute, chubby purple monster comes out of it."* |
 
 ### Experimentation tip
 
@@ -367,13 +328,11 @@ powerful way to create them. You can quickly produce environments and
 scene designs and then pass them into Sora as references. This is a
 great way to test aesthetics and generate beautiful starting points for
 your videos.
-:::
 
-::: {#d7af0b8a .cell .markdown}
 ## Dialogue and Audio
 
 Dialogue must be described directly in your prompt. Place it in a
-`<dialogue>`{=html} block below your prose description so the model
+`<dialogue>` block below your prose description so the model
 clearly distinguishes visual description from spoken lines. Keep lines
 concise and natural, and try to limit exchanges to a handful of
 sentences so the timing can match your clip length. For multi-character
@@ -406,9 +365,7 @@ Example description of background sound:
 ``` text
 The hum of espresso machines and the murmur of voices form the background.
 ```
-:::
 
-::: {#a54a3522 .cell .markdown}
 ## Iterate with the remix functionality
 
 Remix is for nudging, not gambling. Use it to make controlled changes --
@@ -421,24 +378,13 @@ If a shot keeps misfiring, strip it back: freeze the camera, simplify
 the action, clear the background. Once it works, layer additional
 complexity step by step.
 
-  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-  Original Video                                                                                                  Remix Generated Video
-  --------------------------------------------------------------------------------------------------------------- ----------------------------------------------------------------------------------------------------------------
-  ![Original Video                                                                                                ![Remixed Video
-  1](https://cdn.openai.com/API/docs/images/sora/sora_monster_original.gif)`<p>`{=html}`<small>`{=html}Original   1](https://cdn.openai.com/API/docs/images/sora/sora_monster_orange.gif)`<p>`{=html}`<small>`{=html}*Prompt:
-  Video`</small>`{=html}`</p>`{=html}                                                                             "Change the color of the monster to orange"*`</small>`{=html}`</p>`{=html}
+| Original Video | Remix Generated Video |
+|---|---|
+| ![Original Video 1](https://cdn.openai.com/API/docs/images/sora/sora_monster_original.gif)<br>Original Video | ![Remixed Video 1](https://cdn.openai.com/API/docs/images/sora/sora_monster_orange.gif)<br>*Prompt: "Change the color of the monster to orange"* |
+| ![Original Video 1](https://cdn.openai.com/API/docs/images/sora/sora_monster_original.gif)<br>Original Video | ![Remixed Video 2](https://cdn.openai.com/API/docs/images/sora/sora_monster_2monsters.gif)<br>*Prompt: "A second monster comes out right after"* |
 
-  ![Original Video                                                                                                ![Remixed Video
-  1](https://cdn.openai.com/API/docs/images/sora/sora_monster_original.gif)`<p>`{=html}`<small>`{=html}Original   2](https://cdn.openai.com/API/docs/images/sora/sora_monster_2monsters.gif)`<p>`{=html}`<small>`{=html}*Prompt:
-  Video`</small>`{=html}`</p>`{=html}                                                                             "A second monster comes out right after"*`</small>`{=html}`</p>`{=html}
-  --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
-:::
-
-::: {.cell .markdown}
 # Prompt Templates and Examples
-:::
 
-::: {.cell .markdown}
 ## Prompt Structure
 
 One effective way to write prompts is to separate the different kinds of
@@ -470,9 +416,7 @@ Actions:
 Dialogue:
 [If the shot has dialogue, add short natural lines here or as part of the actions list. Keep them brief so they match the clip length.]
 ```
-:::
 
-::: {.cell .markdown}
 ## Prompt Examples
 
 ### Example 1
@@ -522,4 +466,3 @@ Actions:
 Background Sound:
 Natural ambience only: faint wind, fabric flutter, street noise, muffled music. No added score.
 ```
-:::
