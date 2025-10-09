@@ -220,3 +220,39 @@ Use `./setup.sh` for interactive setup, or manually copy `.env.example` to `.env
 - Tool descriptions support E501 ignore for readability
 - Comprehensive docstrings on all MCP tools
 - Security-first: path traversal protection on all file operations
+
+## Testing
+
+**Test Structure:**
+```
+tests/
+├── conftest.py          # Shared fixtures
+├── unit/                # Unit tests for pure functions (46 tests)
+│   ├── test_utils.py
+│   ├── test_security.py
+│   └── test_image_processing.py
+└── integration/         # Integration tests with mocked clients (12 tests)
+    ├── test_video_tools.py
+    ├── test_image_tools.py
+    └── test_reference_tools.py
+```
+
+**Style Notes:**
+- **NO `__init__.py` files in test directories** - tests are not a package
+- Use `@pytest.mark.unit` for unit tests (pure functions, no mocking)
+- Use `@pytest.mark.integration` for integration tests (mocked OpenAI client)
+- Use `pytest-mock` (mocker fixture) for all mocking
+- Ignore SIM117 in tests (nested `with` intentional for pytest.raises)
+
+**Running Tests:**
+```bash
+pytest                        # All tests
+pytest tests/unit -m unit     # Unit tests only (fast)
+pytest tests/integration      # Integration tests only
+pytest --cov=src              # With coverage report
+```
+
+**Coverage Goals:**
+- Pure functions: 100% (achieved)
+- Tools (business logic): 80%+ (achieved: 82-88%)
+- Overall: 65%+ (achieved)
