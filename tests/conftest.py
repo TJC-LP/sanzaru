@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: MIT
 """Shared pytest fixtures for Sora MCP server tests."""
+
 import pathlib
 
 import pytest
@@ -56,3 +57,40 @@ def sample_rgba_image(tmp_reference_path: pathlib.Path) -> pathlib.Path:
     img = Image.new("RGBA", (100, 100), color=(0, 0, 255, 128))  # Semi-transparent blue
     img.save(img_path, "PNG")
     return img_path
+
+
+# ==================== Integration Test Fixtures ====================
+
+
+@pytest.fixture
+def mock_video_response():
+    """Sample Video object for mocking OpenAI video API responses."""
+    from openai.types import Video
+
+    return Video(
+        id="vid_test123",
+        object="video",  # Required by Pydantic
+        status="completed",
+        progress=100,
+        model="sora-2",
+        seconds="8",
+        size="1280x720",
+        created_at=1234567890,
+    )
+
+
+@pytest.fixture
+def mock_video_queued():
+    """Sample Video object in queued state."""
+    from openai.types import Video
+
+    return Video(
+        id="vid_queued",
+        object="video",  # Required by Pydantic
+        status="queued",
+        progress=0,
+        model="sora-2",
+        seconds="8",
+        size="1280x720",
+        created_at=1234567890,
+    )
