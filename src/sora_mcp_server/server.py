@@ -9,6 +9,8 @@ from mcp.server.fastmcp import FastMCP
 from openai import AsyncOpenAI
 from openai._types import Omit, omit
 from openai.types import Video, VideoDeleteResponse, VideoModel, VideoSeconds, VideoSize
+from openai.types.responses import Response
+from openai.types.responses.response_output_item import ImageGenerationCall
 from PIL import Image
 
 
@@ -16,6 +18,7 @@ from PIL import Image
 class DownloadResult(TypedDict):
     """Result from downloading a video asset."""
 
+    filename: str
     path: str
     variant: Literal["video", "thumbnail", "spritesheet"]
 
@@ -57,6 +60,23 @@ class PrepareResult(TypedDict):
     target_size: tuple[int, int]
     resize_mode: str
     path: str
+
+
+class ImageResponse(TypedDict):
+    """Response from creating an image generation job."""
+
+    id: str
+    status: str
+    created_at: float
+
+
+class ImageDownloadResult(TypedDict):
+    """Result from downloading a generated image."""
+
+    filename: str
+    path: str
+    size: tuple[int, int]
+    format: str
 
 
 # ---------- logging ----------
@@ -224,6 +244,7 @@ Returns the absolute path to the downloaded file.
 
 Parameters:
 - video_id: The ID from sora_create_video or sora_remix (required)
+- filename: Custom filename (optional, defaults to video_id with appropriate extension)
 - variant: What to download (default: "video")
   * "video" -> MP4 video file
   * "thumbnail" -> WEBP thumbnail image
@@ -232,23 +253,28 @@ Parameters:
 Typical workflow:
 1. Create: sora_create_video() -> video_id
 2. Poll: sora_get_status(video_id) until status='completed'
-3. Download: sora_download(video_id) -> returns local file path"""
+3. Download: sora_download(video_id, filename="my_video.mp4") -> returns local file path
+
+Returns DownloadResult with: filename, path, variant"""
 )
 async def sora_download(
     video_id: str,
+    filename: str | None = None,
     variant: Literal["video", "thumbnail", "spritesheet"] = "video",
 ) -> DownloadResult:
     """Download a completed video asset to disk.
 
     Args:
         video_id: Video ID from sora_create_video or sora_remix
+        filename: Optional custom filename
         variant: Asset type to download (video, thumbnail, or spritesheet)
 
     Returns:
-        DownloadResult with absolute path and variant
+        DownloadResult with filename, absolute path, and variant
 
     Raises:
         RuntimeError: If VIDEO_DOWNLOAD_PATH not initialized or OPENAI_API_KEY not set
+        ValueError: If invalid filename or path traversal detected
     """
     if VIDEO_DOWNLOAD_PATH is None:
         raise RuntimeError("VIDEO_DOWNLOAD_PATH not initialized")
@@ -256,10 +282,22 @@ async def sora_download(
     client = get_client()
     content = await client.videos.download_content(video_id, variant=variant)
     suffix = _suffix_for_variant(variant)
-    out_path = VIDEO_DOWNLOAD_PATH / f"{video_id}.{suffix}"
+
+    # Auto-generate filename if not provided
+    if filename is None:
+        filename = f"{video_id}.{suffix}"
+
+    # Security: validate filename and construct safe path
+    out_path = VIDEO_DOWNLOAD_PATH / filename
+    out_path = out_path.resolve()
+
+    # Security: prevent path traversal
+    if not str(out_path).startswith(str(VIDEO_DOWNLOAD_PATH)):
+        raise ValueError("Invalid filename: path traversal detected")
+
     content.write_to_file(str(out_path))
     logger.info("Wrote %s (%s)", out_path, variant)
-    return {"path": str(out_path), "variant": variant}
+    return {"filename": filename, "path": str(out_path), "variant": variant}
 
 
 @mcp.tool(
@@ -508,6 +546,7 @@ Parameters:
 - resize_mode: How to handle aspect ratio (default: "crop")
   * "crop": Scale to cover target, center crop excess (no distortion, may lose edges)
   * "pad": Scale to fit inside target, add black bars (no distortion, preserves full image)
+  * "rescale": Stretch/squash to exact dimensions (may distort, no cropping/padding)
 
 Returns PrepareResult with: output_filename, original_size, target_size, resize_mode, path
 
@@ -520,7 +559,7 @@ async def sora_prepare_reference(
     input_filename: str,
     target_size: VideoSize,
     output_filename: str | None = None,
-    resize_mode: Literal["crop", "pad"] = "crop",
+    resize_mode: Literal["crop", "pad", "rescale"] = "crop",
 ) -> PrepareResult:
     """Prepare a reference image by resizing to match Sora dimensions.
 
@@ -528,7 +567,7 @@ async def sora_prepare_reference(
         input_filename: Source image filename (not path) in SORA_REFERENCE_PATH
         target_size: Target Sora video size
         output_filename: Optional custom output name (defaults to auto-generated)
-        resize_mode: Resizing strategy - "crop" (cover + crop) or "pad" (fit + letterbox)
+        resize_mode: Resizing strategy - "crop" (cover + crop), "pad" (fit + letterbox), or "rescale" (stretch to fit)
 
     Returns:
         PrepareResult with output filename, sizes, mode, and absolute path
@@ -602,7 +641,7 @@ async def sora_prepare_reference(
         bottom = top + target_height
         img = img.crop((left, top, right, bottom))
 
-    else:  # resize_mode == "pad"
+    elif resize_mode == "pad":
         # Scale to fit inside target dimensions, then pad with black bars
         img.thumbnail((target_width, target_height), Image.Resampling.LANCZOS)
 
@@ -614,6 +653,9 @@ async def sora_prepare_reference(
         paste_y = (target_height - img.height) // 2
         result.paste(img, (paste_x, paste_y))
         img = result
+    else:  # resize_mode == "rescale"
+        # Simple stretch/squash to exact dimensions (may distort)
+        img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
 
     # Save as PNG
     img.save(output_path, "PNG")
@@ -634,6 +676,222 @@ async def sora_prepare_reference(
         "target_size": (target_width, target_height),
         "resize_mode": resize_mode,
         "path": str(output_path),
+    }
+
+
+@mcp.tool(
+    description="""Generate an image using OpenAI's Responses API and save to reference path.
+
+Creates an image from a text prompt using GPT-5 or newer models with image generation capability.
+Returns immediately with a response_id - use image_get_status() to poll for completion.
+
+The image is saved to SORA_REFERENCE_PATH and can be used with sora_create_video.
+
+Parameters:
+- prompt: Text description of the image to generate (required)
+- model: Model to use - "gpt-5", "gpt-4.1", etc. Default: "gpt-5"
+- size: Resolution - "1024x1024", "1024x1536", "1536x1024", or "auto". Default: "auto"
+- quality: "low", "medium", "high", "auto". Default: "high"
+- output_format: "png", "jpeg", "webp". Default: "png"
+- background: "transparent", "opaque", "auto". Default: "auto"
+- previous_response_id: Optional response ID to refine previous image
+
+Returns ImageResponse with: id (response_id), status, created_at
+
+Typical workflow:
+1. image_create(prompt="sunset over mountains") -> response_id
+2. image_get_status(response_id) -> poll until status='completed'
+3. image_download(response_id, filename="sunset.png") -> saves to reference path
+4. sora_create_video(..., input_reference_filename="sunset.png")
+
+Iterative refinement:
+1. resp1 = image_create(prompt="a cat") -> response_id_1
+2. Wait for completion
+3. resp2 = image_create(prompt="make it more realistic", previous_response_id=response_id_1) -> response_id_2
+4. Download response_id_2"""
+)
+async def image_create(
+    prompt: str,
+    model: str = "gpt-5",
+    size: Literal["auto", "1024x1024", "1024x1536", "1536x1024"] | None = None,
+    quality: Literal["low", "medium", "high", "auto"] | None = None,
+    output_format: Literal["png", "jpeg", "webp"] = "png",
+    background: Literal["transparent", "opaque", "auto"] | None = None,
+    previous_response_id: str | None = None,
+) -> ImageResponse:
+    """Create a new image generation job using Responses API.
+
+    Args:
+        prompt: Text description of image to generate
+        model: Model to use (gpt-5, gpt-4.1, etc.)
+        size: Output resolution
+        quality: Image quality level
+        output_format: File format for output
+        background: Background transparency setting
+        previous_response_id: Optional ID to refine previous generation
+
+    Returns:
+        ImageResponse with response ID, status, and creation timestamp
+
+    Raises:
+        RuntimeError: If OPENAI_API_KEY not set
+    """
+    client = get_client()
+
+    # Build image generation tool configuration
+    tool_config: dict = {"type": "image_generation"}
+
+    if size is not None:
+        tool_config["size"] = size
+    if quality is not None:
+        tool_config["quality"] = quality
+    if output_format is not None:
+        tool_config["output_format"] = output_format
+    if background is not None:
+        tool_config["background"] = background
+
+    # Create response with image generation tool
+    prev_resp_param: str | Omit = omit if previous_response_id is None else previous_response_id
+    response = await client.responses.create(
+        model=model,
+        input=prompt,
+        tools=[tool_config],
+        previous_response_id=prev_resp_param,
+        background=True
+    )
+
+    logger.info(
+        "Started image generation %s (%s)%s",
+        response.id,
+        response.status,
+        f" from {previous_response_id}" if previous_response_id else "",
+    )
+
+    return {
+        "id": response.id,
+        "status": str(response.status) if response.status else "unknown",
+        "created_at": response.created_at,
+    }
+
+
+@mcp.tool(
+    description="""Check status and progress of image generation.
+
+Use this to poll for completion after calling image_create.
+Call repeatedly until status changes from 'queued'/'in_progress' to 'completed' or 'failed'.
+
+Returns ImageResponse with: id, status, created_at"""
+)
+async def image_get_status(response_id: str) -> ImageResponse:
+    """Get current status of an image generation job.
+
+    Args:
+        response_id: The response ID from image_create
+
+    Returns:
+        ImageResponse with current status and metadata
+
+    Raises:
+        RuntimeError: If OPENAI_API_KEY not set
+    """
+    client = get_client()
+    response = await client.responses.retrieve(response_id)
+
+    return {
+        "id": response.id,
+        "status": str(response.status) if response.status else "unknown",
+        "created_at": response.created_at,
+    }
+
+
+@mcp.tool(
+    description="""Download a completed generated image to reference path.
+
+IMPORTANT: Only call AFTER image_get_status shows status='completed'.
+
+The image is saved to SORA_REFERENCE_PATH and can immediately be used with sora_create_video.
+
+Parameters:
+- response_id: The response ID from image_create (required)
+- filename: Custom filename (optional, auto-generates if not provided)
+
+Returns ImageDownloadResult with: filename, path, size, format"""
+)
+async def image_download(
+    response_id: str,
+    filename: str | None = None,
+) -> ImageDownloadResult:
+    """Download a completed generated image to disk.
+
+    Args:
+        response_id: Response ID from image_create
+        filename: Optional custom filename
+
+    Returns:
+        ImageDownloadResult with filename, path, dimensions, and format
+
+    Raises:
+        RuntimeError: If REFERENCE_IMAGE_PATH not initialized or OPENAI_API_KEY not set
+        ValueError: If image generation not found or invalid filename
+    """
+    if REFERENCE_IMAGE_PATH is None:
+        raise RuntimeError("REFERENCE_IMAGE_PATH not initialized")
+
+    client = get_client()
+    response = await client.responses.retrieve(response_id)
+
+    # Find image generation call in output
+    image_gen_call: ImageGenerationCall | None = None
+    for output in response.output:
+        if output.type == "image_generation_call":
+            image_gen_call = output
+            break
+
+    if image_gen_call is None:
+        raise ValueError(f"No image generation found in response {response_id}")
+
+    if image_gen_call.result is None:
+        raise ValueError(f"Image generation not completed (status: {image_gen_call.status})")
+
+    # Decode base64 image
+    import base64
+    import time
+
+    image_base64 = image_gen_call.result
+    image_bytes = base64.b64decode(image_base64)
+
+    # Auto-generate filename if not provided
+    if filename is None:
+        timestamp = int(time.time())
+        # Try to infer format from tool config, default to png
+        output_format = "png"  # Default
+        # Note: We don't have direct access to the tool config used, so default to png
+        filename = f"img_{timestamp}.{output_format}"
+
+    # Security: validate filename and construct safe path
+    output_path = REFERENCE_IMAGE_PATH / filename
+    output_path = output_path.resolve()
+
+    # Security: prevent path traversal
+    if not str(output_path).startswith(str(REFERENCE_IMAGE_PATH)):
+        raise ValueError("Invalid filename: path traversal detected")
+
+    # Write image to disk
+    with open(output_path, "wb") as f:
+        f.write(image_bytes)
+
+    # Get image dimensions using PIL
+    img = Image.open(output_path)
+    size = img.size  # (width, height)
+    output_format = img.format.lower() if img.format else "unknown"
+
+    logger.info("Downloaded image %s to %s (%dx%d, %s)", response_id, filename, size[0], size[1], output_format)
+
+    return {
+        "filename": filename,
+        "path": str(output_path),
+        "size": size,
+        "format": output_format,
     }
 
 
