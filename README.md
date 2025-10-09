@@ -45,9 +45,22 @@ That's it! Claude Code will automatically connect to the Sora MCP server and you
 ## Alternative Installation Methods
 
 **Claude Desktop:**
-```bash
-# From the repo root
-mcp install src/sora_mcp_server/server.py --env-file .env --with-editable "$(pwd)"
+Add the following to your `claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "sora-mcp-server": {
+      "command": "uv",
+      "args": [
+        "run",
+        "--directory",
+        "/path/to/repo",
+        "sora-mcp-server"
+      ]
+    }
+  }
+}
 ```
 
 **Codex MCP Setup:**

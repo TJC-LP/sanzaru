@@ -28,7 +28,6 @@ repos:
       - id: mypy
         additional_dependencies:
           - types-aiofiles
-          - mcp[cli]
           - openai
           - httpx
           - pillow
