@@ -527,6 +527,7 @@ Parameters:
 - resize_mode: How to handle aspect ratio (default: "crop")
   * "crop": Scale to cover target, center crop excess (no distortion, may lose edges)
   * "pad": Scale to fit inside target, add black bars (no distortion, preserves full image)
+  * "rescale": Stretch/squash to exact dimensions (may distort, no cropping/padding)
 
 Returns PrepareResult with: output_filename, original_size, target_size, resize_mode, path
 
@@ -539,7 +540,7 @@ async def sora_prepare_reference(
     input_filename: str,
     target_size: VideoSize,
     output_filename: str | None = None,
-    resize_mode: Literal["crop", "pad"] = "crop",
+    resize_mode: Literal["crop", "pad", "rescale"] = "crop",
 ) -> PrepareResult:
     """Prepare a reference image by resizing to match Sora dimensions.
 
@@ -547,7 +548,7 @@ async def sora_prepare_reference(
         input_filename: Source image filename (not path) in SORA_REFERENCE_PATH
         target_size: Target Sora video size
         output_filename: Optional custom output name (defaults to auto-generated)
-        resize_mode: Resizing strategy - "crop" (cover + crop) or "pad" (fit + letterbox)
+        resize_mode: Resizing strategy - "crop" (cover + crop), "pad" (fit + letterbox), or "rescale" (stretch to fit)
 
     Returns:
         PrepareResult with output filename, sizes, mode, and absolute path
@@ -621,7 +622,7 @@ async def sora_prepare_reference(
         bottom = top + target_height
         img = img.crop((left, top, right, bottom))
 
-    else:  # resize_mode == "pad"
+    elif resize_mode == "pad":
         # Scale to fit inside target dimensions, then pad with black bars
         img.thumbnail((target_width, target_height), Image.Resampling.LANCZOS)
 
@@ -633,6 +634,9 @@ async def sora_prepare_reference(
         paste_y = (target_height - img.height) // 2
         result.paste(img, (paste_x, paste_y))
         img = result
+    else:  # resize_mode == "rescale"
+        # Simple stretch/squash to exact dimensions (may distort)
+        img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
 
     # Save as PNG
     img.save(output_path, "PNG")

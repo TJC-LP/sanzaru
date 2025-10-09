@@ -114,6 +114,7 @@ Use `sora_prepare_reference` to automatically resize any image to match Sora's r
 **Resize modes:**
 - `crop` (default): Scale to cover target dimensions, center crop excess. No distortion, but may lose edges.
 - `pad`: Scale to fit inside target, add black letterbox bars. No distortion, preserves full image.
+- `rescale`: Stretch/squash to exact dimensions. May distort image, but uses full canvas with no cropping or padding.
 
 The original image is preserved; a new resized PNG is created with dimensions in the filename.
 
