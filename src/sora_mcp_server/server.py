@@ -1,170 +1,27 @@
 # SPDX-License-Identifier: MIT
-import logging
-import os
-import pathlib
-import sys
-from functools import lru_cache
-from typing import Literal, TypedDict
+"""Sora MCP Server - FastMCP server for OpenAI Sora video generation.
+
+This module initializes the FastMCP server and registers all tools.
+Business logic is organized into submodules under tools/.
+"""
+
+from typing import Literal
 
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
-from openai import AsyncOpenAI
-from openai._types import Omit, omit
-from openai.types import Video, VideoDeleteResponse, VideoModel, VideoSeconds, VideoSize
-from openai.types.responses.response_output_item import ImageGenerationCall
-from PIL import Image
+from openai.types import VideoModel, VideoSeconds, VideoSize
+
+from .config import logger
+from .tools import image, reference, video
 
 # Load environment variables for mcp run compatibility
 load_dotenv()
 
-
-# ---------- TypedDict definitions ----------
-class DownloadResult(TypedDict):
-    """Result from downloading a video asset."""
-
-    filename: str
-    path: str
-    variant: Literal["video", "thumbnail", "spritesheet"]
-
-
-class VideoSummary(TypedDict):
-    """Summary of a video for list results."""
-
-    id: str
-    status: Literal["queued", "in_progress", "completed", "failed"]
-    created_at: int
-    seconds: VideoSeconds
-    size: VideoSize
-    model: VideoModel
-    progress: int
-
-
-class ListResult(TypedDict):
-    """Paginated list of videos."""
-
-    data: list[VideoSummary]
-    has_more: bool | None
-    last: str | None
-
-
-class ReferenceImage(TypedDict):
-    """Metadata for a reference image file."""
-
-    filename: str
-    size_bytes: int
-    modified_timestamp: int
-    file_type: str
-
-
-class PrepareResult(TypedDict):
-    """Result from preparing a reference image."""
-
-    output_filename: str
-    original_size: tuple[int, int]
-    target_size: tuple[int, int]
-    resize_mode: str
-    path: str
-
-
-class ImageResponse(TypedDict):
-    """Response from creating an image generation job."""
-
-    id: str
-    status: str
-    created_at: float
-
-
-class ImageDownloadResult(TypedDict):
-    """Result from downloading a generated image."""
-
-    filename: str
-    path: str
-    size: tuple[int, int]
-    format: str
-
-
-# ---------- logging ----------
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
-logging.basicConfig(
-    level=LOG_LEVEL,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    stream=sys.stderr,  # Log to stderr to avoid interfering with stdio MCP transport
-)
-logger = logging.getLogger("sora-mcp-server")
-
-
-# ---------- OpenAI client (stateless) ----------
-def get_client() -> AsyncOpenAI:
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY is not set")
-    return AsyncOpenAI(api_key=api_key)
-
-
-# ---------- Path configuration (runtime) ----------
-@lru_cache(maxsize=2)
-def get_path(path_type: Literal["video", "reference"]) -> pathlib.Path:
-    """Get and validate a configured path from environment.
-
-    Requires explicit environment variable configuration - no defaults.
-    Creates paths lazily at runtime, so this works with both `uv run` and `mcp run`.
-
-    Security: Rejects symlinks in environment variable paths to prevent directory traversal.
-
-    Args:
-        path_type: Either "video" for SORA_VIDEO_PATH or "reference" for SORA_REFERENCE_PATH
-
-    Returns:
-        Validated absolute path
-
-    Raises:
-        RuntimeError: If environment variable not set, malformed, path doesn't exist, isn't a directory, or is a symlink
-    """
-    if path_type == "video":
-        path_str = os.getenv("SORA_VIDEO_PATH")
-        env_var = "SORA_VIDEO_PATH"
-        error_name = "Video download directory"
-    else:  # reference
-        path_str = os.getenv("SORA_REFERENCE_PATH")
-        env_var = "SORA_REFERENCE_PATH"
-        error_name = "Reference image directory"
-
-    # Validate env var is set and not empty/whitespace
-    if not path_str or not path_str.strip():
-        raise RuntimeError(f"{env_var} environment variable is not set or is empty")
-
-    # Strip whitespace and resolve path with error handling
-    try:
-        path = pathlib.Path(path_str.strip()).resolve()
-    except (ValueError, OSError) as e:
-        raise RuntimeError(f"Invalid {error_name} path '{path_str}': {e}") from e
-
-    # Security: Reject symlinks in configured paths (env vars only, not user filenames)
-    # Check the original path before resolution to catch symlinks
-    original_path = pathlib.Path(path_str.strip())
-    try:
-        if original_path.exists() and original_path.is_symlink():
-            raise RuntimeError(f"{error_name} cannot be a symbolic link: {path_str}")
-    except PermissionError as e:
-        raise RuntimeError(f"Cannot validate {error_name}: permission denied for {path_str}") from e
-
-    # Validate path exists and is a directory
-    if not path.exists():
-        raise RuntimeError(f"{error_name} does not exist: {path}")
-    if not path.is_dir():
-        raise RuntimeError(f"{error_name} is not a directory: {path}")
-
-    return path
-
-
-# ---------- MCP server ----------
+# Initialize FastMCP server
 mcp = FastMCP("Sora")
 
 
-def _suffix_for_variant(variant: str) -> str:
-    return {"video": "mp4", "thumbnail": "webp", "spritesheet": "jpg"}[variant]
-
-
+# ==================== VIDEO TOOLS ====================
 @mcp.tool(
     description="""Create a new Sora video generation job. This starts an async job and returns immediately with a video_id.
 
@@ -187,77 +44,8 @@ async def sora_create_video(
     seconds: VideoSeconds | None = None,
     size: VideoSize | None = None,
     input_reference_filename: str | None = None,
-) -> Video:
-    """Create a new video generation job.
-
-    Args:
-        prompt: Text description of video content
-        model: Video generation model to use
-        seconds: Duration as string literal "4", "8", or "12"
-        size: Output resolution (width x height)
-        input_reference_filename: Filename of reference image (not full path)
-
-    Returns:
-        Video object with job details (id, status, progress)
-
-    Raises:
-        RuntimeError: If OPENAI_API_KEY not set or SORA_REFERENCE_PATH not configured
-        ValueError: If reference image invalid or path traversal detected
-    """
-    client = get_client()
-
-    # Convert None to omit for OpenAI SDK
-    seconds_param = omit if seconds is None else seconds
-    size_param = omit if size is None else size
-
-    if input_reference_filename:
-        # Get reference image path at runtime
-        reference_image_path = get_path("reference")
-
-        # Security: validate filename and construct safe path
-        reference_file = reference_image_path / input_reference_filename
-        reference_file = reference_file.resolve()
-
-        # Security: prevent path traversal - ensure resolved path is within reference_image_path
-        if not str(reference_file).startswith(str(reference_image_path)):
-            raise ValueError("Invalid reference filename: path traversal detected")
-
-        # Security: prevent symlink exploitation
-        if reference_file.exists() and reference_file.is_symlink():
-            raise ValueError(f"Reference image cannot be a symbolic link: {input_reference_filename}")
-
-        # Validate file extension (Sora supports JPEG, PNG, WEBP)
-        allowed_extensions = {".jpg", ".jpeg", ".png", ".webp"}
-        if reference_file.suffix.lower() not in allowed_extensions:
-            raise ValueError(f"Unsupported file type: {reference_file.suffix}. Use: JPEG, PNG, or WEBP")
-
-        # Open and send reference image (TOCTOU-safe: open directly, handle errors)
-        try:
-            with open(reference_file, "rb") as f:
-                video = await client.videos.create(
-                    model=model,
-                    prompt=prompt,
-                    seconds=seconds_param,
-                    size=size_param,
-                    input_reference=f,
-                )
-        except FileNotFoundError as e:
-            raise ValueError(f"Reference image not found: {input_reference_filename}") from e
-        except PermissionError as e:
-            raise ValueError(f"Permission denied reading reference image: {input_reference_filename}") from e
-        except OSError as e:
-            raise ValueError(f"Error reading reference image: {e}") from e
-        logger.info("Started job %s (%s) with reference: %s", video.id, video.status, input_reference_filename)
-    else:
-        video = await client.videos.create(
-            model=model,
-            prompt=prompt,
-            seconds=seconds_param,
-            size=size_param,
-        )
-        logger.info("Started job %s (%s)", video.id, video.status)
-
-    return video
+):
+    return await video.sora_create_video(prompt, model, seconds, size, input_reference_filename)
 
 
 @mcp.tool(
@@ -277,21 +65,8 @@ Typical workflow:
 2. Poll with sora_get_status(video_id) until status='completed'
 3. Download with sora_download(video_id)"""
 )
-async def sora_get_status(video_id: str) -> Video:
-    """Get current status and progress of a video job.
-
-    Args:
-        video_id: The video ID from sora_create_video or sora_remix
-
-    Returns:
-        Video object with current status, progress, and metadata
-
-    Raises:
-        RuntimeError: If OPENAI_API_KEY not set
-    """
-    client = get_client()
-    video = await client.videos.retrieve(video_id)
-    return video
+async def sora_get_status(video_id: str):
+    return await video.sora_get_status(video_id)
 
 
 @mcp.tool(
@@ -322,42 +97,8 @@ async def sora_download(
     video_id: str,
     filename: str | None = None,
     variant: Literal["video", "thumbnail", "spritesheet"] = "video",
-) -> DownloadResult:
-    """Download a completed video asset to disk.
-
-    Args:
-        video_id: Video ID from sora_create_video or sora_remix
-        filename: Optional custom filename
-        variant: Asset type to download (video, thumbnail, or spritesheet)
-
-    Returns:
-        DownloadResult with filename, absolute path, and variant
-
-    Raises:
-        RuntimeError: If SORA_VIDEO_PATH not configured or OPENAI_API_KEY not set
-        ValueError: If invalid filename or path traversal detected
-    """
-    video_download_path = get_path("video")
-
-    client = get_client()
-    content = await client.videos.download_content(video_id, variant=variant)
-    suffix = _suffix_for_variant(variant)
-
-    # Auto-generate filename if not provided
-    if filename is None:
-        filename = f"{video_id}.{suffix}"
-
-    # Security: validate filename and construct safe path
-    out_path = video_download_path / filename
-    out_path = out_path.resolve()
-
-    # Security: prevent path traversal
-    if not str(out_path).startswith(str(video_download_path)):
-        raise ValueError("Invalid filename: path traversal detected")
-
-    content.write_to_file(str(out_path))
-    logger.info("Wrote %s (%s)", out_path, variant)
-    return {"filename": filename, "path": str(out_path), "variant": variant}
+):
+    return await video.sora_download(video_id, filename, variant)
 
 
 @mcp.tool(
@@ -381,37 +122,8 @@ Pagination example:
 2. page2 = sora_list(limit=20, after=page1.last)
 3. Continue until has_more=false"""
 )
-async def sora_list(limit: int = 20, after: str | None = None, order: Literal["asc", "desc"] = "desc") -> ListResult:
-    """List video jobs with pagination.
-
-    Args:
-        limit: Maximum videos to return (default 20)
-        after: Cursor for pagination (ID of last item from previous page)
-        order: Sort order by creation time (desc=newest first, asc=oldest first)
-
-    Returns:
-        ListResult with data array, has_more flag, and last ID for pagination
-
-    Raises:
-        RuntimeError: If OPENAI_API_KEY not set
-    """
-    client = get_client()
-    after_param: str | Omit = omit if after is None else after
-    page = await client.videos.list(limit=limit, after=after_param, order=order)
-    items: list[VideoSummary] = []
-    for v in page.data:
-        items.append(
-            {
-                "id": v.id,
-                "status": v.status,
-                "created_at": v.created_at,
-                "seconds": v.seconds,
-                "size": v.size,
-                "model": v.model,
-                "progress": v.progress,
-            }
-        )
-    return {"data": items, "has_more": page.has_more, "last": items[-1]["id"] if items else None}
+async def sora_list(limit: int = 20, after: str | None = None, order: Literal["asc", "desc"] = "desc"):
+    return await video.sora_list(limit, after, order)
 
 
 @mcp.tool(
@@ -430,22 +142,8 @@ Parameters:
 
 Returns confirmation with the deleted video_id and deleted=true."""
 )
-async def sora_delete(video_id: str) -> VideoDeleteResponse:
-    """Permanently delete a video from OpenAI storage.
-
-    Args:
-        video_id: Video ID to delete
-
-    Returns:
-        VideoDeleteResponse with deleted=true confirmation
-
-    Raises:
-        RuntimeError: If OPENAI_API_KEY not set
-    """
-    client = get_client()
-    resp = await client.videos.delete(video_id)
-    logger.info("Deleted %s", video_id)
-    return resp
+async def sora_delete(video_id: str):
+    return await video.sora_delete(video_id)
 
 
 @mcp.tool(
@@ -470,25 +168,11 @@ Typical workflow:
 4. Wait: Poll sora_get_status(video_id_2) until completed
 5. Download: sora_download(video_id_2)"""
 )
-async def sora_remix(previous_video_id: str, prompt: str) -> Video:
-    """Create a new video by remixing an existing one.
-
-    Args:
-        previous_video_id: ID of completed video to remix
-        prompt: New prompt to guide the remix
-
-    Returns:
-        NEW Video object with different video_id and status='queued'
-
-    Raises:
-        RuntimeError: If OPENAI_API_KEY not set
-    """
-    client = get_client()
-    video = await client.videos.remix(previous_video_id, prompt=prompt)
-    logger.info("Started remix %s (from %s)", video.id, previous_video_id)
-    return video
+async def sora_remix(previous_video_id: str, prompt: str):
+    return await video.sora_remix(previous_video_id, prompt)
 
 
+# ==================== REFERENCE IMAGE TOOLS ====================
 @mcp.tool(
     description="""Search and list reference images available for video generation.
 
@@ -519,77 +203,8 @@ async def sora_list_references(
     sort_by: Literal["name", "size", "modified"] = "modified",
     order: Literal["asc", "desc"] = "desc",
     limit: int = 50,
-) -> dict:
-    """List reference images available for video generation.
-
-    Args:
-        pattern: Glob pattern to filter filenames (e.g., "*.png", "cat*")
-        file_type: Filter by image type
-        sort_by: Sort criterion (name, size, or modified timestamp)
-        order: Sort order (asc or desc)
-        limit: Maximum number of results to return
-
-    Returns:
-        Dict with "data" key containing list of ReferenceImage objects
-
-    Raises:
-        RuntimeError: If SORA_REFERENCE_PATH not configured
-    """
-    reference_image_path = get_path("reference")
-
-    # Map file_type to extensions
-    type_to_extensions = {
-        "jpeg": {".jpg", ".jpeg"},
-        "png": {".png"},
-        "webp": {".webp"},
-        "all": {".jpg", ".jpeg", ".png", ".webp"},
-    }
-    allowed_extensions = type_to_extensions[file_type]
-
-    # Collect matching files
-    glob_pattern = pattern if pattern else "*"
-    files: list[tuple[pathlib.Path, os.stat_result]] = []
-
-    for file_path in reference_image_path.glob(glob_pattern):
-        if file_path.is_file() and file_path.suffix.lower() in allowed_extensions:
-            # Security: ensure file is within reference_image_path
-            try:
-                file_path.resolve().relative_to(reference_image_path)
-            except ValueError:
-                continue  # Skip files outside reference path
-            files.append((file_path, file_path.stat()))
-
-    # Sort files
-    if sort_by == "name":
-        files.sort(key=lambda x: x[0].name, reverse=(order == "desc"))
-    elif sort_by == "size":
-        files.sort(key=lambda x: x[1].st_size, reverse=(order == "desc"))
-    elif sort_by == "modified":
-        files.sort(key=lambda x: x[1].st_mtime, reverse=(order == "desc"))
-
-    # Build result list
-    results: list[ReferenceImage] = []
-    for file_path, stat in files[:limit]:
-        # Determine file type
-        ext = file_path.suffix.lower()
-        if ext in {".jpg", ".jpeg"}:
-            img_type = "jpeg"
-        elif ext == ".png":
-            img_type = "png"
-        else:
-            img_type = "webp"
-
-        results.append(
-            {
-                "filename": file_path.name,
-                "size_bytes": stat.st_size,
-                "modified_timestamp": int(stat.st_mtime),
-                "file_type": img_type,
-            }
-        )
-
-    logger.info("Listed %d reference images (pattern=%s, type=%s)", len(results), glob_pattern, file_type)
-    return {"data": results}
+):
+    return await reference.sora_list_references(pattern, file_type, sort_by, order, limit)
 
 
 @mcp.tool(
@@ -619,137 +234,11 @@ async def sora_prepare_reference(
     target_size: VideoSize,
     output_filename: str | None = None,
     resize_mode: Literal["crop", "pad", "rescale"] = "crop",
-) -> PrepareResult:
-    """Prepare a reference image by resizing to match Sora dimensions.
-
-    Args:
-        input_filename: Source image filename (not path) in SORA_REFERENCE_PATH
-        target_size: Target Sora video size
-        output_filename: Optional custom output name (defaults to auto-generated)
-        resize_mode: Resizing strategy - "crop" (cover + crop), "pad" (fit + letterbox), or "rescale" (stretch to fit)
-
-    Returns:
-        PrepareResult with output filename, sizes, mode, and absolute path
-
-    Raises:
-        RuntimeError: If SORA_REFERENCE_PATH not configured
-        ValueError: If input file invalid or path traversal detected
-    """
-    reference_image_path = get_path("reference")
-
-    # Security: validate input filename and construct safe path
-    input_path = reference_image_path / input_filename
-    input_path = input_path.resolve()
-
-    # Security: prevent path traversal
-    if not str(input_path).startswith(str(reference_image_path)):
-        raise ValueError("Invalid input filename: path traversal detected")
-
-    # Security: prevent symlink exploitation
-    if input_path.exists() and input_path.is_symlink():
-        raise ValueError(f"Input image cannot be a symbolic link: {input_filename}")
-
-    # Parse target dimensions from VideoSize string (e.g., "1280x720" -> (1280, 720))
-    width_str, height_str = target_size.split("x")
-    target_width, target_height = int(width_str), int(height_str)
-
-    # Generate output filename if not provided
-    if output_filename is None:
-        input_stem = input_path.stem
-        output_filename = f"{input_stem}_{target_size}.png"
-
-    # Security: validate output filename and construct safe path
-    output_path = reference_image_path / output_filename
-    output_path = output_path.resolve()
-
-    # Security: prevent path traversal
-    if not str(output_path).startswith(str(reference_image_path)):
-        raise ValueError("Invalid output filename: path traversal detected")
-
-    # Load image with Pillow (TOCTOU-safe: handle file errors gracefully)
-    try:
-        img = Image.open(input_path)
-        original_size = img.size  # (width, height)
-    except FileNotFoundError as e:
-        raise ValueError(f"Input image not found: {input_filename}") from e
-    except PermissionError as e:
-        raise ValueError(f"Permission denied reading input image: {input_filename}") from e
-    except OSError as e:
-        raise ValueError(f"Error reading input image: {e}") from e
-
-    # Convert to RGB if necessary (handles RGBA, grayscale, etc.)
-    if img.mode != "RGB":
-        img = img.convert("RGB")
-
-    # Resize based on mode
-    if resize_mode == "crop":
-        # Scale to cover target dimensions, then center crop
-        img_ratio = img.width / img.height
-        target_ratio = target_width / target_height
-
-        if img_ratio > target_ratio:
-            # Image is wider than target - fit height, crop width
-            new_height = target_height
-            new_width = int(img.width * (target_height / img.height))
-        else:
-            # Image is taller than target - fit width, crop height
-            new_width = target_width
-            new_height = int(img.height * (target_width / img.width))
-
-        # Resize
-        img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-
-        # Center crop
-        left = (new_width - target_width) // 2
-        top = (new_height - target_height) // 2
-        right = left + target_width
-        bottom = top + target_height
-        img = img.crop((left, top, right, bottom))
-
-    elif resize_mode == "pad":
-        # Scale to fit inside target dimensions, then pad with black bars
-        img.thumbnail((target_width, target_height), Image.Resampling.LANCZOS)
-
-        # Create black background
-        result = Image.new("RGB", (target_width, target_height), (0, 0, 0))
-
-        # Paste resized image centered
-        paste_x = (target_width - img.width) // 2
-        paste_y = (target_height - img.height) // 2
-        result.paste(img, (paste_x, paste_y))
-        img = result
-    else:  # resize_mode == "rescale"
-        # Simple stretch/squash to exact dimensions (may distort)
-        img = img.resize((target_width, target_height), Image.Resampling.LANCZOS)
-
-    # Save as PNG with error handling
-    try:
-        img.save(output_path, "PNG")
-    except PermissionError as e:
-        raise ValueError(f"Permission denied writing output image: {output_filename}") from e
-    except OSError as e:
-        raise ValueError(f"Error writing output image: {e}") from e
-
-    logger.info(
-        "Prepared reference: %s -> %s (%s, %dx%d -> %dx%d)",
-        input_filename,
-        output_filename,
-        resize_mode,
-        original_size[0],
-        original_size[1],
-        target_width,
-        target_height,
-    )
-
-    return {
-        "output_filename": output_filename,
-        "original_size": original_size,
-        "target_size": (target_width, target_height),
-        "resize_mode": resize_mode,
-        "path": str(output_path),
-    }
+):
+    return await reference.sora_prepare_reference(input_filename, target_size, output_filename, resize_mode)
 
 
+# ==================== IMAGE GENERATION TOOLS ====================
 @mcp.tool(
     description="""Generate an image using OpenAI's Responses API and save to reference path.
 
@@ -789,60 +278,8 @@ async def image_create(
     output_format: Literal["png", "jpeg", "webp"] = "png",
     background: Literal["transparent", "opaque", "auto"] | None = None,
     previous_response_id: str | None = None,
-) -> ImageResponse:
-    """Create a new image generation job using Responses API.
-
-    Args:
-        prompt: Text description of image to generate
-        model: Model to use (gpt-5, gpt-4.1, etc.)
-        size: Output resolution
-        quality: Image quality level
-        output_format: File format for output
-        background: Background transparency setting
-        previous_response_id: Optional ID to refine previous generation
-
-    Returns:
-        ImageResponse with response ID, status, and creation timestamp
-
-    Raises:
-        RuntimeError: If OPENAI_API_KEY not set
-    """
-    client = get_client()
-
-    # Build image generation tool configuration
-    tool_config: dict = {"type": "image_generation"}
-
-    if size is not None:
-        tool_config["size"] = size
-    if quality is not None:
-        tool_config["quality"] = quality
-    if output_format is not None:
-        tool_config["output_format"] = output_format
-    if background is not None:
-        tool_config["background"] = background
-
-    # Create response with image generation tool
-    prev_resp_param: str | Omit = omit if previous_response_id is None else previous_response_id
-    response = await client.responses.create(
-        model=model,
-        input=prompt,
-        tools=[tool_config],
-        previous_response_id=prev_resp_param,
-        background=True
-    )
-
-    logger.info(
-        "Started image generation %s (%s)%s",
-        response.id,
-        response.status,
-        f" from {previous_response_id}" if previous_response_id else "",
-    )
-
-    return {
-        "id": response.id,
-        "status": str(response.status) if response.status else "unknown",
-        "created_at": response.created_at,
-    }
+):
+    return await image.image_create(prompt, model, size, quality, output_format, background, previous_response_id)
 
 
 @mcp.tool(
@@ -853,26 +290,8 @@ Call repeatedly until status changes from 'queued'/'in_progress' to 'completed' 
 
 Returns ImageResponse with: id, status, created_at"""
 )
-async def image_get_status(response_id: str) -> ImageResponse:
-    """Get current status of an image generation job.
-
-    Args:
-        response_id: The response ID from image_create
-
-    Returns:
-        ImageResponse with current status and metadata
-
-    Raises:
-        RuntimeError: If OPENAI_API_KEY not set
-    """
-    client = get_client()
-    response = await client.responses.retrieve(response_id)
-
-    return {
-        "id": response.id,
-        "status": str(response.status) if response.status else "unknown",
-        "created_at": response.created_at,
-    }
+async def image_get_status(response_id: str):
+    return await image.image_get_status(response_id)
 
 
 @mcp.tool(
@@ -888,92 +307,11 @@ Parameters:
 
 Returns ImageDownloadResult with: filename, path, size, format"""
 )
-async def image_download(
-    response_id: str,
-    filename: str | None = None,
-) -> ImageDownloadResult:
-    """Download a completed generated image to disk.
-
-    Args:
-        response_id: Response ID from image_create
-        filename: Optional custom filename
-
-    Returns:
-        ImageDownloadResult with filename, path, dimensions, and format
-
-    Raises:
-        RuntimeError: If SORA_REFERENCE_PATH not configured or OPENAI_API_KEY not set
-        ValueError: If image generation not found or invalid filename
-    """
-    reference_image_path = get_path("reference")
-
-    client = get_client()
-    response = await client.responses.retrieve(response_id)
-
-    # Find image generation call in output
-    image_gen_call: ImageGenerationCall | None = None
-    for output in response.output:
-        if output.type == "image_generation_call":
-            image_gen_call = output
-            break
-
-    if image_gen_call is None:
-        raise ValueError(f"No image generation found in response {response_id}")
-
-    if image_gen_call.result is None:
-        raise ValueError(f"Image generation not completed (status: {image_gen_call.status})")
-
-    # Decode base64 image
-    import base64
-    import time
-
-    image_base64 = image_gen_call.result
-    image_bytes = base64.b64decode(image_base64)
-
-    # Auto-generate filename if not provided
-    if filename is None:
-        timestamp = int(time.time())
-        # Try to infer format from tool config, default to png
-        output_format = "png"  # Default
-        # Note: We don't have direct access to the tool config used, so default to png
-        filename = f"img_{timestamp}.{output_format}"
-
-    # Security: validate filename and construct safe path
-    output_path = reference_image_path / filename
-    output_path = output_path.resolve()
-
-    # Security: prevent path traversal
-    if not str(output_path).startswith(str(reference_image_path)):
-        raise ValueError("Invalid filename: path traversal detected")
-
-    # Write image to disk with error handling
-    try:
-        with open(output_path, "wb") as f:
-            f.write(image_bytes)
-    except PermissionError as e:
-        raise ValueError(f"Permission denied writing image: {filename}") from e
-    except OSError as e:
-        raise ValueError(f"Error writing image: {e}") from e
-
-    # Get image dimensions using PIL
-    try:
-        img = Image.open(output_path)
-        size = img.size  # (width, height)
-        output_format = img.format.lower() if img.format else "unknown"
-    except OSError as e:
-        raise ValueError(f"Error reading saved image dimensions: {e}") from e
-
-    logger.info("Downloaded image %s to %s (%dx%d, %s)", response_id, filename, size[0], size[1], output_format)
-
-    return {
-        "filename": filename,
-        "path": str(output_path),
-        "size": size,
-        "format": output_format,
-    }
+async def image_download(response_id: str, filename: str | None = None):
+    return await image.image_download(response_id, filename)
 
 
-# -------- Entrypoint --------
+# ==================== SERVER ENTRYPOINT ====================
 def main():
     """Run the MCP server.
 

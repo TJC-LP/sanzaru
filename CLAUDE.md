@@ -31,8 +31,29 @@ claude  # in this directory with .mcp.json configured
 
 ## Core Architecture
 
-### Single-file Server Design
-All MCP tools are defined in `src/sora_mcp_server/server.py` using FastMCP decorators. The server is intentionally simple and stateless.
+### Modular Server Design
+The server is organized into focused modules for maintainability and code reuse:
+
+```
+src/sora_mcp_server/
+├── server.py           # FastMCP initialization & tool registration (~320 lines)
+├── types.py            # TypedDict definitions (~70 lines)
+├── config.py           # OpenAI client + path configuration (~110 lines)
+├── security.py         # File security utilities (~90 lines)
+├── utils.py            # Shared helpers (~30 lines)
+└── tools/              # Tool implementations
+    ├── __init__.py
+    ├── video.py        # 6 video tools (~200 lines)
+    ├── reference.py    # 2 reference image tools (~230 lines)
+    └── image.py        # 3 image generation tools (~180 lines)
+```
+
+**server.py** registers all tools with FastMCP decorators and delegates to tool implementations
+**types.py** defines all return types (DownloadResult, VideoSummary, etc.)
+**config.py** provides `get_client()` and `get_path()` with validation
+**security.py** provides reusable functions: `validate_safe_path()`, `check_not_symlink()`, `safe_open_file()`
+**utils.py** provides helpers: `suffix_for_variant()`, `generate_filename()`
+**tools/*.py** contain the actual tool implementations as plain async functions
 
 ### Runtime Path Configuration
 Paths are validated lazily via the `get_path()` function when tools are called:
@@ -57,13 +78,32 @@ Both environment variables are required (no defaults). Paths are cached with `@l
 - Base64-encoded image in `ImageGenerationCall.result`
 
 ### Security Model
-All file operations use path traversal protection:
+All file operations use centralized security utilities from `security.py`:
+
+**`validate_safe_path(base_path, filename, allow_create=False)`**
+- Prevents path traversal attacks (e.g., `../../etc/passwd`)
+- Ensures resolved path stays within base_path
+- Optionally validates file existence
+
+**`check_not_symlink(path, error_context)`**
+- Prevents symlink exploitation
+- Raises ValueError if path is a symbolic link
+
+**`safe_open_file(path, mode, error_context, check_symlink=True)`**
+- Context manager for safe file I/O
+- Standardized error handling (FileNotFoundError, PermissionError, OSError)
+- Optional symlink checking
+
+Example usage:
 ```python
-base_path = get_path("reference")  # or get_path("video")
-file_path = base_path / user_filename
-file_path = file_path.resolve()
-if not str(file_path).startswith(str(base_path)):
-    raise ValueError("path traversal detected")
+from security import validate_safe_path, safe_open_file
+from config import get_path
+
+base_path = get_path("reference")
+file_path = validate_safe_path(base_path, user_filename)
+
+with safe_open_file(file_path, "rb", "reference image") as f:
+    data = f.read()
 ```
 
 Additional security:
