@@ -8,7 +8,7 @@ This document outlines a plan to make the Sora MCP server fully asynchronous usi
 
 ### File I/O (Needs `aiofiles`)
 
-**`sora_create_video` (line 215)**
+**`sora_create_video`**
 ```python
 with open(reference_file, "rb") as f:
     video = await client.videos.create(..., input_reference=f)
@@ -16,7 +16,7 @@ with open(reference_file, "rb") as f:
 - Blocks on reading reference image from disk
 - Affects: Videos with reference images only
 
-**`sora_download` (line 331)**
+**`sora_download`**
 ```python
 content.write_to_file(str(out_path))
 ```
@@ -24,7 +24,7 @@ content.write_to_file(str(out_path))
 - Affects: All video downloads
 - Note: May need custom async wrapper since this is SDK code
 
-**`sora_prepare_reference` (line 643, 692)**
+**`sora_prepare_reference`**
 ```python
 img = Image.open(input_path)
 # ... processing ...
@@ -33,7 +33,7 @@ img.save(output_path, "PNG")
 - Blocks on reading and writing image files
 - Affects: All image resize operations
 
-**`image_download` (line 910)**
+**`image_download`**
 ```python
 with open(output_path, "wb") as f:
     f.write(image_bytes)
@@ -43,7 +43,7 @@ with open(output_path, "wb") as f:
 
 ### CPU-Bound Operations (Needs `anyio.to_thread`)
 
-**`sora_prepare_reference` (lines 643-691)**
+**`sora_prepare_reference`**
 ```python
 img = Image.open(input_path)
 img = img.convert("RGB")
@@ -56,7 +56,7 @@ img.save(...)
 - Blocks event loop during resize/crop/convert operations
 - Affects: All image resize operations
 
-**`image_download` (line 891, 914)**
+**`image_download`**
 ```python
 image_bytes = base64.b64decode(image_base64)
 img = Image.open(output_path)  # for dimension checking
@@ -82,7 +82,7 @@ dependencies = [
 
 #### 1. `sora_create_video` - Async Reference Image Reading
 
-**Current (line 215):**
+**Current:**
 ```python
 with open(reference_file, "rb") as f:
     video = await client.videos.create(..., input_reference=f)
@@ -102,7 +102,7 @@ async with aiofiles.open(reference_file, "rb") as f:
 
 #### 2. `sora_download` - Async Video Writing
 
-**Current (line 331):**
+**Current:**
 ```python
 content.write_to_file(str(out_path))
 ```
@@ -125,7 +125,7 @@ await anyio.to_thread.run_sync(content.write_to_file, str(out_path))
 
 #### 3. `sora_prepare_reference` - Fully Async Image Processing
 
-**Current (lines 643-692):** All synchronous PIL operations
+**Current:** All synchronous PIL operations
 
 **Proposed:**
 ```python
@@ -173,7 +173,7 @@ async def sora_prepare_reference(...) -> PrepareResult:
 
 #### 4. `image_download` - Async Base64 + File Write
 
-**Current (lines 888-911):**
+**Current:**
 ```python
 image_bytes = base64.b64decode(image_base64)
 with open(output_path, "wb") as f:

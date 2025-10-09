@@ -3,6 +3,7 @@ import logging
 import os
 import pathlib
 import sys
+from functools import lru_cache
 from typing import Literal, TypedDict
 
 from dotenv import load_dotenv
@@ -101,6 +102,7 @@ def get_client() -> AsyncOpenAI:
 
 
 # ---------- Path configuration (runtime) ----------
+@lru_cache(maxsize=2)
 def get_path(path_type: Literal["video", "reference"]) -> pathlib.Path:
     """Get and validate a configured path from environment.
 
