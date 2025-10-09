@@ -310,6 +310,65 @@ create_image(
 4. First image gets richest detail preservation
 5. Model synthesizes new image using all references
 
+### Tool Configuration Structure
+
+The `input_fidelity` parameter is simply passed as a key/value pair in the `tools` array sent to the Responses API.
+
+**Without input_fidelity:**
+```python
+tools=[
+    {
+        "type": "image_generation",
+        "size": "1024x1024",
+        "quality": "high",
+        "output_format": "png"
+    }
+]
+```
+
+**With input_fidelity="high":**
+```python
+tools=[
+    {
+        "type": "image_generation",
+        "size": "1024x1024",
+        "quality": "high",
+        "output_format": "png",
+        "input_fidelity": "high"  # Simple key/value addition
+    }
+]
+```
+
+**Complete API call example:**
+```python
+response = await client.responses.create(
+    model="gpt-4.1",
+    input=[
+        {
+            "role": "user",
+            "content": [
+                {"type": "input_text", "text": "Add the logo to the woman's top"},
+                {"type": "input_image", "image_url": "data:image/jpeg;base64,..."},
+                {"type": "input_image", "image_url": "data:image/png;base64,..."}
+            ]
+        }
+    ],
+    tools=[
+        {
+            "type": "image_generation",
+            "input_fidelity": "high"  # Preserves faces/logos precisely
+        }
+    ],
+    background=True,
+)
+```
+
+**Key implementation detail:** In `create_image()`, it's a one-line addition to the tool config:
+```python
+if input_fidelity is not None:
+    tool_config["input_fidelity"] = input_fidelity
+```
+
 ## Implementation Details
 
 ### File Structure
