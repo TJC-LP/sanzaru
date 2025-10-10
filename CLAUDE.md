@@ -31,6 +31,12 @@ claude  # in this directory with .mcp.json configured
 
 ## Core Architecture
 
+**Async Architecture:**
+- Fully non-blocking I/O with `aiofiles` and `anyio`
+- CPU-bound operations (PIL, base64) run in thread pools
+- Streaming downloads with async iteration
+- See [`docs/async-optimizations.md`](docs/async-optimizations.md) for details
+
 ### Modular Server Design
 The server is organized into focused modules for maintainability and code reuse:
 

@@ -46,18 +46,32 @@ async def test_sora_download(mocker, tmp_video_path):
     """Test video download writes file correctly."""
     mocker.patch("sora_mcp_server.tools.video.get_path", return_value=tmp_video_path)
 
-    mock_content = mocker.MagicMock()
-    mock_content.write_to_file = mocker.MagicMock()
+    # Mock streaming response with async iteration
+    mock_response = mocker.MagicMock()
+
+    # Mock iter_bytes to return async iterator of chunks
+    async def mock_iter():
+        yield b"chunk1"
+        yield b"chunk2"
+
+    mock_response.iter_bytes.return_value = mock_iter()
+
+    # Mock the streaming context manager
+    mock_stream_ctx = mocker.MagicMock()
+    mock_stream_ctx.__aenter__ = mocker.AsyncMock(return_value=mock_response)
+    mock_stream_ctx.__aexit__ = mocker.AsyncMock(return_value=None)
 
     mock_get_client = mocker.patch("sora_mcp_server.tools.video.get_client")
-    mock_get_client.return_value.videos.download_content = mocker.AsyncMock(return_value=mock_content)
+    mock_get_client.return_value.with_streaming_response.videos.download_content.return_value = mock_stream_ctx
 
     result = await download_video("vid_test123", filename="test.mp4", variant="video")
 
     assert result["filename"] == "test.mp4"
     assert result["variant"] == "video"
     assert "test.mp4" in result["path"]
-    mock_content.write_to_file.assert_called_once()
+    mock_get_client.return_value.with_streaming_response.videos.download_content.assert_called_once_with(
+        "vid_test123", variant="video"
+    )
 
 
 @pytest.mark.integration

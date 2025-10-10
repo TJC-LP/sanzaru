@@ -10,6 +10,7 @@ This module handles image generation operations:
 import base64
 import pathlib
 
+import anyio
 from openai._types import Omit, omit
 from openai.types.responses import (
     EasyInputMessageParam,
@@ -23,7 +24,7 @@ from openai.types.responses.tool_param import ImageGeneration
 from PIL import Image
 
 from ..config import get_client, get_path, logger
-from ..security import check_not_symlink, validate_safe_path
+from ..security import async_safe_open_file, check_not_symlink, validate_safe_path
 from ..types import ImageDownloadResult, ImageResponse
 from ..utils import generate_filename
 
@@ -303,9 +304,9 @@ async def download_image(
 
         raise ValueError(error_msg)
 
-    # Decode base64 image
+    # Decode base64 in thread pool (CPU-bound for large images)
     image_base64 = image_gen_call.result
-    image_bytes = base64.b64decode(image_base64)
+    image_bytes = await anyio.to_thread.run_sync(base64.b64decode, image_base64)
 
     # Auto-generate filename if not provided
     if filename is None:
@@ -316,22 +317,16 @@ async def download_image(
     # Security: validate filename and construct safe path
     output_path = validate_safe_path(reference_image_path, filename, allow_create=True)
 
-    # Write image to disk with error handling
-    try:
-        with open(output_path, "wb") as f:
-            f.write(image_bytes)
-    except PermissionError as e:
-        raise ValueError(f"Permission denied writing image: {filename}") from e
-    except OSError as e:
-        raise ValueError(f"Error writing image: {e}") from e
+    # Write image to disk asynchronously
+    async with async_safe_open_file(output_path, "wb", "image file", check_symlink=False) as f:
+        await f.write(image_bytes)
 
-    # Get image dimensions using PIL
-    try:
+    # Get dimensions in thread pool (PIL operations)
+    def _get_dimensions() -> tuple[tuple[int, int], str]:
         img = Image.open(output_path)
-        size = img.size  # (width, height)
-        output_format = img.format.lower() if img.format else "unknown"
-    except OSError as e:
-        raise ValueError(f"Error reading saved image dimensions: {e}") from e
+        return img.size, img.format.lower() if img.format else "unknown"
+
+    size, output_format = await anyio.to_thread.run_sync(_get_dimensions)
 
     logger.info("Downloaded image %s to %s (%dx%d, %s)", response_id, filename, size[0], size[1], output_format)
 

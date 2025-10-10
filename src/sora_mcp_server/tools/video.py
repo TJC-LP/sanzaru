@@ -15,7 +15,7 @@ from openai._types import Omit, omit
 from openai.types import Video, VideoDeleteResponse, VideoModel, VideoSeconds, VideoSize
 
 from ..config import get_client, get_path, logger
-from ..security import safe_open_file, validate_safe_path
+from ..security import async_safe_open_file, validate_safe_path
 from ..types import DownloadResult, ListResult, VideoSummary
 from ..utils import generate_filename, suffix_for_variant
 
@@ -61,14 +61,16 @@ async def create_video(
         if reference_file.suffix.lower() not in allowed_extensions:
             raise ValueError(f"Unsupported file type: {reference_file.suffix}. Use: JPEG, PNG, or WEBP")
 
-        # Open and send reference image
-        with safe_open_file(reference_file, "rb", "reference image") as f:
+        # Open and read reference image asynchronously with security checks
+        async with async_safe_open_file(reference_file, "rb", "reference image") as f:
+            file_content = await f.read()
+            # OpenAI SDK accepts bytes, so pass file content directly
             video = await client.videos.create(
                 model=model,
                 prompt=prompt,
                 seconds=seconds_param,
                 size=size_param,
-                input_reference=f,
+                input_reference=file_content,
             )
         logger.info("Started job %s (%s) with reference: %s", video.id, video.status, input_reference_filename)
     else:
@@ -120,9 +122,7 @@ async def download_video(
         ValueError: If invalid filename or path traversal detected
     """
     video_download_path = get_path("video")
-
     client = get_client()
-    content = await client.videos.download_content(video_id, variant=variant)
     suffix = suffix_for_variant(variant)
 
     # Auto-generate filename if not provided
@@ -132,7 +132,14 @@ async def download_video(
     # Security: validate filename and construct safe path
     out_path = validate_safe_path(video_download_path, filename, allow_create=True)
 
-    content.write_to_file(str(out_path))
+    # Stream video to disk asynchronously
+    async with (
+        client.with_streaming_response.videos.download_content(video_id, variant=variant) as response,
+        async_safe_open_file(out_path, "wb", "video file", check_symlink=False) as f,
+    ):
+        async for chunk in response.iter_bytes():
+            await f.write(chunk)
+
     logger.info("Wrote %s (%s)", out_path, variant)
     return {"filename": filename, "path": str(out_path), "variant": variant}
 
