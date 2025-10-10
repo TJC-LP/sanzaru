@@ -10,6 +10,7 @@ import os
 import pathlib
 from typing import Literal
 
+import anyio
 from openai.types import VideoSize
 from PIL import Image
 
@@ -269,7 +270,7 @@ async def prepare_reference_image(
     """
     reference_image_path = get_path("reference")
 
-    # Validate paths
+    # Validate paths (fast, stays synchronous)
     input_path = validate_safe_path(reference_image_path, input_filename)
     target_width, target_height = parse_video_dimensions(target_size)
 
@@ -279,21 +280,29 @@ async def prepare_reference_image(
 
     output_path = validate_safe_path(reference_image_path, output_filename, allow_create=True)
 
-    # Load and process image
-    img = load_and_convert_image(input_path, input_filename)
-    original_size = img.size
+    # Wrap entire PIL workflow in thread pool (CPU-intensive operations)
+    def _process_image() -> tuple[tuple[int, int], str]:
+        """Synchronous image processing in worker thread."""
+        # Load and convert image
+        img = load_and_convert_image(input_path, input_filename)
+        original_size = img.size
 
-    # Apply resize strategy
-    resize_fn = RESIZE_STRATEGIES[resize_mode]
-    img = resize_fn(img, target_width, target_height)
+        # Apply resize strategy
+        resize_fn = RESIZE_STRATEGIES[resize_mode]
+        img = resize_fn(img, target_width, target_height)
 
-    # Save result
-    save_image(img, output_path, output_filename)
+        # Save result
+        save_image(img, output_path, output_filename)
+
+        return original_size, output_filename
+
+    # Run in thread pool - multiple image preps can now run concurrently
+    original_size, final_filename = await anyio.to_thread.run_sync(_process_image)
 
     logger.info(
         "Prepared reference: %s -> %s (%s, %dx%d -> %dx%d)",
         input_filename,
-        output_filename,
+        final_filename,
         resize_mode,
         original_size[0],
         original_size[1],
@@ -302,7 +311,7 @@ async def prepare_reference_image(
     )
 
     return {
-        "output_filename": output_filename,
+        "output_filename": final_filename,
         "original_size": original_size,
         "target_size": (target_width, target_height),
         "resize_mode": resize_mode,

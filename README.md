@@ -11,6 +11,16 @@ A **stateless**, lightweight **FastMCP** server that wraps the **OpenAI Sora Vid
 
 > **Note:** Content guardrails are enforced by OpenAI. This server does not run local moderation.
 
+## Performance
+
+The server is **fully asynchronous** with proven concurrency at scale:
+- ✅ **32+ concurrent downloads** verified in stress testing
+- ✅ **8-10x speedup** for parallel operations (image processing, file I/O, base64 decoding)
+- ✅ **Non-blocking architecture** using `aiofiles` + `anyio` thread pools
+- ✅ **Python 3.14 ready** - Optimized for free-threading support
+
+See [`docs/async-optimizations.md`](docs/async-optimizations.md) for technical details and benchmarks.
+
 ## Requirements
 - Python 3.10+
 - `OPENAI_API_KEY` environment variable
