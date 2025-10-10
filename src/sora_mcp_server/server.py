@@ -104,8 +104,22 @@ async def create_image(
     output_format: Literal["png", "jpeg", "webp"] = "png",
     background: Literal["transparent", "opaque", "auto"] | None = None,
     previous_response_id: str | None = None,
+    input_images: list[str] | None = None,
+    input_fidelity: Literal["low", "high"] | None = None,
+    mask_filename: str | None = None,
 ):
-    return await image.create_image(prompt, model, size, quality, output_format, background, previous_response_id)
+    return await image.create_image(
+        prompt,
+        model,
+        size,
+        quality,
+        output_format,
+        background,
+        previous_response_id,
+        input_images,
+        input_fidelity,
+        mask_filename,
+    )
 
 
 @mcp.tool(description=GET_IMAGE_STATUS)

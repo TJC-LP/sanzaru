@@ -51,7 +51,7 @@ def load_and_convert_image(path: pathlib.Path, filename: str) -> Image.Image:
         ValueError: If file can't be loaded
     """
     try:
-        img = Image.open(path)
+        img: Image.Image = Image.open(path)
         if img.mode != "RGB":
             img = img.convert("RGB")
         return img
@@ -187,7 +187,7 @@ async def list_reference_images(
         Dict with "data" key containing list of ReferenceImage objects
 
     Raises:
-        RuntimeError: If SORA_REFERENCE_PATH not configured
+        RuntimeError: If REFERENCE_IMAGE_PATH not configured
     """
     reference_image_path = get_path("reference")
 
@@ -255,7 +255,7 @@ async def prepare_reference_image(
     """Prepare a reference image by resizing to match Sora dimensions.
 
     Args:
-        input_filename: Source image filename (not path) in SORA_REFERENCE_PATH
+        input_filename: Source image filename (not path) in REFERENCE_IMAGE_PATH
         target_size: Target Sora video size
         output_filename: Optional custom output name (defaults to auto-generated)
         resize_mode: Resizing strategy - "crop" (cover + crop), "pad" (fit + letterbox), or "rescale" (stretch to fit)
@@ -264,7 +264,7 @@ async def prepare_reference_image(
         PrepareResult with output filename, sizes, mode, and absolute path
 
     Raises:
-        RuntimeError: If SORA_REFERENCE_PATH not configured
+        RuntimeError: If REFERENCE_IMAGE_PATH not configured
         ValueError: If input file invalid or path traversal detected
     """
     reference_image_path = get_path("reference")

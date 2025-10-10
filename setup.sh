@@ -99,7 +99,7 @@ echo "============================================"
 cat > .env << EOF
 OPENAI_API_KEY="$API_KEY"
 SORA_VIDEO_PATH="$VIDEO_PATH"
-SORA_REFERENCE_PATH="$REFERENCE_PATH"
+REFERENCE_IMAGE_PATH="$REFERENCE_PATH"
 EOF
 
 echo "✓ Created .env file"

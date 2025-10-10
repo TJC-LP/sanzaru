@@ -275,3 +275,4 @@ pytest --cov=src              # With coverage report
 - Pure functions: 100% (achieved)
 - Tools (business logic): 80%+ (achieved: 82-88%)
 - Overall: 65%+ (achieved)
+- Always remember to read `.venv` files for type information about external libraries. NEVER use `typing.Any`.
