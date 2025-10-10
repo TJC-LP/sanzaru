@@ -30,8 +30,8 @@ class TestGetPathHappyPath:
         assert result.is_dir()
 
     def test_get_path_reference_valid(self, mocker, tmp_reference_path):
-        """Test that valid SORA_REFERENCE_PATH returns correct path."""
-        mocker.patch.dict(os.environ, {"SORA_REFERENCE_PATH": str(tmp_reference_path)})
+        """Test that valid REFERENCE_IMAGE_PATH returns correct path."""
+        mocker.patch.dict(os.environ, {"REFERENCE_IMAGE_PATH": str(tmp_reference_path)})
 
         result = get_path("reference")
 
@@ -64,7 +64,7 @@ class TestGetPathCaching:
             os.environ,
             {
                 "SORA_VIDEO_PATH": str(tmp_video_path),
-                "SORA_REFERENCE_PATH": str(tmp_reference_path),
+                "REFERENCE_IMAGE_PATH": str(tmp_reference_path),
             },
         )
 
@@ -88,10 +88,10 @@ class TestGetPathErrorCases:
             get_path("video")
 
     def test_missing_reference_env_var(self, mocker):
-        """Test that missing SORA_REFERENCE_PATH raises RuntimeError."""
+        """Test that missing REFERENCE_IMAGE_PATH raises RuntimeError."""
         mocker.patch.dict(os.environ, {}, clear=True)
 
-        with pytest.raises(RuntimeError, match="SORA_REFERENCE_PATH environment variable is not set"):
+        with pytest.raises(RuntimeError, match="REFERENCE_IMAGE_PATH environment variable is not set"):
             get_path("reference")
 
     def test_empty_string_env_var(self, mocker):
@@ -134,7 +134,7 @@ class TestGetPathErrorCases:
         link = tmp_path / "symlink_dir"
         link.symlink_to(real_dir)
 
-        mocker.patch.dict(os.environ, {"SORA_REFERENCE_PATH": str(link)})
+        mocker.patch.dict(os.environ, {"REFERENCE_IMAGE_PATH": str(link)})
 
         with pytest.raises(RuntimeError, match="cannot be a symbolic link"):
             get_path("reference")

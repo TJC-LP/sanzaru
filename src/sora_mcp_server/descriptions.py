@@ -18,7 +18,7 @@ Parameters:
 - model: "sora-2" (faster, cheaper) or "sora-2-pro" (higher quality). Default: "sora-2"
 - seconds: Duration as string "4", "8", or "12" (NOT an integer). Default: varies by model
 - size: Resolution as "720x1280" (portrait), "1280x720" (landscape), "1024x1792", or "1792x1024". Default: "720x1280"
-- input_reference_filename: Filename of reference image in SORA_REFERENCE_PATH (e.g., "cat.png"). Use list_reference_images to find available images. Image must match target size. Supported: JPEG, PNG, WEBP. Optional.
+- input_reference_filename: Filename of reference image in REFERENCE_IMAGE_PATH (e.g., "cat.png"). Use list_reference_images to find available images. Image must match target size. Supported: JPEG, PNG, WEBP. Optional.
 
 Returns Video object with fields: id, status, progress, model, seconds, size."""
 
@@ -122,7 +122,7 @@ Typical workflow:
 
 LIST_REFERENCE_IMAGES = """Search and list reference images available for video generation.
 
-Use this to discover what reference images are available in the SORA_REFERENCE_PATH directory.
+Use this to discover what reference images are available in the REFERENCE_IMAGE_PATH directory.
 These images can be used with create_video's input_reference_filename parameter.
 
 The reference image must match your target video size:
@@ -149,7 +149,7 @@ This tool prepares images for use with create_video by resizing them to exact So
 The original image is preserved; a new resized copy is created.
 
 Parameters:
-- input_filename: Source image filename in SORA_REFERENCE_PATH (required)
+- input_filename: Source image filename in REFERENCE_IMAGE_PATH (required)
 - target_size: Target video size: "720x1280", "1280x720", "1024x1792", or "1792x1024" (required)
 - output_filename: Custom output filename (optional, defaults to "{original_name}_{width}x{height}.png")
 - resize_mode: How to handle aspect ratio (default: "crop")
@@ -167,35 +167,81 @@ Example workflow:
 
 # ==================== IMAGE GENERATION TOOL DESCRIPTIONS ====================
 
-CREATE_IMAGE = """Generate an image using OpenAI's Responses API and save to reference path.
+CREATE_IMAGE = """Generate or edit images using OpenAI's Responses API.
 
-Creates an image from a text prompt using GPT-5 or newer models with image generation capability.
+Creates images from text prompts OR edits existing images by providing reference images.
 Returns immediately with a response_id - use get_image_status() to poll for completion.
 
-The image is saved to SORA_REFERENCE_PATH and can be used with create_video.
+**Text-only generation (no input_images):**
+- Generates image from scratch based on prompt
+
+**Image editing (with input_images):**
+- Modifies existing images based on prompt
+- Combines multiple images into new composition
+- First image receives highest detail preservation
+- Prompt describes desired changes, not what's already in images
 
 Parameters:
-- prompt: Text description of the image to generate (required)
-- model: Model to use - "gpt-5", "gpt-4.1", etc. Default: "gpt-5"
-- size: Resolution - "1024x1024", "1024x1536", "1536x1024", or "auto". Default: "auto"
-- quality: "low", "medium", "high", "auto". Default: "high"
-- output_format: "png", "jpeg", "webp". Default: "png"
-- background: "transparent", "opaque", "auto". Default: "auto"
-- previous_response_id: Optional response ID to refine previous image
+- prompt: Text description (required)
+  * Without input_images: Describe what to generate
+  * With input_images: Describe what changes to make
+- model: Mainline model - "gpt-5", "gpt-4.1", etc. Default: "gpt-5"
+- tool_config: Optional ImageGeneration configuration object (optional)
+  * Supports all fields: model, size, quality, moderation, input_fidelity, etc.
+  * MCP library handles serialization automatically
+  * See examples below for common configurations
+- previous_response_id: Refine previous image iteratively (optional)
+- input_images: List of filenames from REFERENCE_IMAGE_PATH (optional)
+  * Example: ["cat.png"] or ["lotion.jpg", "soap.png", "bomb.jpg"]
+  * Use list_reference_images() to discover available images
+  * Supported formats: JPEG, PNG, WEBP
+- mask_filename: PNG with alpha channel for inpainting (optional)
+  * Defines which region of first input image to edit
+  * Transparent = edit this area, black = keep original
+  * Requires input_images parameter
 
-Returns ImageResponse with: id (response_id), status, created_at
+Common tool_config examples:
 
-Typical workflow:
-1. create_image(prompt="sunset over mountains") -> response_id
-2. get_image_status(response_id) -> poll until status='completed'
-3. download_image(response_id, filename="sunset.png") -> saves to reference path
-4. create_video(..., input_reference_filename="sunset.png")
+Fast generation with mini model:
+  tool_config={"type": "image_generation", "model": "gpt-image-1-mini"}
 
-Iterative refinement:
-1. resp1 = create_image(prompt="a cat") -> response_id_1
-2. Wait for completion
-3. resp2 = create_image(prompt="make it more realistic", previous_response_id=response_id_1) -> response_id_2
-4. Download response_id_2"""
+Lower content moderation:
+  tool_config={"type": "image_generation", "moderation": "low"}
+
+High-fidelity with custom settings:
+  tool_config={
+      "type": "image_generation",
+      "model": "gpt-image-1",
+      "quality": "high",
+      "input_fidelity": "high",
+      "size": "1536x1024"
+  }
+
+Workflows:
+
+1. Text-only generation:
+   create_image("sunset over mountains")
+
+2. Single image editing:
+   create_image("add a flamingo to the pool", input_images=["lounge.png"])
+
+3. Multi-image composition:
+   create_image("gift basket with all these items", input_images=["lotion.png", "soap.png", "bomb.jpg"])
+
+4. High-fidelity logo placement:
+   create_image(
+       "add logo to woman's shirt",
+       input_images=["woman.jpg", "logo.png"],
+       tool_config={"type": "image_generation", "input_fidelity": "high"}
+   )
+
+5. Masked inpainting:
+   create_image("add flamingo", input_images=["pool.png"], mask_filename="pool_mask.png")
+
+6. Fast generation with mini model:
+   create_image("quick sketch of a cat", tool_config={"type": "image_generation", "model": "gpt-image-1-mini"})
+
+Returns ImageResponse with: id, status, created_at"""
 
 GET_IMAGE_STATUS = """Check status and progress of image generation.
 
@@ -208,7 +254,7 @@ DOWNLOAD_IMAGE = """Download a completed generated image to reference path.
 
 IMPORTANT: Only call AFTER get_image_status shows status='completed'.
 
-The image is saved to SORA_REFERENCE_PATH and can immediately be used with create_video.
+The image is saved to REFERENCE_IMAGE_PATH and can immediately be used with create_video.
 
 Parameters:
 - response_id: The response ID from create_image (required)

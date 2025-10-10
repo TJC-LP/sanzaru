@@ -15,7 +15,7 @@ A **stateless**, lightweight **FastMCP** server that wraps the **OpenAI Sora Vid
 - Python 3.10+
 - `OPENAI_API_KEY` environment variable
 - `SORA_VIDEO_PATH` environment variable (directory for downloaded videos)
-- `SORA_REFERENCE_PATH` environment variable (directory for reference images)
+- `REFERENCE_IMAGE_PATH` environment variable (directory for reference images)
 
 ## Quick Start
 
@@ -81,11 +81,11 @@ uv sync
 # Set environment variables and run
 export OPENAI_API_KEY=sk-...
 export SORA_VIDEO_PATH=~/sora-videos
-export SORA_REFERENCE_PATH=~/sora-references
+export REFERENCE_IMAGE_PATH=~/reference-images
 uv run sora-mcp-server
 ```
 
-**Important:** Both `SORA_VIDEO_PATH` and `SORA_REFERENCE_PATH` environment variables are required. The directories must exist before starting the server.
+**Important:** Both `SORA_VIDEO_PATH` and `REFERENCE_IMAGE_PATH` environment variables are required. The directories must exist before starting the server.
 
 ## MCP Tools
 
@@ -96,7 +96,7 @@ This runs an MCP server over stdio that exposes these tools:
   - Note: `seconds` must be a string: `"4"`, `"8"`, or `"12"` (not an integer)
   - Note: `size` must be one of: `"720x1280"`, `"1280x720"`, `"1024x1792"`, `"1792x1024"`
   - Note: `model` must be one of: `"sora-2"`, `"sora-2-pro"`
-  - Note: `input_reference_filename` is a filename (not path) from `SORA_REFERENCE_PATH`
+  - Note: `input_reference_filename` is a filename (not path) from `REFERENCE_IMAGE_PATH`
 - `get_video_status(video_id)` - Returns Video object with status/progress
 - `download_video(video_id, filename?, variant="video")` - Downloads to `SORA_VIDEO_PATH`
   - `filename` is optional - defaults to `{video_id}.{extension}` if not provided
@@ -109,7 +109,7 @@ This runs an MCP server over stdio that exposes these tools:
 - `create_image(prompt, model="gpt-5", size?, quality?, output_format?, background?, previous_response_id?)` - Generate images with GPT-5/GPT-4.1
   - Supported sizes: `1024x1024`, `1024x1536`, `1536x1024`, or `auto`
 - `get_image_status(response_id)` - Check image generation status
-- `download_image(response_id, filename?)` - Download completed image to `SORA_REFERENCE_PATH`
+- `download_image(response_id, filename?)` - Download completed image to `REFERENCE_IMAGE_PATH`
 
 ### Reference Image Management
 - `list_reference_images(pattern?, file_type="all", sort_by="modified", order="desc", limit=50)` - Search reference images
@@ -127,7 +127,7 @@ For practical tips and examples to craft effective Sora prompts, see `docs/sora2
 
 ## Reference Images
 - Supported formats: JPEG, PNG, WEBP
-- Place reference images in `SORA_REFERENCE_PATH` directory
+- Place reference images in `REFERENCE_IMAGE_PATH` directory
 - Use `list_reference_images` to discover available images
 - Reference image dimensions must match target video `size` parameter
 - LLMs can only access images in the configured reference directory (security sandbox)
@@ -149,7 +149,7 @@ The original image is preserved; a new resized PNG is created with dimensions in
 
 ## Image Generation
 
-Generate reference images using OpenAI's Responses API with GPT-5 or GPT-4.1 models. Images are automatically saved to `SORA_REFERENCE_PATH` for use with Sora video generation.
+Generate reference images using OpenAI's Responses API with GPT-5 or GPT-4.1 models. Images are automatically saved to `REFERENCE_IMAGE_PATH` for use with Sora video generation.
 
 ### Basic Workflow
 ```

@@ -40,7 +40,7 @@ async def create_video(
         Video object with job details (id, status, progress)
 
     Raises:
-        RuntimeError: If OPENAI_API_KEY not set or SORA_REFERENCE_PATH not configured
+        RuntimeError: If OPENAI_API_KEY not set or REFERENCE_IMAGE_PATH not configured
         ValueError: If reference image invalid or path traversal detected
     """
     client = get_client()

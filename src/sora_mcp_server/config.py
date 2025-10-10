@@ -54,7 +54,7 @@ def get_path(path_type: Literal["video", "reference"]) -> pathlib.Path:
     Security: Rejects symlinks in environment variable paths to prevent directory traversal.
 
     Args:
-        path_type: Either "video" for SORA_VIDEO_PATH or "reference" for SORA_REFERENCE_PATH
+        path_type: Either "video" for SORA_VIDEO_PATH or "reference" for REFERENCE_IMAGE_PATH
 
     Returns:
         Validated absolute path
@@ -67,8 +67,8 @@ def get_path(path_type: Literal["video", "reference"]) -> pathlib.Path:
         env_var = "SORA_VIDEO_PATH"
         error_name = "Video download directory"
     else:  # reference
-        path_str = os.getenv("SORA_REFERENCE_PATH")
-        env_var = "SORA_REFERENCE_PATH"
+        path_str = os.getenv("REFERENCE_IMAGE_PATH")
+        env_var = "REFERENCE_IMAGE_PATH"
         error_name = "Reference image directory"
 
     # Validate env var is set and not empty/whitespace

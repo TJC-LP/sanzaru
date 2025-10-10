@@ -31,6 +31,8 @@ repos:
           - openai
           - httpx
           - pillow
+          - mcp
+          - dotenv
         args: [--config-file=pyproject.toml]
         pass_filenames: true
         files: ^src/
