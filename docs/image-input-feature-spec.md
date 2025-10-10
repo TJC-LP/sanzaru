@@ -25,7 +25,7 @@ This unlocks creative workflows like:
 **Scenario:** User has a photo of a pool and wants to add a flamingo.
 
 ```python
-# 1. User already has lounge.png in SORA_REFERENCE_PATH
+# 1. User already has lounge.png in REFERENCE_IMAGE_PATH
 list_reference_images(pattern="lounge*")  # Verify it exists
 
 # 2. Edit the image
@@ -125,7 +125,7 @@ create_video(
 
 **Rationale:**
 - ✅ **Aligns with server philosophy**: Maintains stateless architecture
-- ✅ **Simpler mental model**: All files stay in `SORA_REFERENCE_PATH`, no OpenAI file lifecycle tracking
+- ✅ **Simpler mental model**: All files stay in `REFERENCE_IMAGE_PATH`, no OpenAI file lifecycle tracking
 - ✅ **No cleanup burden**: No need to delete files from OpenAI storage after use
 - ✅ **Consistent with existing patterns**: Mirrors how `create_video` handles reference images
 - ✅ **One-shot operations**: Image editing typically not reused across requests
@@ -178,7 +178,7 @@ async def create_image(
 
 #### `input_images: list[str] | None`
 
-**Purpose:** List of reference image filenames from `SORA_REFERENCE_PATH`.
+**Purpose:** List of reference image filenames from `REFERENCE_IMAGE_PATH`.
 
 **Behavior:**
 - Each filename validated with `validate_safe_path(reference_path, filename)`
@@ -274,7 +274,7 @@ create_image(
 ```
 
 **Flow:**
-1. Load `lounge.png` from `SORA_REFERENCE_PATH`
+1. Load `lounge.png` from `REFERENCE_IMAGE_PATH`
 2. Encode as base64 data URL
 3. `input` parameter = structured list:
    ```python
@@ -304,7 +304,7 @@ create_image(
 ```
 
 **Flow:**
-1. Load all 3 images from `SORA_REFERENCE_PATH`
+1. Load all 3 images from `REFERENCE_IMAGE_PATH`
 2. Encode each as base64 data URL
 3. `input` parameter includes all images in order
 4. First image gets richest detail preservation
@@ -586,7 +586,7 @@ async def create_image(
 **Path Traversal Protection:**
 - All filenames validated with `validate_safe_path(base_path, filename)`
 - Rejects `../`, `./`, absolute paths
-- Ensures resolved path stays within `SORA_REFERENCE_PATH`
+- Ensures resolved path stays within `REFERENCE_IMAGE_PATH`
 
 **Symlink Protection:**
 - All file paths checked with `check_not_symlink()`
@@ -968,7 +968,7 @@ See [OpenAI Vision Guide](https://platform.openai.com/docs/guides/vision/calcula
 
 ### Motivation
 
-The current `SORA_REFERENCE_PATH` environment variable name implies the directory is Sora-specific, but with the image input feature, this directory will be used for:
+The current `REFERENCE_IMAGE_PATH` environment variable name better reflects that this directory will be used for:
 1. **User-provided reference images** for `create_image` tool
 2. **Downloaded generated images** from `download_image`
 3. **Reference images for Sora videos** (existing use case)
@@ -986,26 +986,26 @@ The new name `REFERENCE_IMAGE_PATH` better reflects that this is a general-purpo
 1. **`src/sora_mcp_server/config.py`** (lines 70-71)
    ```python
    # OLD
-   path_str = os.getenv("SORA_REFERENCE_PATH")
-   env_var = "SORA_REFERENCE_PATH"
+   path_str = os.getenv("REFERENCE_IMAGE_PATH")
+   env_var = "REFERENCE_IMAGE_PATH"
 
-   # NEW
+   # NEW (Already updated)
    path_str = os.getenv("REFERENCE_IMAGE_PATH")
    env_var = "REFERENCE_IMAGE_PATH"
    ```
 
 2. **`setup.sh`** (line 102)
    ```bash
-   # OLD
-   SORA_REFERENCE_PATH="$REFERENCE_PATH"
+   # OLD (Already updated)
+   REFERENCE_IMAGE_PATH="$REFERENCE_PATH"
 
-   # NEW
+   # NEW (Already updated)
    REFERENCE_IMAGE_PATH="$REFERENCE_PATH"
    ```
 
 3. **`tests/unit/test_config.py`** (4 locations)
-   - Update mock env var patches: `{"SORA_REFERENCE_PATH": ...}` → `{"REFERENCE_IMAGE_PATH": ...}`
-   - Update error message assertions: `"SORA_REFERENCE_PATH"` → `"REFERENCE_IMAGE_PATH"`
+   - Update mock env var patches: `{"REFERENCE_IMAGE_PATH": ...}`
+   - Update error message assertions: `"REFERENCE_IMAGE_PATH"`
 
 #### Documentation Updates (52+ locations)
 
@@ -1017,24 +1017,24 @@ The new name `REFERENCE_IMAGE_PATH` better reflects that this is a general-purpo
 #### Configuration Files (3 locations)
 
 - **`.env.example`**: Update example env var name
-- **`.gitignore`**: Keep `sora-references/` directory pattern (see below)
-- **`setup.sh`**: Update generated `.env` file
+- **`.gitignore`**: Update to `reference-images/` directory pattern
+- **`setup.sh`**: Update generated `.env` file and default path
 
 ### Design Decisions
 
-#### Default Directory Name: Keep `sora-references/`
+#### Default Directory Name: Change to `reference-images/`
 
-**Decision:** Keep the default directory name as `sora-references/` for backward compatibility.
+**Decision:** Change the default directory name to `reference-images/` for semantic consistency.
 
 **Rationale:**
-- Existing users don't need to rename their directories
-- Only the *environment variable name* changes
-- Git ignore patterns remain valid
-- Less disruptive migration path
+- Better semantic clarity: "reference-images" clearly describes the directory purpose
+- Consistent with the new `REFERENCE_IMAGE_PATH` environment variable name
+- More descriptive than previous naming which implied Sora-only usage
+- Provides full semantic consistency across the codebase
 
 **Example `.env` after change:**
 ```bash
-REFERENCE_IMAGE_PATH="/absolute/path/to/sora-references"
+REFERENCE_IMAGE_PATH="/absolute/path/to/reference-images"
 ```
 
 #### Internal API: Keep `get_path("reference")`
@@ -1059,12 +1059,12 @@ REFERENCE_IMAGE_PATH="/absolute/path/to/sora-references"
 
 1. **Update your `.env` file:**
    ```diff
-   - SORA_REFERENCE_PATH="/path/to/sora-references"
-   + REFERENCE_IMAGE_PATH="/path/to/sora-references"
+   - SORA_REFERENCE_PATH="/path/to/reference-images"
+   + REFERENCE_IMAGE_PATH="/path/to/reference-images"
    ```
 
 2. **No directory rename needed:**
-   - You can keep your `sora-references/` directory
+   - You can keep your `reference-images/` directory
    - Only the environment variable name changed
 
 3. **Restart the MCP server** after updating `.env`
@@ -1087,7 +1087,7 @@ user-provided images for the new image input feature), not just Sora-specific co
 
 **Phase 2: Configuration**
 - [ ] Update `.env.example` line 3
-- [ ] Verify `.gitignore` keeps `sora-references/` pattern
+- [ ] Update `.gitignore` to use `reference-images/` pattern
 - [ ] Test `setup.sh` generates correct `.env`
 
 **Phase 3: Documentation**

@@ -15,5 +15,5 @@ build/
 *.webp
 *.jpg
 sora-videos/
-sora-references/
+reference-images/
 .coverage

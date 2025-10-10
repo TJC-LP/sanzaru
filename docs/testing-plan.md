@@ -10,7 +10,7 @@ This document outlines testing strategies for the Sora MCP server, including edg
 
 **Happy Path:**
 - [ ] Valid SORA_VIDEO_PATH returns correct path
-- [ ] Valid SORA_REFERENCE_PATH returns correct path
+- [ ] Valid REFERENCE_IMAGE_PATH returns correct path
 - [ ] Caching works (second call doesn't re-validate)
 
 **Error Cases:**
@@ -73,7 +73,7 @@ This document outlines testing strategies for the Sora MCP server, including edg
 
 **Test 2: Video Creation (With Reference)**
 ```bash
-# Prerequisites: Reference image in SORA_REFERENCE_PATH
+# Prerequisites: Reference image in REFERENCE_IMAGE_PATH
 1. Call list_videos_references to find available images
 2. Call create_video with input_reference_filename
 3. Poll until completed
@@ -85,7 +85,7 @@ This document outlines testing strategies for the Sora MCP server, including edg
 1. Call create_image(prompt="test image")
 2. Poll get_image_status until completed
 3. Call download_image with custom filename
-4. Verify: Image exists in SORA_REFERENCE_PATH
+4. Verify: Image exists in REFERENCE_IMAGE_PATH
 5. Call prepare_reference_image to resize
 6. Call create_video using prepared image
 7. Poll and download final video
@@ -102,8 +102,8 @@ This document outlines testing strategies for the Sora MCP server, including edg
 
 **Test 5: Invalid Directory**
 ```bash
-# Set SORA_VIDEO_PATH to non-existent directory
-1. Call download_video
+# Set SORA_VIDEO_PATH or REFERENCE_IMAGE_PATH to non-existent directory
+1. Call download_video or download_image
 2. Expected: RuntimeError with "does not exist" message
 ```
 
@@ -169,8 +169,8 @@ export SORA_VIDEO_PATH=~/.sora-videos-link
 
 **Scenario 2: Symlink in reference directory**
 ```bash
-# Symlink to sensitive file inside SORA_REFERENCE_PATH
-cd sora-references
+# Symlink to sensitive file inside REFERENCE_IMAGE_PATH
+cd reference-images
 ln -s /etc/passwd evil.png
 # Try to use in create_video
 # Current behavior: Would follow symlink (potential issue)
@@ -236,7 +236,7 @@ tests/
 2. **Symlinks in User Filenames:**
    - Current code doesn't check if user-provided filenames are symlinks
    - Only checks env var paths
-   - User could create symlink in SORA_REFERENCE_PATH pointing elsewhere
+   - User could create symlink in REFERENCE_IMAGE_PATH pointing elsewhere
    - **Risk:** Low (still protected by path.startswith() check)
    - **Future:** Consider adding `is_symlink()` check for user filenames
 
@@ -249,7 +249,7 @@ tests/
 
 - [ ] Test with missing OPENAI_API_KEY
 - [ ] Test with missing SORA_VIDEO_PATH
-- [ ] Test with missing SORA_REFERENCE_PATH
+- [ ] Test with missing REFERENCE_IMAGE_PATH
 - [ ] Test with whitespace in env vars
 - [ ] Test with empty env vars
 - [ ] Test with symlink paths (should fail)

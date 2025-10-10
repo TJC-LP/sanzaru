@@ -67,10 +67,10 @@ fi
 
 # Get reference path
 echo ""
-echo "Default reference images path: $PROJECT_DIR/sora-references"
+echo "Default reference images path: $PROJECT_DIR/reference-images"
 read -p "Press Enter to accept, or type a custom path: " REFERENCE_PATH
 if [ -z "$REFERENCE_PATH" ]; then
-    REFERENCE_PATH="$PROJECT_DIR/sora-references"
+    REFERENCE_PATH="$PROJECT_DIR/reference-images"
 else
     # Convert to absolute path if relative
     if [[ "$REFERENCE_PATH" != /* ]]; then

@@ -9,7 +9,7 @@ A stateless FastMCP server wrapping OpenAI's Sora Video API and Responses API (i
 **Key Architecture Principles:**
 - **Stateless**: No database, no in-memory job tracking. All state lives in OpenAI's cloud.
 - **Async polling pattern**: Create → Poll → Download workflow for both videos and images
-- **Security sandbox**: Reference images restricted to `SORA_REFERENCE_PATH` with path traversal protection
+- **Security sandbox**: Reference images restricted to `REFERENCE_IMAGE_PATH` with path traversal protection
 - **Type-safe**: Extensive use of TypedDict and Literal types from OpenAI SDK
 
 ## Development Commands
@@ -58,7 +58,7 @@ src/sora_mcp_server/
 ### Runtime Path Configuration
 Paths are validated lazily via the `get_path()` function when tools are called:
 - `get_path("video")`: Returns validated SORA_VIDEO_PATH for video downloads
-- `get_path("reference")`: Returns validated SORA_REFERENCE_PATH for reference images
+- `get_path("reference")`: Returns validated REFERENCE_IMAGE_PATH for reference images
 
 Both environment variables are required (no defaults). Paths are cached with `@lru_cache` for performance.
 
@@ -188,7 +188,7 @@ Required environment variables (loaded via python-dotenv):
 ```bash
 OPENAI_API_KEY="sk-..."
 SORA_VIDEO_PATH="/absolute/path/to/videos"
-SORA_REFERENCE_PATH="/absolute/path/to/references"
+REFERENCE_IMAGE_PATH="/absolute/path/to/references"
 ```
 
 Use `./setup.sh` for interactive setup, or manually copy `.env.example` to `.env`.
