@@ -133,11 +133,12 @@ async def download_video(
     out_path = validate_safe_path(video_download_path, filename, allow_create=True)
 
     # Stream video to disk asynchronously
-    # ruff: noqa: SIM117 - nested context managers required for streaming pattern
-    async with client.with_streaming_response.videos.download_content(video_id, variant=variant) as response:
-        async with async_safe_open_file(out_path, "wb", "video file", check_symlink=False) as f:
-            async for chunk in response.iter_bytes():
-                await f.write(chunk)
+    async with (
+        client.with_streaming_response.videos.download_content(video_id, variant=variant) as response,
+        async_safe_open_file(out_path, "wb", "video file", check_symlink=False) as f,
+    ):
+        async for chunk in response.iter_bytes():
+            await f.write(chunk)
 
     logger.info("Wrote %s (%s)", out_path, variant)
     return {"filename": filename, "path": str(out_path), "variant": variant}

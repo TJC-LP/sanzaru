@@ -5,7 +5,12 @@ description = "Lightweight FastMCP wrapper around the OpenAI Sora Video API"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
-authors = [{name = "TJC Data & AI"}]
+authors = [
+    {name = "Richie Caputo", email = "rcaputo3@tjclp.com"}
+]
+maintainers = [
+    {name = "Richie Caputo", email = "rcaputo3@tjclp.com"}
+]
 
 dependencies = [
   "openai>=1.51.0",
