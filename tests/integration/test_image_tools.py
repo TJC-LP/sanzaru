@@ -20,7 +20,11 @@ async def test_image_create(mocker, tmp_reference_path):
     mock_get_client = mocker.patch("sora_mcp_server.tools.image.get_client")
     mock_get_client.return_value.responses.create = mocker.AsyncMock(return_value=mock_response)
 
-    result = await create_image(prompt="test image", model="gpt-5", size="1024x1024", quality="high")
+    result = await create_image(
+        prompt="test image",
+        model="gpt-5",
+        tool_config={"type": "image_generation", "size": "1024x1024", "quality": "high"},
+    )
 
     assert result["id"] == "resp_test123"
     assert result["status"] == "queued"

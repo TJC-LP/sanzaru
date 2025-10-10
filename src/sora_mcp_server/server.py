@@ -10,6 +10,7 @@ from typing import Literal
 from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from openai.types import VideoModel, VideoSeconds, VideoSize
+from openai.types.responses.tool_param import ImageGeneration
 
 from .config import logger
 from .descriptions import (
@@ -99,27 +100,12 @@ async def prepare_reference_image(
 async def create_image(
     prompt: str,
     model: str = "gpt-5",
-    size: Literal["auto", "1024x1024", "1024x1536", "1536x1024"] | None = None,
-    quality: Literal["low", "medium", "high", "auto"] | None = None,
-    output_format: Literal["png", "jpeg", "webp"] = "png",
-    background: Literal["transparent", "opaque", "auto"] | None = None,
+    tool_config: ImageGeneration | None = None,
     previous_response_id: str | None = None,
     input_images: list[str] | None = None,
-    input_fidelity: Literal["low", "high"] | None = None,
     mask_filename: str | None = None,
 ):
-    return await image.create_image(
-        prompt,
-        model,
-        size,
-        quality,
-        output_format,
-        background,
-        previous_response_id,
-        input_images,
-        input_fidelity,
-        mask_filename,
-    )
+    return await image.create_image(prompt, model, tool_config, previous_response_id, input_images, mask_filename)
 
 
 @mcp.tool(description=GET_IMAGE_STATUS)

@@ -9,7 +9,6 @@ This module handles image generation operations:
 
 import base64
 import pathlib
-from typing import Literal
 
 from openai._types import Omit, omit
 from openai.types.responses import (
@@ -102,27 +101,19 @@ async def _upload_mask_file(mask_path: pathlib.Path) -> str:
 async def create_image(
     prompt: str,
     model: str = "gpt-5",
-    size: Literal["auto", "1024x1024", "1024x1536", "1536x1024"] | None = None,
-    quality: Literal["low", "medium", "high", "auto"] | None = None,
-    output_format: Literal["png", "jpeg", "webp"] = "png",
-    background: Literal["transparent", "opaque", "auto"] | None = None,
+    tool_config: ImageGeneration | None = None,
     previous_response_id: str | None = None,
     input_images: list[str] | None = None,
-    input_fidelity: Literal["low", "high"] | None = None,
     mask_filename: str | None = None,
 ) -> ImageResponse:
     """Create a new image generation job using Responses API.
 
     Args:
         prompt: Text description of image to generate (or edits to make if input_images provided)
-        model: Model to use (gpt-5, gpt-4.1, etc.)
-        size: Output resolution
-        quality: Image quality level
-        output_format: File format for output
-        background: Background transparency setting
+        model: Mainline model to use (gpt-5, gpt-4.1, etc.) - calls the image generation tool
+        tool_config: Optional ImageGeneration tool configuration (size, quality, model, moderation, etc.)
         previous_response_id: Optional ID to refine previous generation
         input_images: Optional list of reference image filenames from REFERENCE_IMAGE_PATH
-        input_fidelity: Detail preservation level ("low" or "high") when using input_images
         mask_filename: Optional PNG mask with alpha channel for inpainting
 
     Returns:
@@ -131,6 +122,18 @@ async def create_image(
     Raises:
         RuntimeError: If OPENAI_API_KEY not set or REFERENCE_IMAGE_PATH not configured
         ValueError: If invalid filename, path traversal, or mask without input_images
+
+    Example tool_config:
+        {
+            "type": "image_generation",
+            "model": "gpt-image-1-mini",  # or "gpt-image-1"
+            "size": "1024x1024",
+            "quality": "high",
+            "moderation": "low",  # or "auto"
+            "input_fidelity": "high",  # or "low"
+            "output_format": "png",
+            "background": "transparent"
+        }
     """
     client = get_client()
     reference_path = get_path("reference")
@@ -139,19 +142,8 @@ async def create_image(
     if mask_filename and not input_images:
         raise ValueError("mask_filename requires input_images parameter")
 
-    # Build image generation tool configuration
-    tool_config: ImageGeneration = {"type": "image_generation"}
-
-    if size is not None:
-        tool_config["size"] = size
-    if quality is not None:
-        tool_config["quality"] = quality
-    if output_format is not None:
-        tool_config["output_format"] = output_format
-    if background is not None:
-        tool_config["background"] = background
-    if input_fidelity is not None:
-        tool_config["input_fidelity"] = input_fidelity
+    # Build or use provided tool configuration
+    config: ImageGeneration = tool_config if tool_config else {"type": "image_generation"}
 
     # Handle mask upload if provided
     if mask_filename:
@@ -168,7 +160,7 @@ async def create_image(
 
         # Upload to Files API
         mask_file_id = await _upload_mask_file(mask_path)
-        tool_config["input_image_mask"] = {"file_id": mask_file_id}
+        config["input_image_mask"] = {"file_id": mask_file_id}
 
         logger.info("Uploaded mask %s as file_id %s", mask_filename, mask_file_id)
 
@@ -211,7 +203,7 @@ async def create_image(
         logger.info(
             "Creating image with %d reference image(s)%s",
             len(input_images),
-            f" (fidelity={input_fidelity})" if input_fidelity else "",
+            " (config provided)" if tool_config else "",
         )
     else:
         # Simple text-only input (existing behavior)
@@ -223,7 +215,7 @@ async def create_image(
     response = await client.responses.create(
         model=model,
         input=input_param,
-        tools=[tool_config],
+        tools=[config],
         previous_response_id=prev_resp_param,
         background=True,
     )
@@ -297,7 +289,19 @@ async def download_image(
         raise ValueError(f"No image generation found in response {response_id}")
 
     if image_gen_call.result is None:
-        raise ValueError(f"Image generation not completed (status: {image_gen_call.status})")
+        # Check for error or refusal in the image generation call
+        error_msg = f"Image generation not completed (status: {image_gen_call.status})"
+
+        # Check if there's an error field
+        if hasattr(image_gen_call, "error") and image_gen_call.error:
+            error_msg += f"\nError: {image_gen_call.error}"
+
+        # Check for text response explaining the issue
+        text_outputs = [out for out in response.output if hasattr(out, "content")]
+        if text_outputs:
+            error_msg += f"\nResponse: {text_outputs[0].content if hasattr(text_outputs[0], 'content') else 'See response output'}"
+
+        raise ValueError(error_msg)
 
     # Decode base64 image
     image_base64 = image_gen_call.result

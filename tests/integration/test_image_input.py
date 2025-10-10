@@ -71,11 +71,11 @@ class TestImageInput:
         assert content[2]["type"] == "input_image"
         assert content[3]["type"] == "input_image"
 
-    async def test_create_image_with_high_fidelity(self, mocker, tmp_reference_path, sample_image):
-        """Test that high fidelity parameter is passed to tool config."""
+    async def test_create_image_with_tool_config(self, mocker, tmp_reference_path):
+        """Test that custom tool_config is passed through correctly."""
         mock_client = mocker.MagicMock()
         mock_response = mocker.MagicMock()
-        mock_response.id = "resp_hifi"
+        mock_response.id = "resp_config"
         mock_response.status = "queued"
         mock_response.created_at = 1234567890.0
 
@@ -86,14 +86,25 @@ class TestImageInput:
         test_img = tmp_reference_path / "face.png"
         test_img.write_bytes(b"fake data")
 
-        result = await create_image(prompt="add logo to shirt", input_images=["face.png"], input_fidelity="high")
+        custom_config = {
+            "type": "image_generation",
+            "model": "gpt-image-1-mini",
+            "moderation": "low",
+            "input_fidelity": "high",
+            "quality": "medium",
+        }
 
-        assert result["id"] == "resp_hifi"
+        result = await create_image(prompt="add logo to shirt", input_images=["face.png"], tool_config=custom_config)
 
-        # Verify input_fidelity in tool config
+        assert result["id"] == "resp_config"
+
+        # Verify custom config was passed through
         call_args = mock_client.responses.create.call_args
         tools = call_args.kwargs["tools"]
+        assert tools[0]["model"] == "gpt-image-1-mini"
+        assert tools[0]["moderation"] == "low"
         assert tools[0]["input_fidelity"] == "high"
+        assert tools[0]["quality"] == "medium"
 
     async def test_create_image_with_mask(self, mocker, tmp_reference_path):
         """Test masked inpainting with alpha channel."""

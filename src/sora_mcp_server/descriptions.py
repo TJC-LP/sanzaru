@@ -185,52 +185,61 @@ Parameters:
 - prompt: Text description (required)
   * Without input_images: Describe what to generate
   * With input_images: Describe what changes to make
-- model: "gpt-5", "gpt-4.1", etc. Default: "gpt-5"
-- size: "1024x1024", "1024x1536", "1536x1024", "auto". Default: "auto"
-- quality: "low", "medium", "high", "auto". Default: "high"
-- output_format: "png", "jpeg", "webp". Default: "png"
-- background: "transparent", "opaque", "auto". Default: "auto"
+- model: Mainline model - "gpt-5", "gpt-4.1", etc. Default: "gpt-5"
+- tool_config: Optional ImageGeneration configuration object (optional)
+  * Supports all fields: model, size, quality, moderation, input_fidelity, etc.
+  * MCP library handles serialization automatically
+  * See examples below for common configurations
 - previous_response_id: Refine previous image iteratively (optional)
-
-**NEW - Image editing parameters:**
 - input_images: List of filenames from REFERENCE_IMAGE_PATH (optional)
   * Example: ["cat.png"] or ["lotion.jpg", "soap.png", "bomb.jpg"]
   * Use list_reference_images() to discover available images
   * Supported formats: JPEG, PNG, WEBP
-- input_fidelity: "low" or "high" (optional)
-  * "high": Preserves faces, logos, fine details (uses more tokens)
-  * "low": Standard preservation (default)
 - mask_filename: PNG with alpha channel for inpainting (optional)
   * Defines which region of first input image to edit
   * Transparent = edit this area, black = keep original
+  * Requires input_images parameter
+
+Common tool_config examples:
+
+Fast generation with mini model:
+  tool_config={"type": "image_generation", "model": "gpt-image-1-mini"}
+
+Lower content moderation:
+  tool_config={"type": "image_generation", "moderation": "low"}
+
+High-fidelity with custom settings:
+  tool_config={
+      "type": "image_generation",
+      "model": "gpt-image-1",
+      "quality": "high",
+      "input_fidelity": "high",
+      "size": "1536x1024"
+  }
 
 Workflows:
 
 1. Text-only generation:
-   create_image("sunset over mountains") -> response_id
+   create_image("sunset over mountains")
 
 2. Single image editing:
    create_image("add a flamingo to the pool", input_images=["lounge.png"])
 
 3. Multi-image composition:
-   create_image(
-       "gift basket with all these items",
-       input_images=["lotion.png", "soap.png", "bomb.jpg"]
-   )
+   create_image("gift basket with all these items", input_images=["lotion.png", "soap.png", "bomb.jpg"])
 
 4. High-fidelity logo placement:
    create_image(
        "add logo to woman's shirt",
        input_images=["woman.jpg", "logo.png"],
-       input_fidelity="high"
+       tool_config={"type": "image_generation", "input_fidelity": "high"}
    )
 
 5. Masked inpainting:
-   create_image(
-       "add flamingo",
-       input_images=["pool.png"],
-       mask_filename="pool_mask.png"
-   )
+   create_image("add flamingo", input_images=["pool.png"], mask_filename="pool_mask.png")
+
+6. Fast generation with mini model:
+   create_image("quick sketch of a cat", tool_config={"type": "image_generation", "model": "gpt-image-1-mini"})
 
 Returns ImageResponse with: id, status, created_at"""
 
