@@ -155,8 +155,12 @@ async def create_image(
 
     # Handle mask upload if provided
     if mask_filename:
+        # Check for symlink BEFORE resolution
+        original_mask_path = reference_path / mask_filename
+        check_not_symlink(original_mask_path, "mask image")
+
+        # Validate filename and construct safe path
         mask_path = validate_safe_path(reference_path, mask_filename)
-        check_not_symlink(mask_path, "mask image")
 
         # Validate PNG format
         if mask_path.suffix.lower() != ".png":
@@ -176,9 +180,12 @@ async def create_image(
         content_items: ResponseInputMessageContentListParam = [ResponseInputTextParam(type="input_text", text=prompt)]
 
         for filename in input_images:
-            # Validate filename and construct path
+            # Check for symlink BEFORE resolution (validate_safe_path resolves symlinks)
+            original_path = reference_path / filename
+            check_not_symlink(original_path, "reference image")
+
+            # Validate filename and construct safe path
             img_path = validate_safe_path(reference_path, filename)
-            check_not_symlink(img_path, "reference image")
 
             # Validate file extension
             ext = img_path.suffix.lower()
