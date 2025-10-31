@@ -261,3 +261,273 @@ Parameters:
 - filename: Custom filename (optional, auto-generates if not provided)
 
 Returns ImageDownloadResult with: filename, path, size, format"""
+
+
+# ==================== AUDIO TOOL DESCRIPTIONS ====================
+
+LIST_AUDIO_FILES = """List, filter, and sort audio files with comprehensive filtering options.
+
+Use this to discover available audio files for transcription, chat, or TTS workflows.
+Supports advanced filtering by metadata, pattern matching, and flexible sorting.
+
+Supported formats:
+- Transcription (Whisper/GPT-4o): flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav, webm
+- Chat (GPT-4o audio): mp3, wav
+
+Parameters:
+- pattern: Optional regex pattern to filter files by name (e.g., "meeting.*\\.mp3")
+- min_size_bytes: Minimum file size in bytes (optional)
+- max_size_bytes: Maximum file size in bytes (useful for API limits like 25MB)
+- min_duration_seconds: Minimum audio duration in seconds (optional)
+- max_duration_seconds: Maximum audio duration in seconds (optional)
+- min_modified_time: Minimum file modification time as Unix timestamp (optional)
+- max_modified_time: Maximum file modification time as Unix timestamp (optional)
+- format: Filter by specific audio format (e.g., 'mp3', 'wav') (optional)
+- sort_by: Sort by 'name', 'size', 'duration', 'modified_time', or 'format'. Default: 'name'
+- reverse: Set to true for descending order, false for ascending. Default: false
+
+Returns list of FilePathSupportParams with full metadata:
+- file_name: Name of the file
+- size_bytes: File size in bytes
+- format: Audio format (mp3, wav, etc.)
+- duration_seconds: Audio duration (if available)
+- modified_time: Last modified timestamp
+- transcription_support: List of supported transcription models (if applicable)
+- chat_support: List of supported chat models (if applicable)
+
+Example workflows:
+1. Find all mp3 files: list_audio_files(format="mp3")
+2. Find large files needing compression: list_audio_files(min_size_bytes=26214400)
+3. Find recent recordings: list_audio_files(sort_by="modified_time", reverse=true, limit=10)
+4. Find meetings: list_audio_files(pattern="meeting.*")"""
+
+GET_LATEST_AUDIO = """Get the most recently modified audio file with model support info.
+
+Quick way to access the latest audio recording without filtering.
+Returns full metadata including supported models for transcription and chat.
+
+Returns FilePathSupportParams with metadata for the latest audio file.
+
+Example workflow:
+1. get_latest_audio() -> latest file metadata
+2. transcribe_audio(file_name=metadata.file_name)"""
+
+CONVERT_AUDIO = """Convert audio files to GPT-4o compatible formats (mp3 or wav).
+
+Use this when you have audio in unsupported formats (like flac, m4a, ogg) and need
+to convert for GPT-4o audio chat, which only supports mp3 and wav.
+
+Whisper transcription supports many formats, but GPT-4o audio chat is more limited.
+This tool ensures compatibility.
+
+Parameters:
+- input_file_name: Name of the input audio file to convert (required)
+- target_format: Target format - "mp3" (smaller, lossy) or "wav" (larger, lossless). Default: "mp3"
+- output_file_name: Optional custom name for output file (defaults to input name with new extension)
+
+Returns AudioProcessingResult with:
+- output_file_name: Name of the converted file
+- success: Boolean indicating if conversion succeeded
+- message: Description of the operation
+
+Example workflow:
+1. list_audio_files(format="flac") -> find "recording.flac"
+2. convert_audio("recording.flac", target_format="mp3") -> "recording.mp3"
+3. chat_with_audio("recording.mp3")"""
+
+COMPRESS_AUDIO = """Compress audio files that exceed API size limits.
+
+OpenAI APIs have a 25MB file size limit. Use this tool to automatically compress
+large audio files by adjusting bitrate while maintaining acceptable quality.
+
+ONLY USE THIS IF:
+- User explicitly requests compression
+- Other tools fail with "file too large" errors
+- File size exceeds 25MB (26,214,400 bytes)
+
+The tool intelligently compresses only if necessary - if file is already under
+the limit, it returns the original unchanged.
+
+Parameters:
+- input_file_name: Name of the input audio file to compress (required)
+- max_mb: Maximum target size in MB. Default: 25 (API limit)
+- output_file_name: Optional custom name for compressed file (defaults to input name with _compressed suffix)
+
+Returns AudioProcessingResult with:
+- output_file_name: Name of compressed file (or original if no compression needed)
+- success: Boolean indicating if compression succeeded
+- message: Description of operation (e.g., "File already under 25MB" or "Compressed from 45MB to 24MB")
+
+Example workflow:
+1. list_audio_files(min_size_bytes=26214400) -> find large files
+2. compress_audio("huge_recording.wav", max_mb=25) -> "huge_recording_compressed.wav"
+3. transcribe_audio("huge_recording_compressed.wav")"""
+
+TRANSCRIBE_AUDIO = """Transcribe audio using OpenAI Whisper or GPT-4o transcription models.
+
+Standard transcription tool for converting speech to text with high accuracy.
+Supports multiple models, response formats, and advanced features like timestamps.
+
+Model recommendations:
+- gpt-4o-mini-transcribe: RECOMMENDED - Fast, accurate, cost-effective (DEFAULT)
+- gpt-4o-transcribe: Maximum accuracy, slower, more expensive
+- whisper-1: Original Whisper model, rarely needed but available
+
+Supported formats: flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav, webm
+
+Parameters:
+- input_file_name: Name of the audio file to transcribe (required)
+- model: Transcription model. Default: "gpt-4o-mini-transcribe"
+- response_format: Output format. Default: "text"
+  * "text": Plain text transcription
+  * "json": JSON with text
+  * "verbose_json": JSON with text, language, duration, timestamps
+  * "srt": SubRip subtitle format
+  * "vtt": WebVTT subtitle format
+- prompt: Optional hint to guide transcription (speaker names, context, jargon, etc.)
+- timestamp_granularities: Optional list - ["word"] for word-level, ["segment"] for sentence-level, or both
+
+Returns TranscriptionResult with:
+- text: Transcribed text
+- format: Response format used
+- model: Model used
+- duration_seconds: Audio duration (if available)
+
+Example workflows:
+1. Basic transcription:
+   transcribe_audio("meeting.mp3")
+
+2. With speaker context:
+   transcribe_audio("interview.wav", prompt="Speakers: Alice (interviewer), Bob (CEO)")
+
+3. Generate subtitles:
+   transcribe_audio("video.mp3", response_format="srt")
+
+4. Word-level timestamps:
+   transcribe_audio("speech.wav", response_format="verbose_json", timestamp_granularities=["word"])"""
+
+CHAT_WITH_AUDIO = """Interactive audio analysis using GPT-4o audio understanding models.
+
+Have a conversation about audio content. Unlike transcription which just converts
+speech to text, this tool lets you ask questions, analyze tone, extract insights,
+summarize, or discuss the audio content.
+
+Supported formats: mp3, wav only (use convert_audio for other formats)
+
+Model recommendations:
+- gpt-4o-audio-preview: RECOMMENDED - Best audio understanding (DEFAULT)
+- gpt-4o-mini-audio-preview: Faster but limited audio processing capabilities
+
+Parameters:
+- input_file_name: Name of the audio file to analyze (required)
+- model: Audio chat model. Default: "gpt-4o-audio-preview"
+- system_prompt: Optional system context (e.g., "You are analyzing a medical interview")
+- user_prompt: Optional question or instruction (e.g., "What are the main topics discussed?")
+
+Returns ChatResult with:
+- response_text: GPT-4o's analysis or response
+- model: Model used
+
+Example workflows:
+1. Summarize audio:
+   chat_with_audio("lecture.mp3", user_prompt="Summarize the main points in 3 bullet points")
+
+2. Analyze tone:
+   chat_with_audio("call.wav", user_prompt="Analyze the emotional tone and sentiment")
+
+3. Extract information:
+   chat_with_audio("interview.mp3", user_prompt="List all action items mentioned")
+
+4. Question answering:
+   chat_with_audio("meeting.wav", user_prompt="What decisions were made about the product launch?")"""
+
+TRANSCRIBE_WITH_ENHANCEMENT = """Enhanced transcription with specialized AI-powered templates.
+
+Provides transcription with additional AI enhancements beyond basic speech-to-text.
+Uses specialized prompts to add context, analysis, or formatting to the transcription.
+
+Enhancement types:
+- detailed: Includes tone, emotion, background sounds, pauses, emphasis
+  Example: "Said with frustration. [Background: traffic noise]. Long pause."
+
+- storytelling: Transforms transcript into narrative form with descriptive language
+  Example: "The speaker passionately described..."
+
+- professional: Formal, business-appropriate formatting with proper grammar
+  Example: Converts casual speech to polished business writing
+
+- analytical: Adds analysis of speech patterns, key points, structure, themes
+  Example: Includes notes like "[Key Point]", "[Repetition for emphasis]"
+
+Parameters:
+- input_file_name: Name of the audio file to transcribe (required)
+- enhancement_type: Type of enhancement. Default: "detailed"
+- model: Transcription model. Default: "gpt-4o-mini-transcribe"
+- response_format: Output format. Default: "text"
+- timestamp_granularities: Optional timestamp granularities (optional)
+
+Returns TranscriptionResult with enhanced transcription.
+
+Example workflows:
+1. Detailed meeting notes:
+   transcribe_with_enhancement("meeting.mp3", enhancement_type="detailed")
+
+2. Convert presentation to narrative:
+   transcribe_with_enhancement("talk.wav", enhancement_type="storytelling")
+
+3. Professional documentation:
+   transcribe_with_enhancement("interview.mp3", enhancement_type="professional")
+
+4. Speech analysis:
+   transcribe_with_enhancement("speech.wav", enhancement_type="analytical")"""
+
+CREATE_AUDIO = """Generate text-to-speech audio using OpenAI TTS API.
+
+Convert text to natural-sounding speech with multiple voice options and customization.
+Handles texts of any length by automatically splitting into 4096-character chunks
+and concatenating the audio seamlessly.
+
+Model recommendation:
+- gpt-4o-mini-tts: RECOMMENDED - High quality, fast, cost-effective (DEFAULT)
+
+Available voices (each with distinct characteristics):
+- alloy: Neutral, balanced (good default)
+- ash: Authoritative, confident
+- ballad: Warm, expressive
+- coral: Bright, energetic
+- echo: Deep, resonant
+- fable: Storytelling, engaging
+- onyx: Professional, clear
+- nova: Youthful, friendly
+- sage: Calm, soothing
+- shimmer: Smooth, polished
+- verse: Dynamic, varied
+
+Parameters:
+- text_prompt: Text to convert to speech (required, any length)
+- model: TTS model. Default: "gpt-4o-mini-tts"
+- voice: Voice to use. Default: "alloy"
+- instructions: Optional style guidance (e.g., "Speak slowly and clearly", "Use British accent", "Sound excited")
+- speed: Speech speed from 0.25 (very slow) to 4.0 (very fast). Default: 1.0
+- output_file_name: Optional custom filename (defaults to "speech_<timestamp>.mp3")
+
+Returns TTSResult with:
+- output_file_name: Name of the generated audio file
+- success: Boolean indicating if generation succeeded
+- duration_seconds: Length of generated audio (if available)
+
+Example workflows:
+1. Basic TTS:
+   create_audio("Hello, welcome to our service!")
+
+2. Custom voice and style:
+   create_audio("Important announcement", voice="onyx", instructions="Speak slowly and authoritatively")
+
+3. Fast narration:
+   create_audio("Quick update", voice="nova", speed=1.3)
+
+4. Long-form content:
+   create_audio("An entire blog post with thousands of words...")  # Automatically chunks
+
+5. Custom filename:
+   create_audio("Welcome message", voice="shimmer", output_file_name="welcome.mp3")"""
