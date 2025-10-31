@@ -144,3 +144,53 @@ async def test_sora_remix(mocker, mock_video_queued):
     assert result.id == "vid_queued"
     assert result.status == "queued"
     mock_get_client.return_value.videos.remix.assert_called_once_with("vid_original", prompt="new prompt")
+
+
+@pytest.mark.integration
+async def test_create_video_with_reference_image_mime_types(mocker, mock_video_queued, tmp_path):
+    """Verify MIME types are correctly passed for different image formats."""
+    # Test cases: (extension, expected_mime_type)
+    test_cases = [
+        ("test.jpg", "image/jpeg"),
+        ("test.jpeg", "image/jpeg"),
+        ("test.png", "image/png"),
+        ("test.webp", "image/webp"),
+    ]
+
+    for filename, expected_mime in test_cases:
+        # Create a temporary reference image directory
+        reference_path = tmp_path / "references"
+        reference_path.mkdir(exist_ok=True)
+        image_file = reference_path / filename
+        image_file.write_bytes(b"fake image data")
+
+        # Mock get_path to return our temp directory
+        mocker.patch("sanzaru.tools.video.get_path", return_value=reference_path)
+
+        # Mock the OpenAI client
+        mock_get_client = mocker.patch("sanzaru.tools.video.get_client")
+        mock_get_client.return_value.videos.create = mocker.AsyncMock(return_value=mock_video_queued)
+
+        # Call create_video with reference image
+        result = await create_video(
+            prompt="test video",
+            model="sora-2",
+            seconds="8",
+            size="1280x720",
+            input_reference_filename=filename,
+        )
+
+        # Verify the video was created
+        assert result.id == "vid_queued"
+        assert result.status == "queued"
+
+        # Verify the SDK was called with correct MIME type tuple
+        call_args = mock_get_client.return_value.videos.create.call_args
+        input_reference_arg = call_args.kwargs["input_reference"]
+
+        # Should be a tuple: (filename, bytes, mime_type)
+        assert isinstance(input_reference_arg, tuple), f"Expected tuple for {filename}"
+        assert len(input_reference_arg) == 3, f"Expected 3-element tuple for {filename}"
+        assert input_reference_arg[0] == filename, f"Filename mismatch for {filename}"
+        assert isinstance(input_reference_arg[1], bytes), f"Expected bytes for {filename}"
+        assert input_reference_arg[2] == expected_mime, f"MIME type mismatch for {filename}: {input_reference_arg[2]}"

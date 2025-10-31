@@ -72,6 +72,7 @@ async def create_video(
                 ".png": "image/png",
                 ".webp": "image/webp",
             }
+            # Defensive fallback - should be unreachable due to extension validation above (line 60-62)
             mime_type = mime_type_map.get(reference_file.suffix.lower(), "application/octet-stream")
 
             # Pass as tuple (filename, bytes, content_type) so SDK can detect MIME type
