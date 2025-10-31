@@ -1,5 +1,5 @@
 [project]
-name = "sora-mcp-server"
+name = "sanzaru"
 version = "0.1.0"
 description = "Lightweight FastMCP wrapper around the OpenAI Sora Video API"
 readme = "README.md"
@@ -30,11 +30,11 @@ dev = [
   "pytest-cov>=6.0.0",
   "pre-commit>=3.6.0",
   "mypy>=1.18.0",
-  "types-aiofiles"
+  "types-aiofiles",
 ]
 
 [project.scripts]
-sora-mcp-server = "sora_mcp_server.server:main"
+sanzaru = "sanzaru.server:main"
 
 [build-system]
 requires = ["setuptools>=68", "wheel"]

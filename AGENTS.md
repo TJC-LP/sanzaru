@@ -3,16 +3,16 @@
 This document helps contributors work effectively in this repository.
 
 ## Project Structure & Module Organization
-- `src/sora_mcp_server/` — MCP server (entrypoint `server.py`, CLI `sora-mcp-server`).
-- `sora-videos/`, `reference-images/` — Downloaded videos and reference images (git-ignored).
+- `src/sanzaru/` — MCP server (entrypoint `server.py`, CLI `sanzaru`).
+- `videos/`, `images/` — Downloaded videos and reference images (git-ignored).
 - `README.md` — Setup and tool usage; `setup.sh` — interactive setup; `.mcp.json` — sample MCP config.
 
 ## Build, Test, and Development Commands
 - Install deps: `uv sync` (use `uv venv` first if needed).
-- Run server: `uv run sora-mcp-server` (loads `.env`).
+- Run server: `uv run sanzaru` (loads `.env`).
 - Quick start: `./setup.sh` (prompts for `OPENAI_API_KEY`, creates folders, installs deps).
 - Codex integration (from repo root):
-  - `codex mcp add sora-mcp-server -- uv run --directory "$(pwd)" sora-mcp-server`
+  - `codex mcp add sanzaru -- uv run --directory "$(pwd)" sanzaru`
 - Smoke test (via MCP tools): create a video/image, poll status, then download (see README for tool list).
 
 ## Sora Toolkit & Prompting
@@ -28,7 +28,7 @@ This document helps contributors work effectively in this repository.
 
 ## Testing Guidelines
 - No formal tests yet. Do manual smoke tests: create → status → download for videos/images.
-- Verify files land in `sora-videos/` and `reference-images/`; include exact steps in PRs.
+- Verify files land in `videos/` and `images/`; include exact steps in PRs.
 
 ## Commit & Pull Request Guidelines
 - Commits: imperative mood, concise scope first (e.g., `feat: add create_image tool`).
@@ -37,8 +37,8 @@ This document helps contributors work effectively in this repository.
 - Link issues when applicable; note any follow-ups.
 
 ## Security & Configuration Tips
-- Required env: `OPENAI_API_KEY`, `SORA_VIDEO_PATH`, `REFERENCE_IMAGE_PATH` (no defaults; must be explicitly set).
+- Required env: `OPENAI_API_KEY`, `VIDEO_PATH`, `IMAGE_PATH` (no defaults; must be explicitly set).
 - Folders must exist before starting the server; use `./setup.sh` for interactive configuration.
-- Do not commit secrets or downloaded assets; `sora-videos/` and `reference-images/` are git-ignored.
+- Do not commit secrets or downloaded assets; `videos/` and `images/` are git-ignored.
 - The server is stateless and communicates over stdio via FastMCP; rely on polling, not long-lived state.
 - Paths are validated lazily at runtime, supporting both `uv run` and `mcp run` invocations.

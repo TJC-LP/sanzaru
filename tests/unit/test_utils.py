@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from sora_mcp_server.utils import generate_filename, suffix_for_variant
+from sanzaru.utils import generate_filename, suffix_for_variant
 
 
 @pytest.mark.unit
@@ -34,12 +34,12 @@ class TestGenerateFilename:
         result = generate_filename("test-id", "png")
         assert result == "test-id.png"
 
-    @patch("sora_mcp_server.utils.time.time", return_value=1234567890.0)
+    @patch("sanzaru.utils.time.time", return_value=1234567890.0)
     def test_filename_with_timestamp(self, mock_time):
         result = generate_filename("img", "png", use_timestamp=True)
         assert result == "img_1234567890.png"
 
-    @patch("sora_mcp_server.utils.time.time", return_value=9999999999.0)
+    @patch("sanzaru.utils.time.time", return_value=9999999999.0)
     def test_timestamp_precision(self, mock_time):
         """Verify timestamp is converted to int (no decimal)."""
         result = generate_filename("test", "jpg", use_timestamp=True)

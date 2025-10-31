@@ -3,7 +3,7 @@
 
 import pytest
 
-from sora_mcp_server.security import check_not_symlink, safe_open_file, validate_safe_path
+from sanzaru.security import check_not_symlink, safe_open_file, validate_safe_path
 
 
 @pytest.mark.unit

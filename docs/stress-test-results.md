@@ -2,7 +2,7 @@
 
 ## Overview
 
-This document showcases real-world stress testing results demonstrating the sora-mcp-server's ability to handle heavy concurrent load with its fully asynchronous architecture.
+This document showcases real-world stress testing results demonstrating the sanzaru's ability to handle heavy concurrent load with its fully asynchronous architecture.
 
 ## Test Setup
 
@@ -166,7 +166,7 @@ This simulates concurrent operations and measures:
 
 ## Conclusion
 
-The stress test results validate that the sora-mcp-server's async architecture delivers:
+The stress test results validate that the sanzaru's async architecture delivers:
 
 ✅ **Proven concurrency** - 32+ simultaneous operations without blocking
 ✅ **100% reliability** - Zero errors under heavy load

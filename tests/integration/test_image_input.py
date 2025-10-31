@@ -3,7 +3,7 @@
 
 import pytest
 
-from sora_mcp_server.tools.image import create_image
+from sanzaru.tools.image import create_image
 
 
 @pytest.mark.integration
@@ -20,8 +20,8 @@ class TestImageInput:
         mock_response.created_at = 1234567890.0
 
         mock_client.responses.create = mocker.AsyncMock(return_value=mock_response)
-        mocker.patch("sora_mcp_server.tools.image.get_client", return_value=mock_client)
-        mocker.patch("sora_mcp_server.tools.image.get_path", return_value=tmp_reference_path)
+        mocker.patch("sanzaru.tools.image.get_client", return_value=mock_client)
+        mocker.patch("sanzaru.tools.image.get_path", return_value=tmp_reference_path)
 
         # Create test image
         test_img = tmp_reference_path / "test.png"
@@ -49,8 +49,8 @@ class TestImageInput:
         mock_response.created_at = 1234567890.0
 
         mock_client.responses.create = mocker.AsyncMock(return_value=mock_response)
-        mocker.patch("sora_mcp_server.tools.image.get_client", return_value=mock_client)
-        mocker.patch("sora_mcp_server.tools.image.get_path", return_value=tmp_reference_path)
+        mocker.patch("sanzaru.tools.image.get_client", return_value=mock_client)
+        mocker.patch("sanzaru.tools.image.get_path", return_value=tmp_reference_path)
 
         # Create test images
         for i in range(3):
@@ -80,8 +80,8 @@ class TestImageInput:
         mock_response.created_at = 1234567890.0
 
         mock_client.responses.create = mocker.AsyncMock(return_value=mock_response)
-        mocker.patch("sora_mcp_server.tools.image.get_client", return_value=mock_client)
-        mocker.patch("sora_mcp_server.tools.image.get_path", return_value=tmp_reference_path)
+        mocker.patch("sanzaru.tools.image.get_client", return_value=mock_client)
+        mocker.patch("sanzaru.tools.image.get_path", return_value=tmp_reference_path)
 
         test_img = tmp_reference_path / "face.png"
         test_img.write_bytes(b"fake data")
@@ -119,8 +119,8 @@ class TestImageInput:
 
         mock_client.responses.create = mocker.AsyncMock(return_value=mock_response)
         mock_client.files.create = mocker.AsyncMock(return_value=mock_file_obj)
-        mocker.patch("sora_mcp_server.tools.image.get_client", return_value=mock_client)
-        mocker.patch("sora_mcp_server.tools.image.get_path", return_value=tmp_reference_path)
+        mocker.patch("sanzaru.tools.image.get_client", return_value=mock_client)
+        mocker.patch("sanzaru.tools.image.get_path", return_value=tmp_reference_path)
 
         # Create test files
         test_img = tmp_reference_path / "pool.png"
@@ -143,24 +143,24 @@ class TestImageInput:
     async def test_create_image_mask_without_images_error(self, mocker, tmp_reference_path):
         """Test error when mask provided without input_images."""
         # Mock to prevent OPENAI_API_KEY check
-        mocker.patch("sora_mcp_server.tools.image.get_client")
-        mocker.patch("sora_mcp_server.tools.image.get_path", return_value=tmp_reference_path)
+        mocker.patch("sanzaru.tools.image.get_client")
+        mocker.patch("sanzaru.tools.image.get_path", return_value=tmp_reference_path)
 
         with pytest.raises(ValueError, match="mask_filename requires input_images parameter"):
             await create_image(prompt="test", mask_filename="mask.png")
 
     async def test_create_image_invalid_filename_path_traversal(self, mocker, tmp_reference_path):
         """Test path traversal protection for input images."""
-        mocker.patch("sora_mcp_server.tools.image.get_client")
-        mocker.patch("sora_mcp_server.tools.image.get_path", return_value=tmp_reference_path)
+        mocker.patch("sanzaru.tools.image.get_client")
+        mocker.patch("sanzaru.tools.image.get_path", return_value=tmp_reference_path)
 
         with pytest.raises(ValueError, match="path traversal detected"):
             await create_image(prompt="test", input_images=["../../../etc/passwd"])
 
     async def test_create_image_unsupported_format(self, mocker, tmp_reference_path):
         """Test error for unsupported image format (e.g., .gif)."""
-        mocker.patch("sora_mcp_server.tools.image.get_client")
-        mocker.patch("sora_mcp_server.tools.image.get_path", return_value=tmp_reference_path)
+        mocker.patch("sanzaru.tools.image.get_client")
+        mocker.patch("sanzaru.tools.image.get_path", return_value=tmp_reference_path)
 
         # Create a .gif file
         gif_file = tmp_reference_path / "test.gif"
@@ -174,8 +174,8 @@ class TestImageInput:
         mock_client = mocker.MagicMock()
         mock_client.responses.create = mocker.AsyncMock()
 
-        mocker.patch("sora_mcp_server.tools.image.get_client", return_value=mock_client)
-        mocker.patch("sora_mcp_server.tools.image.get_path", return_value=tmp_reference_path)
+        mocker.patch("sanzaru.tools.image.get_client", return_value=mock_client)
+        mocker.patch("sanzaru.tools.image.get_path", return_value=tmp_reference_path)
 
         # Create a real file INSIDE reference path and symlink to it
         real_file = tmp_reference_path / "real.png"
@@ -189,8 +189,8 @@ class TestImageInput:
 
     async def test_create_image_mask_non_png_rejected(self, mocker, tmp_reference_path):
         """Test that non-PNG masks are rejected."""
-        mocker.patch("sora_mcp_server.tools.image.get_client")
-        mocker.patch("sora_mcp_server.tools.image.get_path", return_value=tmp_reference_path)
+        mocker.patch("sanzaru.tools.image.get_client")
+        mocker.patch("sanzaru.tools.image.get_path", return_value=tmp_reference_path)
 
         # Create image and non-PNG mask
         img = tmp_reference_path / "img.png"

@@ -4,7 +4,7 @@
 import pytest
 from PIL import Image
 
-from sora_mcp_server.tools.reference import (
+from sanzaru.tools.reference import (
     load_and_convert_image,
     parse_video_dimensions,
     resize_crop,

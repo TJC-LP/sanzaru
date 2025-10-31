@@ -1,6 +1,10 @@
-# sora-mcp-server
+# sanzaru
 
-A **stateless**, lightweight **FastMCP** server that wraps the **OpenAI Sora Video API** via the OpenAI Python SDK.
+<div align="center">
+  <img src="assets/logo.png" alt="sanzaru logo" width="400">
+</div>
+
+A **stateless**, lightweight **MCP** server that wraps the **OpenAI Sora Video API** via the OpenAI Python SDK.
 
 ## Features
 - **Video Generation**: Create Sora jobs (`sora-2` / `sora-2-pro`), optional image reference, optional remix
@@ -24,15 +28,15 @@ See [`docs/async-optimizations.md`](docs/async-optimizations.md) for technical d
 ## Requirements
 - Python 3.10+
 - `OPENAI_API_KEY` environment variable
-- `SORA_VIDEO_PATH` environment variable (directory for downloaded videos)
-- `REFERENCE_IMAGE_PATH` environment variable (directory for reference images)
+- `VIDEO_PATH` environment variable (directory for downloaded videos)
+- `IMAGE_PATH` environment variable (directory for reference images)
 
 ## Quick Start
 
 1. **Clone the repository:**
    ```bash
-   git clone https://github.com/TJC-LP/sora-mcp-server.git
-   cd sora-mcp-server
+   git clone https://github.com/TJC-LP/sanzaru.git
+   cd sanzaru
    ```
 
 2. **Run the setup script:**
@@ -50,7 +54,7 @@ See [`docs/async-optimizations.md`](docs/async-optimizations.md) for technical d
    claude
    ```
 
-That's it! Claude Code will automatically connect to the Sora MCP server and you can start generating videos.
+That's it! Claude Code will automatically connect to the sanzaru MCP server and you can start generating videos.
 
 ## Alternative Installation Methods
 
@@ -60,13 +64,13 @@ Add the following to your `claude_desktop_config.json`
 ```json
 {
   "mcpServers": {
-    "sora-mcp-server": {
+    "sanzaru": {
       "command": "uv",
       "args": [
         "run",
         "--directory",
         "/path/to/repo",
-        "sora-mcp-server"
+        "sanzaru"
       ]
     }
   }
@@ -76,7 +80,7 @@ Add the following to your `claude_desktop_config.json`
 **Codex MCP Setup:**
 ```bash
 # From the repo root
-codex mcp add sora-mcp-server -- uv run --directory "$(pwd)" sora-mcp-server
+codex mcp add sanzaru -- uv run --directory "$(pwd)" sanzaru
 ```
 Ensure your `.env` is configured or relevant env vars are exported before starting.
 
@@ -90,12 +94,12 @@ uv sync
 
 # Set environment variables and run
 export OPENAI_API_KEY=sk-...
-export SORA_VIDEO_PATH=~/sora-videos
-export REFERENCE_IMAGE_PATH=~/reference-images
-uv run sora-mcp-server
+export VIDEO_PATH=~/videos
+export IMAGE_PATH=~/images
+uv run sanzaru
 ```
 
-**Important:** Both `SORA_VIDEO_PATH` and `REFERENCE_IMAGE_PATH` environment variables are required. The directories must exist before starting the server.
+**Important:** Both `VIDEO_PATH` and `IMAGE_PATH` environment variables are required. The directories must exist before starting the server.
 
 ## MCP Tools
 
@@ -106,9 +110,9 @@ This runs an MCP server over stdio that exposes these tools:
   - Note: `seconds` must be a string: `"4"`, `"8"`, or `"12"` (not an integer)
   - Note: `size` must be one of: `"720x1280"`, `"1280x720"`, `"1024x1792"`, `"1792x1024"`
   - Note: `model` must be one of: `"sora-2"`, `"sora-2-pro"`
-  - Note: `input_reference_filename` is a filename (not path) from `REFERENCE_IMAGE_PATH`
+  - Note: `input_reference_filename` is a filename (not path) from `IMAGE_PATH`
 - `get_video_status(video_id)` - Returns Video object with status/progress
-- `download_video(video_id, filename?, variant="video")` - Downloads to `SORA_VIDEO_PATH`
+- `download_video(video_id, filename?, variant="video")` - Downloads to `VIDEO_PATH`
   - `filename` is optional - defaults to `{video_id}.{extension}` if not provided
   - Example: `download_video(video_id, filename="my_video.mp4")`
 - `list_videos(limit=20, after?, order="desc")` - Returns paginated list of videos
@@ -119,7 +123,7 @@ This runs an MCP server over stdio that exposes these tools:
 - `create_image(prompt, model="gpt-5", size?, quality?, output_format?, background?, previous_response_id?)` - Generate images with GPT-5/GPT-4.1
   - Supported sizes: `1024x1024`, `1024x1536`, `1536x1024`, or `auto`
 - `get_image_status(response_id)` - Check image generation status
-- `download_image(response_id, filename?)` - Download completed image to `REFERENCE_IMAGE_PATH`
+- `download_image(response_id, filename?)` - Download completed image to `IMAGE_PATH`
 
 ### Reference Image Management
 - `list_reference_images(pattern?, file_type="all", sort_by="modified", order="desc", limit=50)` - Search reference images
@@ -137,7 +141,7 @@ For practical tips and examples to craft effective Sora prompts, see `docs/sora2
 
 ## Reference Images
 - Supported formats: JPEG, PNG, WEBP
-- Place reference images in `REFERENCE_IMAGE_PATH` directory
+- Place reference images in `IMAGE_PATH` directory
 - Use `list_reference_images` to discover available images
 - Reference image dimensions must match target video `size` parameter
 - LLMs can only access images in the configured reference directory (security sandbox)
@@ -159,7 +163,7 @@ The original image is preserved; a new resized PNG is created with dimensions in
 
 ## Image Generation
 
-Generate reference images using OpenAI's Responses API with GPT-5 or GPT-4.1 models. Images are automatically saved to `REFERENCE_IMAGE_PATH` for use with Sora video generation.
+Generate reference images using OpenAI's Responses API with GPT-5 or GPT-4.1 models. Images are automatically saved to `IMAGE_PATH` for use with Sora video generation.
 
 ### Basic Workflow
 ```
@@ -197,7 +201,7 @@ Generate a reference image and create a video from it:
 
 ## Notes
 - Download URLs from OpenAI are time-limited
-- Videos are automatically saved to `SORA_VIDEO_PATH` when downloaded
+- Videos are automatically saved to `VIDEO_PATH` when downloaded
 
 ## License
 [MIT](LICENSE)

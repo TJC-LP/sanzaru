@@ -9,7 +9,7 @@ A stateless FastMCP server wrapping OpenAI's Sora Video API and Responses API (i
 **Key Architecture Principles:**
 - **Stateless**: No database, no in-memory job tracking. All state lives in OpenAI's cloud.
 - **Async polling pattern**: Create → Poll → Download workflow for both videos and images
-- **Security sandbox**: Reference images restricted to `REFERENCE_IMAGE_PATH` with path traversal protection
+- **Security sandbox**: Reference images restricted to `IMAGE_PATH` with path traversal protection
 - **Type-safe**: Extensive use of TypedDict and Literal types from OpenAI SDK
 
 ## Development Commands
@@ -19,7 +19,7 @@ A stateless FastMCP server wrapping OpenAI's Sora Video API and Responses API (i
 uv sync
 
 # Run the MCP server (stdio mode)
-uv run sora-mcp-server
+uv run sanzaru
 
 # Lint and format code
 ruff check .
@@ -41,7 +41,7 @@ claude  # in this directory with .mcp.json configured
 The server is organized into focused modules for maintainability and code reuse:
 
 ```
-src/sora_mcp_server/
+src/sanzaru/
 ├── server.py           # FastMCP initialization & tool registration (~320 lines)
 ├── types.py            # TypedDict definitions (~70 lines)
 ├── config.py           # OpenAI client + path configuration (~110 lines)
@@ -63,8 +63,8 @@ src/sora_mcp_server/
 
 ### Runtime Path Configuration
 Paths are validated lazily via the `get_path()` function when tools are called:
-- `get_path("video")`: Returns validated SORA_VIDEO_PATH for video downloads
-- `get_path("reference")`: Returns validated REFERENCE_IMAGE_PATH for reference images
+- `get_path("video")`: Returns validated VIDEO_PATH for video downloads
+- `get_path("reference")`: Returns validated IMAGE_PATH for reference images
 
 Both environment variables are required (no defaults). Paths are cached with `@lru_cache` for performance.
 
@@ -193,8 +193,8 @@ Three modes available in `prepare_reference_image`:
 Required environment variables (loaded via python-dotenv):
 ```bash
 OPENAI_API_KEY="sk-..."
-SORA_VIDEO_PATH="/absolute/path/to/videos"
-REFERENCE_IMAGE_PATH="/absolute/path/to/references"
+VIDEO_PATH="/absolute/path/to/videos"
+IMAGE_PATH="/absolute/path/to/references"
 ```
 
 Use `./setup.sh` for interactive setup, or manually copy `.env.example` to `.env`.

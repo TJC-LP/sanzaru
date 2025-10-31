@@ -18,7 +18,7 @@ Parameters:
 - model: "sora-2" (faster, cheaper) or "sora-2-pro" (higher quality). Default: "sora-2"
 - seconds: Duration as string "4", "8", or "12" (NOT an integer). Default: varies by model
 - size: Resolution as "720x1280" (portrait), "1280x720" (landscape), "1024x1792", or "1792x1024". Default: "720x1280"
-- input_reference_filename: Filename of reference image in REFERENCE_IMAGE_PATH (e.g., "cat.png"). Use list_reference_images to find available images. Image must match target size. Supported: JPEG, PNG, WEBP. Optional.
+- input_reference_filename: Filename of reference image in IMAGE_PATH (e.g., "cat.png"). Use list_reference_images to find available images. Image must match target size. Supported: JPEG, PNG, WEBP. Optional.
 
 Returns Video object with fields: id, status, progress, model, seconds, size."""
 
@@ -43,7 +43,7 @@ DOWNLOAD_VIDEO = """Download a completed video to disk.
 IMPORTANT: Only call this AFTER get_video_status shows status='completed'.
 If the video is not completed, this will fail.
 
-The video is automatically saved to the directory configured in SORA_VIDEO_PATH.
+The video is automatically saved to the directory configured in VIDEO_PATH.
 Returns the absolute path to the downloaded file.
 
 Parameters:
@@ -122,7 +122,7 @@ Typical workflow:
 
 LIST_REFERENCE_IMAGES = """Search and list reference images available for video generation.
 
-Use this to discover what reference images are available in the REFERENCE_IMAGE_PATH directory.
+Use this to discover what reference images are available in the IMAGE_PATH directory.
 These images can be used with create_video's input_reference_filename parameter.
 
 The reference image must match your target video size:
@@ -149,7 +149,7 @@ This tool prepares images for use with create_video by resizing them to exact So
 The original image is preserved; a new resized copy is created.
 
 Parameters:
-- input_filename: Source image filename in REFERENCE_IMAGE_PATH (required)
+- input_filename: Source image filename in IMAGE_PATH (required)
 - target_size: Target video size: "720x1280", "1280x720", "1024x1792", or "1792x1024" (required)
 - output_filename: Custom output filename (optional, defaults to "{original_name}_{width}x{height}.png")
 - resize_mode: How to handle aspect ratio (default: "crop")
@@ -191,7 +191,7 @@ Parameters:
   * MCP library handles serialization automatically
   * See examples below for common configurations
 - previous_response_id: Refine previous image iteratively (optional)
-- input_images: List of filenames from REFERENCE_IMAGE_PATH (optional)
+- input_images: List of filenames from IMAGE_PATH (optional)
   * Example: ["cat.png"] or ["lotion.jpg", "soap.png", "bomb.jpg"]
   * Use list_reference_images() to discover available images
   * Supported formats: JPEG, PNG, WEBP
@@ -254,7 +254,7 @@ DOWNLOAD_IMAGE = """Download a completed generated image to reference path.
 
 IMPORTANT: Only call AFTER get_image_status shows status='completed'.
 
-The image is saved to REFERENCE_IMAGE_PATH and can immediately be used with create_video.
+The image is saved to IMAGE_PATH and can immediately be used with create_video.
 
 Parameters:
 - response_id: The response ID from create_image (required)

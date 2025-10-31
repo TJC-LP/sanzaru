@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Sora MCP Server - FastMCP server for OpenAI Sora video generation.
+"""sanzaru MCP Server - FastMCP server for OpenAI Sora video generation.
 
 This module initializes the FastMCP server and registers all tools.
 Business logic is organized into submodules under tools/.
@@ -29,7 +29,7 @@ from .descriptions import (
 from .tools import image, reference, video
 
 # Initialize FastMCP server
-mcp = FastMCP("sora-mcp-server")  # Consistent naming with repo
+mcp = FastMCP("sanzaru")
 
 
 # ==================== VIDEO TOOLS ====================
