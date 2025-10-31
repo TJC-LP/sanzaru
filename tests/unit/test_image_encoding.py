@@ -6,7 +6,7 @@ import pathlib
 
 import pytest
 
-from sora_mcp_server.tools.image import _encode_image_base64, _get_mime_type
+from sanzaru.tools.image import _encode_image_base64, _get_mime_type
 
 
 @pytest.mark.unit

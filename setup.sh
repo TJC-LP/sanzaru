@@ -3,7 +3,7 @@
 set -e
 
 echo "============================================"
-echo "  Sora MCP Server Setup"
+echo "  sanzaru Setup"
 echo "============================================"
 echo ""
 
@@ -54,10 +54,10 @@ PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Get video path
 echo ""
-echo "Default video download path: $PROJECT_DIR/sora-videos"
+echo "Default video download path: $PROJECT_DIR/videos"
 read -p "Press Enter to accept, or type a custom path: " VIDEO_PATH
 if [ -z "$VIDEO_PATH" ]; then
-    VIDEO_PATH="$PROJECT_DIR/sora-videos"
+    VIDEO_PATH="$PROJECT_DIR/videos"
 else
     # Convert to absolute path if relative
     if [[ "$VIDEO_PATH" != /* ]]; then
@@ -67,10 +67,10 @@ fi
 
 # Get reference path
 echo ""
-echo "Default reference images path: $PROJECT_DIR/reference-images"
+echo "Default reference images path: $PROJECT_DIR/images"
 read -p "Press Enter to accept, or type a custom path: " REFERENCE_PATH
 if [ -z "$REFERENCE_PATH" ]; then
-    REFERENCE_PATH="$PROJECT_DIR/reference-images"
+    REFERENCE_PATH="$PROJECT_DIR/images"
 else
     # Convert to absolute path if relative
     if [[ "$REFERENCE_PATH" != /* ]]; then
@@ -98,8 +98,8 @@ echo "============================================"
 # Write .env file
 cat > .env << EOF
 OPENAI_API_KEY="$API_KEY"
-SORA_VIDEO_PATH="$VIDEO_PATH"
-REFERENCE_IMAGE_PATH="$REFERENCE_PATH"
+VIDEO_PATH="$VIDEO_PATH"
+IMAGE_PATH="$REFERENCE_PATH"
 EOF
 
 echo "✓ Created .env file"
@@ -125,7 +125,7 @@ echo "============================================"
 echo ""
 echo "Next steps:"
 echo "  1. Run 'claude' to start Claude Code"
-echo "  2. The Sora MCP server will connect automatically"
+echo "  2. The sanzaru MCP server will connect automatically"
 echo "  3. Start generating videos!"
 echo ""
 echo "Configuration saved to .env:"

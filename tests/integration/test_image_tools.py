@@ -5,7 +5,7 @@ import base64
 
 import pytest
 
-from sora_mcp_server.tools.image import create_image, download_image, get_image_status
+from sanzaru.tools.image import create_image, download_image, get_image_status
 
 
 @pytest.mark.integration
@@ -16,8 +16,8 @@ async def test_image_create(mocker, tmp_reference_path):
     mock_response.status = "queued"
     mock_response.created_at = 1234567890.0
 
-    mocker.patch("sora_mcp_server.tools.image.get_path", return_value=tmp_reference_path)
-    mock_get_client = mocker.patch("sora_mcp_server.tools.image.get_client")
+    mocker.patch("sanzaru.tools.image.get_path", return_value=tmp_reference_path)
+    mock_get_client = mocker.patch("sanzaru.tools.image.get_client")
     mock_get_client.return_value.responses.create = mocker.AsyncMock(return_value=mock_response)
 
     result = await create_image(
@@ -46,7 +46,7 @@ async def test_image_get_status(mocker):
     mock_response.status = "completed"
     mock_response.created_at = 1234567890.0
 
-    mock_get_client = mocker.patch("sora_mcp_server.tools.image.get_client")
+    mock_get_client = mocker.patch("sanzaru.tools.image.get_client")
     mock_get_client.return_value.responses.retrieve = mocker.AsyncMock(return_value=mock_response)
 
     result = await get_image_status("resp_test123")
@@ -72,15 +72,15 @@ async def test_image_download(mocker, tmp_reference_path):
     mock_response.id = "resp_test123"
     mock_response.output = [mock_img_call]
 
-    mocker.patch("sora_mcp_server.tools.image.get_path", return_value=tmp_reference_path)
-    mock_get_client = mocker.patch("sora_mcp_server.tools.image.get_client")
+    mocker.patch("sanzaru.tools.image.get_path", return_value=tmp_reference_path)
+    mock_get_client = mocker.patch("sanzaru.tools.image.get_client")
     mock_get_client.return_value.responses.retrieve = mocker.AsyncMock(return_value=mock_response)
 
     # Mock PIL Image.open to avoid trying to parse fake PNG
     mock_img = mocker.MagicMock()
     mock_img.size = (1024, 1024)
     mock_img.format = "PNG"
-    mocker.patch("sora_mcp_server.tools.image.Image.open", return_value=mock_img)
+    mocker.patch("sanzaru.tools.image.Image.open", return_value=mock_img)
 
     result = await download_image("resp_test123", filename="test.png")
 

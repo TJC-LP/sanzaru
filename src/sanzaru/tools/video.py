@@ -40,7 +40,7 @@ async def create_video(
         Video object with job details (id, status, progress)
 
     Raises:
-        RuntimeError: If OPENAI_API_KEY not set or REFERENCE_IMAGE_PATH not configured
+        RuntimeError: If OPENAI_API_KEY not set or IMAGE_PATH not configured
         ValueError: If reference image invalid or path traversal detected
     """
     client = get_client()
@@ -64,13 +64,24 @@ async def create_video(
         # Open and read reference image asynchronously with security checks
         async with async_safe_open_file(reference_file, "rb", "reference image") as f:
             file_content = await f.read()
-            # OpenAI SDK accepts bytes, so pass file content directly
+
+            # Determine MIME type from file extension
+            mime_type_map = {
+                ".jpg": "image/jpeg",
+                ".jpeg": "image/jpeg",
+                ".png": "image/png",
+                ".webp": "image/webp",
+            }
+            # Defensive fallback - should be unreachable due to extension validation above (line 60-62)
+            mime_type = mime_type_map.get(reference_file.suffix.lower(), "application/octet-stream")
+
+            # Pass as tuple (filename, bytes, content_type) so SDK can detect MIME type
             video = await client.videos.create(
                 model=model,
                 prompt=prompt,
                 seconds=seconds_param,
                 size=size_param,
-                input_reference=file_content,
+                input_reference=(input_reference_filename, file_content, mime_type),
             )
         logger.info("Started job %s (%s) with reference: %s", video.id, video.status, input_reference_filename)
     else:
@@ -118,7 +129,7 @@ async def download_video(
         DownloadResult with filename, absolute path, and variant
 
     Raises:
-        RuntimeError: If SORA_VIDEO_PATH not configured or OPENAI_API_KEY not set
+        RuntimeError: If VIDEO_PATH not configured or OPENAI_API_KEY not set
         ValueError: If invalid filename or path traversal detected
     """
     video_download_path = get_path("video")

@@ -5,7 +5,7 @@ import os
 
 import pytest
 
-from sora_mcp_server.config import get_path
+from sanzaru.config import get_path
 
 
 @pytest.fixture(autouse=True)
@@ -21,8 +21,8 @@ class TestGetPathHappyPath:
     """Test get_path() with valid configurations."""
 
     def test_get_path_video_valid(self, mocker, tmp_video_path):
-        """Test that valid SORA_VIDEO_PATH returns correct path."""
-        mocker.patch.dict(os.environ, {"SORA_VIDEO_PATH": str(tmp_video_path)})
+        """Test that valid VIDEO_PATH returns correct path."""
+        mocker.patch.dict(os.environ, {"VIDEO_PATH": str(tmp_video_path)})
 
         result = get_path("video")
 
@@ -30,8 +30,8 @@ class TestGetPathHappyPath:
         assert result.is_dir()
 
     def test_get_path_reference_valid(self, mocker, tmp_reference_path):
-        """Test that valid REFERENCE_IMAGE_PATH returns correct path."""
-        mocker.patch.dict(os.environ, {"REFERENCE_IMAGE_PATH": str(tmp_reference_path)})
+        """Test that valid IMAGE_PATH returns correct path."""
+        mocker.patch.dict(os.environ, {"IMAGE_PATH": str(tmp_reference_path)})
 
         result = get_path("reference")
 
@@ -45,7 +45,7 @@ class TestGetPathCaching:
 
     def test_caching_prevents_revalidation(self, mocker, tmp_video_path):
         """Test that second call uses cached result without re-validation."""
-        mocker.patch.dict(os.environ, {"SORA_VIDEO_PATH": str(tmp_video_path)})
+        mocker.patch.dict(os.environ, {"VIDEO_PATH": str(tmp_video_path)})
 
         # First call - validates and caches
         result1 = get_path("video")
@@ -63,8 +63,8 @@ class TestGetPathCaching:
         mocker.patch.dict(
             os.environ,
             {
-                "SORA_VIDEO_PATH": str(tmp_video_path),
-                "REFERENCE_IMAGE_PATH": str(tmp_reference_path),
+                "VIDEO_PATH": str(tmp_video_path),
+                "IMAGE_PATH": str(tmp_reference_path),
             },
         )
 
@@ -81,29 +81,29 @@ class TestGetPathErrorCases:
     """Test get_path() error handling."""
 
     def test_missing_video_env_var(self, mocker):
-        """Test that missing SORA_VIDEO_PATH raises RuntimeError."""
+        """Test that missing VIDEO_PATH raises RuntimeError."""
         mocker.patch.dict(os.environ, {}, clear=True)
 
-        with pytest.raises(RuntimeError, match="SORA_VIDEO_PATH environment variable is not set"):
+        with pytest.raises(RuntimeError, match="VIDEO_PATH environment variable is not set"):
             get_path("video")
 
     def test_missing_reference_env_var(self, mocker):
-        """Test that missing REFERENCE_IMAGE_PATH raises RuntimeError."""
+        """Test that missing IMAGE_PATH raises RuntimeError."""
         mocker.patch.dict(os.environ, {}, clear=True)
 
-        with pytest.raises(RuntimeError, match="REFERENCE_IMAGE_PATH environment variable is not set"):
+        with pytest.raises(RuntimeError, match="IMAGE_PATH environment variable is not set"):
             get_path("reference")
 
     def test_empty_string_env_var(self, mocker):
         """Test that empty string env var raises RuntimeError."""
-        mocker.patch.dict(os.environ, {"SORA_VIDEO_PATH": ""})
+        mocker.patch.dict(os.environ, {"VIDEO_PATH": ""})
 
         with pytest.raises(RuntimeError, match="is not set or is empty"):
             get_path("video")
 
     def test_whitespace_only_env_var(self, mocker):
         """Test that whitespace-only env var raises RuntimeError."""
-        mocker.patch.dict(os.environ, {"SORA_VIDEO_PATH": "   \t\n  "})
+        mocker.patch.dict(os.environ, {"VIDEO_PATH": "   \t\n  "})
 
         with pytest.raises(RuntimeError, match="is not set or is empty"):
             get_path("video")
@@ -111,7 +111,7 @@ class TestGetPathErrorCases:
     def test_nonexistent_directory(self, mocker, tmp_path):
         """Test that non-existent directory raises RuntimeError."""
         nonexistent = tmp_path / "does_not_exist"
-        mocker.patch.dict(os.environ, {"SORA_VIDEO_PATH": str(nonexistent)})
+        mocker.patch.dict(os.environ, {"VIDEO_PATH": str(nonexistent)})
 
         with pytest.raises(RuntimeError, match="does not exist"):
             get_path("video")
@@ -121,7 +121,7 @@ class TestGetPathErrorCases:
         file_path = tmp_path / "not_a_directory.txt"
         file_path.write_text("content")
 
-        mocker.patch.dict(os.environ, {"SORA_VIDEO_PATH": str(file_path)})
+        mocker.patch.dict(os.environ, {"VIDEO_PATH": str(file_path)})
 
         with pytest.raises(RuntimeError, match="is not a directory"):
             get_path("video")
@@ -134,7 +134,7 @@ class TestGetPathErrorCases:
         link = tmp_path / "symlink_dir"
         link.symlink_to(real_dir)
 
-        mocker.patch.dict(os.environ, {"REFERENCE_IMAGE_PATH": str(link)})
+        mocker.patch.dict(os.environ, {"IMAGE_PATH": str(link)})
 
         with pytest.raises(RuntimeError, match="cannot be a symbolic link"):
             get_path("reference")
@@ -146,7 +146,7 @@ class TestGetPathEdgeCases:
 
     def test_strips_leading_trailing_whitespace(self, mocker, tmp_video_path):
         """Test that whitespace in env var is stripped and path still works."""
-        mocker.patch.dict(os.environ, {"SORA_VIDEO_PATH": f"  {tmp_video_path}  \t\n"})
+        mocker.patch.dict(os.environ, {"VIDEO_PATH": f"  {tmp_video_path}  \t\n"})
 
         result = get_path("video")
 
@@ -160,7 +160,7 @@ class TestGetPathEdgeCases:
 
         # Use relative path syntax
         relative_path = str(subdir)
-        mocker.patch.dict(os.environ, {"SORA_VIDEO_PATH": relative_path})
+        mocker.patch.dict(os.environ, {"VIDEO_PATH": relative_path})
 
         result = get_path("video")
 
@@ -173,7 +173,7 @@ class TestGetPathEdgeCases:
         dir_with_spaces = tmp_path / "my videos folder"
         dir_with_spaces.mkdir()
 
-        mocker.patch.dict(os.environ, {"SORA_VIDEO_PATH": str(dir_with_spaces)})
+        mocker.patch.dict(os.environ, {"VIDEO_PATH": str(dir_with_spaces)})
 
         result = get_path("video")
 

@@ -2,14 +2,14 @@
 
 ## Overview
 
-Production-ready open source release for sora-mcp-server with automated CI/CD, PyPI publishing, dependency security scanning, and quality assurance.
+Production-ready open source release for sanzaru with automated CI/CD, PyPI publishing, dependency security scanning, and quality assurance.
 
 **Author & Maintainer:** Richie Caputo (rcaputo3@tjclp.com)
 **Organization:** TJC Data & AI
 **Target:** Release 1.0.0 to PyPI as a public, production-ready MCP server
 
 **⚠️ Pending Decision:** Package naming convention
-- Current: `sora-mcp-server`
+- Current: `sanzaru`
 - Considerations: `mcp-server-sora` (MCP convention) vs `mcp-server-video` (generic/safe)
 - Status: Awaiting OpenAI partnership feedback on trademark usage
 - Timeline: Decision required before Phase 2 (PyPI publishing)
@@ -126,7 +126,7 @@ Add missing metadata fields:
 
 ```toml
 [project]
-name = "sora-mcp-server"
+name = "sanzaru"
 version = "1.0.0"  # Bump from 0.1.0
 description = "Fully async FastMCP server for OpenAI Sora Video API"
 readme = "README.md"
@@ -152,11 +152,11 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/TJC-LP/sora-mcp-server"
-Documentation = "https://github.com/TJC-LP/sora-mcp-server/blob/main/README.md"
-Repository = "https://github.com/TJC-LP/sora-mcp-server"
-Issues = "https://github.com/TJC-LP/sora-mcp-server/issues"
-Changelog = "https://github.com/TJC-LP/sora-mcp-server/blob/main/CHANGELOG.md"
+Homepage = "https://github.com/TJC-LP/sanzaru"
+Documentation = "https://github.com/TJC-LP/sanzaru/blob/main/README.md"
+Repository = "https://github.com/TJC-LP/sanzaru"
+Issues = "https://github.com/TJC-LP/sanzaru/issues"
+Changelog = "https://github.com/TJC-LP/sanzaru/blob/main/CHANGELOG.md"
 ```
 
 ---
@@ -423,13 +423,13 @@ Follow **Keep a Changelog** format:
 Add to top of README:
 
 ```markdown
-# sora-mcp-server
+# sanzaru
 
-[![PyPI version](https://badge.fury.io/py/sora-mcp-server.svg)](https://pypi.org/project/sora-mcp-server/)
-[![Python Support](https://img.shields.io/pypi/pyversions/sora-mcp-server.svg)](https://pypi.org/project/sora-mcp-server/)
+[![PyPI version](https://badge.fury.io/py/sanzaru.svg)](https://pypi.org/project/sanzaru/)
+[![Python Support](https://img.shields.io/pypi/pyversions/sanzaru.svg)](https://pypi.org/project/sanzaru/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
-[![Tests](https://github.com/TJC-LP/sora-mcp-server/actions/workflows/tests.yml/badge.svg)](https://github.com/TJC-LP/sora-mcp-server/actions/workflows/tests.yml)
-[![codecov](https://codecov.io/gh/TJC-LP/sora-mcp-server/branch/main/graph/badge.svg)](https://codecov.io/gh/TJC-LP/sora-mcp-server)
+[![Tests](https://github.com/TJC-LP/sanzaru/actions/workflows/tests.yml/badge.svg)](https://github.com/TJC-LP/sanzaru/actions/workflows/tests.yml)
+[![codecov](https://codecov.io/gh/TJC-LP/sanzaru/branch/main/graph/badge.svg)](https://codecov.io/gh/TJC-LP/sanzaru)
 [![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-000000.svg)](https://github.com/astral-sh/ruff)
 ```
 
@@ -472,7 +472,7 @@ Add to top of README:
 - [ ] Validate RC1 installation from Test PyPI
 - [ ] Tag final release `v1.0.0`
 - [ ] Publish to PyPI
-- [ ] Verify installation: `uv pip install sora-mcp-server`
+- [ ] Verify installation: `uv pip install sanzaru`
 
 ### Phase 3: Dependency Security ⏱️ Week 3
 - [ ] Create `.github/dependabot.yml`

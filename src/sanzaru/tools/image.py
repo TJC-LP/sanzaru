@@ -114,14 +114,14 @@ async def create_image(
         model: Mainline model to use (gpt-5, gpt-4.1, etc.) - calls the image generation tool
         tool_config: Optional ImageGeneration tool configuration (size, quality, model, moderation, etc.)
         previous_response_id: Optional ID to refine previous generation
-        input_images: Optional list of reference image filenames from REFERENCE_IMAGE_PATH
+        input_images: Optional list of reference image filenames from IMAGE_PATH
         mask_filename: Optional PNG mask with alpha channel for inpainting
 
     Returns:
         ImageResponse with response ID, status, and creation timestamp
 
     Raises:
-        RuntimeError: If OPENAI_API_KEY not set or REFERENCE_IMAGE_PATH not configured
+        RuntimeError: If OPENAI_API_KEY not set or IMAGE_PATH not configured
         ValueError: If invalid filename, path traversal, or mask without input_images
 
     Example tool_config:
@@ -271,7 +271,7 @@ async def download_image(
         ImageDownloadResult with filename, path, dimensions, and format
 
     Raises:
-        RuntimeError: If REFERENCE_IMAGE_PATH not configured or OPENAI_API_KEY not set
+        RuntimeError: If IMAGE_PATH not configured or OPENAI_API_KEY not set
         ValueError: If image generation not found or invalid filename
     """
     reference_image_path = get_path("reference")

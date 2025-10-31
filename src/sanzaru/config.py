@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: MIT
-"""Configuration management for Sora MCP server.
+"""Configuration management for sanzaru MCP server.
 
 This module handles:
 - OpenAI client initialization
@@ -24,7 +24,7 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     stream=sys.stderr,  # Log to stderr to avoid interfering with stdio MCP transport
 )
-logger = logging.getLogger("sora-mcp-server")
+logger = logging.getLogger("sanzaru")
 
 
 # ---------- OpenAI client (stateless) ----------
@@ -54,7 +54,7 @@ def get_path(path_type: Literal["video", "reference"]) -> pathlib.Path:
     Security: Rejects symlinks in environment variable paths to prevent directory traversal.
 
     Args:
-        path_type: Either "video" for SORA_VIDEO_PATH or "reference" for REFERENCE_IMAGE_PATH
+        path_type: Either "video" for VIDEO_PATH or "reference" for IMAGE_PATH
 
     Returns:
         Validated absolute path
@@ -63,13 +63,13 @@ def get_path(path_type: Literal["video", "reference"]) -> pathlib.Path:
         RuntimeError: If environment variable not set, malformed, path doesn't exist, isn't a directory, or is a symlink
     """
     if path_type == "video":
-        path_str = os.getenv("SORA_VIDEO_PATH")
-        env_var = "SORA_VIDEO_PATH"
+        path_str = os.getenv("VIDEO_PATH")
+        env_var = "VIDEO_PATH"
         error_name = "Video download directory"
     else:  # reference
-        path_str = os.getenv("REFERENCE_IMAGE_PATH")
-        env_var = "REFERENCE_IMAGE_PATH"
-        error_name = "Reference image directory"
+        path_str = os.getenv("IMAGE_PATH")
+        env_var = "IMAGE_PATH"
+        error_name = "Image directory"
 
     # Validate env var is set and not empty/whitespace
     if not path_str or not path_str.strip():

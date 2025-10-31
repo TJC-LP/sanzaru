@@ -1,10 +1,10 @@
 {
   "mcpServers": {
-    "sora-mcp-server": {
+    "sanzaru": {
       "command": "uv",
       "args": [
         "run",
-        "sora-mcp-server"
+        "sanzaru"
       ]
     }
   }
