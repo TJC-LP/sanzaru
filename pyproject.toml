@@ -29,6 +29,7 @@ audio = [
   "pydub",
   "ffmpeg-python",
   "async-lru>=2.0.5",
+  "aioresult>=1.0.0",
   "audioop-lts; python_version >= '3.13'",
 ]
 image = [
@@ -100,4 +101,4 @@ markers = [
 ]
 
 [tool.mypy]
-disable_error_code = ["import-untyped"]
+disable_error_code = ["import-untyped", "import-not-found"]

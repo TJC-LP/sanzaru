@@ -13,8 +13,8 @@ from openai.types import AudioModel
 from pydub import AudioSegment  # type: ignore
 
 from ..audio.constants import CHAT_WITH_AUDIO_FORMATS, TRANSCRIBE_AUDIO_FORMATS, AudioChatModel
-from ..audio.exceptions import AudioFileError, AudioFileNotFoundError
 from ..audio.models import FilePathSupportParams
+from ..exceptions import AudioFileError, AudioFileNotFoundError
 
 
 class FileSystemRepository:

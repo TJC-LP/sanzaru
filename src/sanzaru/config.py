@@ -44,8 +44,8 @@ def get_client() -> AsyncOpenAI:
 
 
 # ---------- Path configuration (runtime) ----------
-@lru_cache(maxsize=2)
-def get_path(path_type: Literal["video", "reference"]) -> pathlib.Path:
+@lru_cache(maxsize=3)
+def get_path(path_type: Literal["video", "reference", "audio"]) -> pathlib.Path:
     """Get and validate a configured path from environment.
 
     Requires explicit environment variable configuration - no defaults.
@@ -54,7 +54,7 @@ def get_path(path_type: Literal["video", "reference"]) -> pathlib.Path:
     Security: Rejects symlinks in environment variable paths to prevent directory traversal.
 
     Args:
-        path_type: Either "video" for VIDEO_PATH or "reference" for IMAGE_PATH
+        path_type: Either "video" for VIDEO_PATH, "reference" for IMAGE_PATH, or "audio" for AUDIO_PATH
 
     Returns:
         Validated absolute path
@@ -66,10 +66,14 @@ def get_path(path_type: Literal["video", "reference"]) -> pathlib.Path:
         path_str = os.getenv("VIDEO_PATH")
         env_var = "VIDEO_PATH"
         error_name = "Video download directory"
-    else:  # reference
+    elif path_type == "reference":
         path_str = os.getenv("IMAGE_PATH")
         env_var = "IMAGE_PATH"
         error_name = "Image directory"
+    else:  # audio
+        path_str = os.getenv("AUDIO_PATH")
+        env_var = "AUDIO_PATH"
+        error_name = "Audio files directory"
 
     # Validate env var is set and not empty/whitespace
     if not path_str or not path_str.strip():
@@ -92,8 +96,8 @@ def get_path(path_type: Literal["video", "reference"]) -> pathlib.Path:
 
     # Validate path exists and is a directory
     if not path.exists():
-        raise RuntimeError(f"{error_name} does not exist: {path}")
+        raise RuntimeError(f"{env_var}: {error_name} does not exist: {path}")
     if not path.is_dir():
-        raise RuntimeError(f"{error_name} is not a directory: {path}")
+        raise RuntimeError(f"{env_var}: {error_name} is not a directory: {path}")
 
     return path

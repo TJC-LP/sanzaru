@@ -4,14 +4,29 @@
   <img src="assets/logo.png" alt="sanzaru logo" width="400">
 </div>
 
-A **stateless**, lightweight **MCP** server that wraps the **OpenAI Sora Video API** via the OpenAI Python SDK.
+A **stateless**, lightweight **MCP** server that wraps **OpenAI's Sora Video API, Whisper, and GPT-4o Audio APIs** via the OpenAI Python SDK.
 
 ## Features
+
+### Video Generation (Sora)
 - **Video Generation**: Create Sora jobs (`sora-2` / `sora-2-pro`), optional image reference, optional remix
-- **Image Generation**: Create reference images using GPT-5/GPT-4.1 with iterative refinement
 - Get status, wait until completion (polling), download assets
-- List and delete videos/images
-- Stateless by default; no DB, no in-memory job tracking
+- List and delete videos
+- Remix existing videos
+
+### Image Generation
+- **Image Generation**: Create reference images using GPT-5/GPT-4.1 with iterative refinement
+- List and prepare reference images
+- Reference image management with automatic resizing
+
+### Audio Processing
+- **Audio Transcription**: Whisper and GPT-4o transcription models
+- **Audio Chat**: Interactive audio analysis with GPT-4o
+- **Text-to-Speech**: High-quality TTS with multiple voices
+- **Audio Processing**: Format conversion, compression, file management
+- **Enhanced Transcription**: Specialized templates for detailed, storytelling, professional, or analytical output
+
+**Architecture:** Stateless by default; no DB, no in-memory job tracking
 
 > **Note:** Content guardrails are enforced by OpenAI. This server does not run local moderation.
 
@@ -28,8 +43,37 @@ See [`docs/async-optimizations.md`](docs/async-optimizations.md) for technical d
 ## Requirements
 - Python 3.10+
 - `OPENAI_API_KEY` environment variable
-- `VIDEO_PATH` environment variable (directory for downloaded videos)
-- `IMAGE_PATH` environment variable (directory for reference images)
+
+**Feature-specific environment variables:**
+- `VIDEO_PATH` - Directory for downloaded videos (enables video features)
+- `IMAGE_PATH` - Directory for reference images (enables image features)
+- `AUDIO_PATH` - Directory containing audio files (enables audio features)
+
+**Feature Auto-Detection:** Features are automatically enabled based on which paths you configure. Set only the paths for features you want to use.
+
+## Installation
+
+### Base Installation (Video + Image)
+```bash
+uv add sanzaru
+```
+
+### With Audio Support
+```bash
+uv add "sanzaru[audio]"
+```
+
+### All Features
+```bash
+uv add "sanzaru[all]"
+```
+
+### Development Installation
+```bash
+git clone https://github.com/TJC-LP/sanzaru.git
+cd sanzaru
+uv sync --all-extras
+```
 
 ## Quick Start
 
@@ -92,14 +136,26 @@ If you want to run the server manually or integrate it with other MCP clients:
 uv venv
 uv sync
 
-# Set environment variables and run
+# All features - set all paths
 export OPENAI_API_KEY=sk-...
 export VIDEO_PATH=~/videos
 export IMAGE_PATH=~/images
+export AUDIO_PATH=~/audio
 uv run sanzaru
+
+# Audio-only mode - set only AUDIO_PATH
+export OPENAI_API_KEY=sk-...
+export AUDIO_PATH=~/audio
+uv run sanzaru  # Only audio tools will be registered
+
+# Video + Audio - set only VIDEO_PATH and AUDIO_PATH
+export OPENAI_API_KEY=sk-...
+export VIDEO_PATH=~/videos
+export AUDIO_PATH=~/audio
+uv run sanzaru  # Video and audio tools only
 ```
 
-**Important:** Both `VIDEO_PATH` and `IMAGE_PATH` environment variables are required. The directories must exist before starting the server.
+**Feature Auto-Detection:** Set only the paths for features you want to use. Features are automatically enabled based on configured paths. Directories must exist before starting the server.
 
 ## MCP Tools
 

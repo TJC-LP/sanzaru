@@ -5,46 +5,19 @@ Migrated from mcp-server-whisper v1.1.0 by Richie Caputo (MIT license).
 
 from typing import Literal
 
-# TODO(Track C): Infrastructure imports
-# from ...infrastructure import FileSystemRepository, OpenAIClientWrapper, SecurePathResolver
-# from ..models import ChatResult, TranscriptionResult
-
-# Placeholder imports for syntax validation
-# Once Track A and Track C complete, uncomment the above and remove placeholders
-try:
-    from ...infrastructure import FileSystemRepository, OpenAIClientWrapper, SecurePathResolver
-except ImportError:
-    # Temporary placeholders until Track C completes
-    FileSystemRepository = object  # type: ignore
-    OpenAIClientWrapper = object  # type: ignore
-    SecurePathResolver = object  # type: ignore
-
-try:
-    from ..models import ChatResult, TranscriptionResult
-except ImportError:
-    # Temporary placeholders until Track A completes
-    ChatResult = dict  # type: ignore
-    TranscriptionResult = dict  # type: ignore
+from ...config import get_client, get_path
+from ...infrastructure import FileSystemRepository, SecurePathResolver
+from ..models import ChatResult, TranscriptionResult
 
 
 class TranscriptionService:
     """Service for audio transcription operations."""
 
-    def __init__(
-        self, file_repo: FileSystemRepository, openai_client: OpenAIClientWrapper, path_resolver: SecurePathResolver
-    ):
-        """Initialize the transcription service.
-
-        Args:
-        ----
-            file_repo: File system repository for I/O operations.
-            openai_client: OpenAI API client wrapper.
-            path_resolver: Secure path resolver for filename to path conversion.
-
-        """
-        self.file_repo = file_repo
-        self.openai_client = openai_client
-        self.path_resolver = path_resolver
+    def __init__(self):
+        """Initialize the transcription service."""
+        audio_path = get_path("audio")
+        self.file_repo = FileSystemRepository(audio_path)
+        self.path_resolver = SecurePathResolver(audio_path)
 
     async def transcribe_audio(
         self,
@@ -69,6 +42,8 @@ class TranscriptionService:
             TranscriptionResult: Transcription result with typed fields.
 
         """
+        client = get_client()
+
         # Resolve filename to path
         file_path = self.path_resolver.resolve_input(filename)
 
@@ -76,17 +51,21 @@ class TranscriptionService:
         audio_bytes = await self.file_repo.read_audio_file(file_path)
 
         # Transcribe using OpenAI
-        result_dict = await self.openai_client.transcribe_audio(
-            audio_bytes=audio_bytes,
-            filename=filename,
+        from io import BytesIO
+
+        transcription = await client.audio.transcriptions.create(
+            file=(filename, BytesIO(audio_bytes)),
             model=model,  # type: ignore
             response_format=response_format,  # type: ignore
             prompt=prompt,
             timestamp_granularities=timestamp_granularities,
         )
 
-        # Convert dict to typed response model
-        return TranscriptionResult(**result_dict)
+        # Convert to TranscriptionResult
+        if isinstance(transcription, str):
+            return TranscriptionResult(text=transcription)
+        else:
+            return TranscriptionResult(**transcription.model_dump())
 
     async def chat_with_audio(
         self,
@@ -109,6 +88,8 @@ class TranscriptionService:
             ChatResult: Chat response with typed text field.
 
         """
+        client = get_client()
+
         # Resolve filename to path
         file_path = self.path_resolver.resolve_input(filename)
 
@@ -120,14 +101,75 @@ class TranscriptionService:
         # Read audio file
         audio_bytes = await self.file_repo.read_audio_file(file_path)
 
+        # Encode audio to base64
+        import base64
+
+        audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
+
+        # Build messages
+        from typing import Any
+
+        messages: list[dict[str, Any]] = []
+        if system_prompt:
+            messages.append({"role": "system", "content": system_prompt})
+
+        # Add audio input with optional text prompt
+        user_content: list[dict[str, Any]] = [
+            {"type": "input_audio", "input_audio": {"data": audio_base64, "format": ext}}
+        ]
+        if user_prompt:
+            user_content.append({"type": "text", "text": user_prompt})
+
+        messages.append({"role": "user", "content": user_content})
+
         # Chat with audio using OpenAI
-        result_dict = await self.openai_client.chat_with_audio(
-            audio_bytes=audio_bytes,
-            audio_format=ext,  # type: ignore
+        response = await client.chat.completions.create(
             model=model,  # type: ignore
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
+            messages=messages,  # type: ignore
         )
 
-        # Convert dict to typed response model
-        return ChatResult(**result_dict)
+        # Extract text from response
+        text = response.choices[0].message.content or ""
+
+        return ChatResult(text=text)
+
+    async def transcribe_enhanced(
+        self,
+        filename: str,
+        enhancement_type: str,
+        model: str = "gpt-4o-mini-transcribe",
+        response_format: str = "text",
+        timestamp_granularities: list[Literal["word", "segment"]] | None = None,
+    ) -> TranscriptionResult:
+        """Transcribe audio with enhancement prompts for different styles.
+
+        Args:
+        ----
+            filename: Name of the audio file.
+            enhancement_type: Type of enhancement (detailed, storytelling, professional, analytical).
+            model: Transcription model to use.
+            response_format: Format of the response.
+            timestamp_granularities: Optional timestamp granularities.
+
+        Returns:
+        -------
+            TranscriptionResult: Enhanced transcription result.
+
+        """
+        # Enhancement prompts for different styles
+        enhancement_prompts = {
+            "detailed": "Transcribe this audio in detail, including tone, emotion, and background sounds.",
+            "storytelling": "Transcribe this audio and transform it into a narrative story format.",
+            "professional": "Transcribe this audio in a formal, business-appropriate style.",
+            "analytical": "Transcribe this audio and add analysis of speech patterns and key points.",
+        }
+
+        prompt = enhancement_prompts.get(enhancement_type, enhancement_prompts["detailed"])
+
+        return await self.transcribe_audio(
+            filename=filename,
+            model=model,
+            response_format=response_format,
+            prompt=prompt,
+            timestamp_granularities=timestamp_granularities,
+        )

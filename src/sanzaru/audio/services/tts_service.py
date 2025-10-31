@@ -5,66 +5,22 @@ Migrated from mcp-server-whisper v1.1.0 by Richie Caputo (MIT license).
 
 import time
 
-# TODO(Track A): Domain logic imports
-# from ..constants import TTSVoice
-# from .. import AudioProcessor
-# from ..models import TTSResult
-
-# TODO(Track C): Infrastructure imports
-# from ...infrastructure import FileSystemRepository, OpenAIClientWrapper, SecurePathResolver
-
-# TODO(Track B): Utility function (needs migration)
-# from ..utils import split_text_for_tts
-
-# Placeholder imports for syntax validation
-# Once Track A and Track C complete, uncomment the above and remove placeholders
-try:
-    from .. import AudioProcessor
-    from ..constants import TTSVoice
-    from ..models import TTSResult
-except ImportError:
-    # Temporary placeholders until Track A completes
-    TTSVoice = str  # type: ignore
-    AudioProcessor = object  # type: ignore
-    TTSResult = dict  # type: ignore
-
-try:
-    from ...infrastructure import FileSystemRepository, OpenAIClientWrapper, SecurePathResolver
-except ImportError:
-    # Temporary placeholders until Track C completes
-    FileSystemRepository = object  # type: ignore
-    OpenAIClientWrapper = object  # type: ignore
-    SecurePathResolver = object  # type: ignore
-
-try:
-    from ..utils import split_text_for_tts
-except ImportError:
-    # Temporary placeholder until utils are migrated
-
-    def split_text_for_tts(text: str, max_length: int = 4000) -> list[str]:  # type: ignore
-        """Placeholder - will be replaced by actual implementation."""
-        return [text]
+from ...config import get_client, get_path
+from ...infrastructure import FileSystemRepository, SecurePathResolver, split_text_for_tts
+from .. import AudioProcessor
+from ..constants import TTSVoice
+from ..models import TTSResult
 
 
 class TTSService:
     """Service for text-to-speech operations."""
 
-    def __init__(
-        self, file_repo: FileSystemRepository, openai_client: OpenAIClientWrapper, path_resolver: SecurePathResolver
-    ):
-        """Initialize the TTS service.
-
-        Args:
-        ----
-            file_repo: File system repository for I/O operations.
-            openai_client: OpenAI API client wrapper.
-            path_resolver: Secure path resolver for filename to path conversion.
-
-        """
-        self.file_repo = file_repo
-        self.openai_client = openai_client
+    def __init__(self):
+        """Initialize the TTS service."""
+        audio_path = get_path("audio")
+        self.file_repo = FileSystemRepository(audio_path)
         self.audio_processor = AudioProcessor()
-        self.path_resolver = path_resolver
+        self.path_resolver = SecurePathResolver(audio_path)
 
     async def create_speech(
         self,
@@ -100,15 +56,19 @@ class TTSService:
         # Split text if it exceeds the API limit
         text_chunks = split_text_for_tts(text_prompt)
 
+        client = get_client()
+
         if len(text_chunks) == 1:
             # Single chunk - process directly
-            audio_bytes = await self.openai_client.text_to_speech(
-                text=text_chunks[0],
+            response = await client.audio.speech.create(
+                input=text_chunks[0],
                 model=model,  # type: ignore
-                voice=voice,
-                instructions=instructions,
+                voice=voice,  # type: ignore
                 speed=speed,
             )
+
+            # Get audio bytes from response
+            audio_bytes = response.content
 
             # Write audio file
             await self.file_repo.write_audio_file(output_file_path, audio_bytes)
@@ -117,14 +77,24 @@ class TTSService:
             # Multiple chunks - process in parallel and concatenate
             print(f"Text exceeds TTS API limit, splitting into {len(text_chunks)} chunks")
 
-            # Generate TTS for all chunks in parallel
-            audio_chunks = await self.openai_client.generate_tts_chunks(
-                text_chunks=text_chunks,
-                model=model,  # type: ignore
-                voice=voice,
-                instructions=instructions,
-                speed=speed,
-            )
+            # Generate TTS for all chunks in parallel using anyio and aioresult
+            import anyio
+            from aioresult import ResultCapture
+
+            async def generate_chunk(text: str) -> bytes:
+                response = await client.audio.speech.create(
+                    input=text,
+                    model=model,  # type: ignore
+                    voice=voice,  # type: ignore
+                    speed=speed,
+                )
+                return response.content
+
+            async with anyio.create_task_group() as tg:
+                captures = [ResultCapture.start_soon(tg, generate_chunk, chunk) for chunk in text_chunks]
+
+            # Collect results
+            audio_chunks = [c.result() for c in captures]
 
             # Concatenate audio chunks using domain logic
             combined_audio = await self.audio_processor.concatenate_audio_segments(

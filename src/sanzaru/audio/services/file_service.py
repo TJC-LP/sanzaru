@@ -8,52 +8,20 @@ from pathlib import Path
 import anyio
 from aioresult import ResultCapture
 
-# TODO(Track A): Domain logic imports
-# from ..constants import SortBy
-# from .. import FileFilterSorter
-# from ..models import FilePathSupportParams
-
-# TODO(Track C): Infrastructure imports
-# from ...infrastructure import FileSystemRepository, get_cached_audio_file_support
-
-# Placeholder imports for syntax validation
-# Once Track A and Track C complete, uncomment the above and remove placeholders
-try:
-    from .. import FileFilterSorter
-    from ..constants import SortBy
-    from ..models import FilePathSupportParams
-except ImportError:
-    # Temporary placeholders until Track A completes
-    from enum import Enum
-
-    class SortBy(str, Enum):  # type: ignore
-        NAME = "name"
-
-    FileFilterSorter = object  # type: ignore
-    FilePathSupportParams = dict  # type: ignore
-
-try:
-    from ...infrastructure import FileSystemRepository, get_cached_audio_file_support
-except ImportError:
-    # Temporary placeholders until Track C completes
-    FileSystemRepository = object  # type: ignore
-
-    async def get_cached_audio_file_support(*args, **kwargs):  # type: ignore
-        pass
+from ...config import get_path
+from ...infrastructure import FileSystemRepository, get_cached_audio_file_support
+from .. import FileFilterSorter
+from ..constants import SortBy
+from ..models import FilePathSupportParams
 
 
 class FileService:
     """Service for file discovery, filtering, and sorting operations."""
 
-    def __init__(self, file_repo: FileSystemRepository):
-        """Initialize the file service.
-
-        Args:
-        ----
-            file_repo: File system repository for I/O operations.
-
-        """
-        self.file_repo = file_repo
+    def __init__(self):
+        """Initialize the file service."""
+        audio_path = get_path("audio")
+        self.file_repo = FileSystemRepository(audio_path)
         self.filter_sorter = FileFilterSorter()
 
     async def get_latest_audio_file(self) -> FilePathSupportParams:

@@ -24,6 +24,14 @@ def tmp_video_path(tmp_path: pathlib.Path) -> pathlib.Path:
 
 
 @pytest.fixture
+def tmp_audio_path(tmp_path: pathlib.Path) -> pathlib.Path:
+    """Create a temporary directory for audio files."""
+    audio_path = tmp_path / "audio"
+    audio_path.mkdir()
+    return audio_path
+
+
+@pytest.fixture
 def sample_image(tmp_reference_path: pathlib.Path) -> pathlib.Path:
     """Create a sample RGB image for testing.
 

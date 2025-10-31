@@ -5,50 +5,22 @@ Migrated from mcp-server-whisper v1.1.0 by Richie Caputo (MIT license).
 
 from pathlib import Path
 
-# TODO(Track A): Domain logic imports
-# from ..constants import DEFAULT_MAX_FILE_SIZE_MB, SupportedChatWithAudioFormat
-# from .. import AudioProcessor
-# from ..models import AudioProcessingResult
-
-# TODO(Track C): Infrastructure imports
-# from ...infrastructure import FileSystemRepository, SecurePathResolver
-
-# Placeholder imports for syntax validation
-# Once Track A and Track C complete, uncomment the above and remove placeholders
-try:
-    from .. import AudioProcessor
-    from ..constants import DEFAULT_MAX_FILE_SIZE_MB, SupportedChatWithAudioFormat
-    from ..models import AudioProcessingResult
-except ImportError:
-    # Temporary placeholders until Track A completes
-    DEFAULT_MAX_FILE_SIZE_MB = 25  # type: ignore
-    SupportedChatWithAudioFormat = str  # type: ignore
-    AudioProcessor = object  # type: ignore
-    AudioProcessingResult = dict  # type: ignore
-
-try:
-    from ...infrastructure import FileSystemRepository, SecurePathResolver
-except ImportError:
-    # Temporary placeholders until Track C completes
-    FileSystemRepository = object  # type: ignore
-    SecurePathResolver = object  # type: ignore
+from ...config import get_path
+from ...infrastructure import FileSystemRepository, SecurePathResolver
+from .. import AudioProcessor
+from ..constants import DEFAULT_MAX_FILE_SIZE_MB, SupportedChatWithAudioFormat
+from ..models import AudioProcessingResult
 
 
 class AudioService:
     """Service for audio conversion and compression operations."""
 
-    def __init__(self, file_repo: FileSystemRepository, path_resolver: SecurePathResolver):
-        """Initialize the audio service.
-
-        Args:
-        ----
-            file_repo: File system repository for I/O operations.
-            path_resolver: Secure path resolver for filename to path conversion.
-
-        """
-        self.file_repo = file_repo
+    def __init__(self):
+        """Initialize the audio service."""
+        audio_path = get_path("audio")
+        self.file_repo = FileSystemRepository(audio_path)
         self.processor = AudioProcessor()
-        self.path_resolver = path_resolver
+        self.path_resolver = SecurePathResolver(audio_path)
 
     async def convert_audio(
         self,
