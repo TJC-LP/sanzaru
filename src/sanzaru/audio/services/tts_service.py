@@ -5,6 +5,8 @@ Migrated from mcp-server-whisper v1.1.0 by Richie Caputo (MIT license).
 
 import time
 
+from openai.types.audio.speech_model import SpeechModel
+
 from ...config import get_client, get_path
 from ...infrastructure import FileSystemRepository, SecurePathResolver, split_text_for_tts
 from .. import AudioProcessor
@@ -26,7 +28,7 @@ class TTSService:
         self,
         text_prompt: str,
         output_filename: str | None = None,
-        model: str = "gpt-4o-mini-tts",
+        model: SpeechModel = "gpt-4o-mini-tts",
         voice: TTSVoice = "alloy",
         instructions: str | None = None,
         speed: float = 1.0,
@@ -62,8 +64,8 @@ class TTSService:
             # Single chunk - process directly
             response = await client.audio.speech.create(
                 input=text_chunks[0],
-                model=model,  # type: ignore
-                voice=voice,  # type: ignore
+                model=model,
+                voice=voice,
                 speed=speed,
             )
 
@@ -84,8 +86,8 @@ class TTSService:
             async def generate_chunk(text: str) -> bytes:
                 response = await client.audio.speech.create(
                     input=text,
-                    model=model,  # type: ignore
-                    voice=voice,  # type: ignore
+                    model=model,
+                    voice=voice,
                     speed=speed,
                 )
                 return response.content

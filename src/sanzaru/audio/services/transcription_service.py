@@ -5,8 +5,12 @@ Migrated from mcp-server-whisper v1.1.0 by Richie Caputo (MIT license).
 
 from typing import Literal
 
+from openai._types import omit
+from openai.types import AudioModel, AudioResponseFormat
+
 from ...config import get_client, get_path
 from ...infrastructure import FileSystemRepository, SecurePathResolver
+from ..constants import AudioChatModel, EnhancementType
 from ..models import ChatResult, TranscriptionResult
 
 
@@ -22,8 +26,8 @@ class TranscriptionService:
     async def transcribe_audio(
         self,
         filename: str,
-        model: str = "gpt-4o-mini-transcribe",
-        response_format: str = "text",
+        model: AudioModel = "gpt-4o-mini-transcribe",
+        response_format: AudioResponseFormat = "text",
         prompt: str | None = None,
         timestamp_granularities: list[Literal["word", "segment"]] | None = None,
     ) -> TranscriptionResult:
@@ -55,10 +59,10 @@ class TranscriptionService:
 
         transcription = await client.audio.transcriptions.create(
             file=(filename, BytesIO(audio_bytes)),
-            model=model,  # type: ignore
-            response_format=response_format,  # type: ignore
-            prompt=prompt,
-            timestamp_granularities=timestamp_granularities,
+            model=model,
+            response_format=response_format,  # type: ignore[arg-type]  # SDK stubs incomplete for AudioResponseFormat
+            prompt=prompt if prompt is not None else omit,
+            timestamp_granularities=timestamp_granularities if timestamp_granularities is not None else omit,
         )
 
         # Convert to TranscriptionResult
@@ -70,7 +74,7 @@ class TranscriptionService:
     async def chat_with_audio(
         self,
         filename: str,
-        model: str = "gpt-4o-audio-preview-2024-12-17",
+        model: AudioChatModel = "gpt-4o-audio-preview-2024-12-17",
         system_prompt: str | None = None,
         user_prompt: str | None = None,
     ) -> ChatResult:
@@ -124,7 +128,7 @@ class TranscriptionService:
 
         # Chat with audio using OpenAI
         response = await client.chat.completions.create(
-            model=model,  # type: ignore
+            model=model,
             messages=messages,  # type: ignore
         )
 
@@ -136,9 +140,9 @@ class TranscriptionService:
     async def transcribe_enhanced(
         self,
         filename: str,
-        enhancement_type: str,
-        model: str = "gpt-4o-mini-transcribe",
-        response_format: str = "text",
+        enhancement_type: EnhancementType,
+        model: AudioModel = "gpt-4o-mini-transcribe",
+        response_format: AudioResponseFormat = "text",
         timestamp_granularities: list[Literal["word", "segment"]] | None = None,
     ) -> TranscriptionResult:
         """Transcribe audio with enhancement prompts for different styles.
