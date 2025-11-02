@@ -14,7 +14,7 @@ build/
 *.mp4
 *.webp
 *.jpg
-audio/
-videos/
-images/
+/audio/
+/videos/
+/images/
 .coverage
