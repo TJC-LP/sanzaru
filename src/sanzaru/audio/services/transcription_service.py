@@ -74,7 +74,7 @@ class TranscriptionService:
     async def chat_with_audio(
         self,
         filename: str,
-        model: AudioChatModel = "gpt-4o-audio-preview-2024-12-17",
+        model: AudioChatModel = "gpt-4o-audio-preview-2025-06-03",
         system_prompt: str | None = None,
         user_prompt: str | None = None,
     ) -> ChatResult:
