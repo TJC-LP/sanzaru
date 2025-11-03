@@ -33,6 +33,10 @@ repos:
           - pillow
           - mcp
           - dotenv
+          - pydub
+          - ffmpeg-python
+          - pydantic
+          - pydantic-settings
         args: [--config-file=pyproject.toml]
         pass_filenames: true
         files: ^src/

@@ -190,14 +190,41 @@ Three modes available in `prepare_reference_image`:
 
 ## Environment Configuration
 
-Required environment variables (loaded via python-dotenv):
+Required environment variables:
 ```bash
 OPENAI_API_KEY="sk-..."
 VIDEO_PATH="/absolute/path/to/videos"
 IMAGE_PATH="/absolute/path/to/references"
+AUDIO_PATH="/absolute/path/to/audio"
+LOG_LEVEL="INFO"  # Optional: DEBUG, INFO, WARNING, ERROR
 ```
 
-Use `./setup.sh` for interactive setup, or manually copy `.env.example` to `.env`.
+**For MCP servers (Claude Desktop):**
+Set environment variables explicitly in `.mcp.json` using template variables:
+```json
+{
+  "mcpServers": {
+    "sanzaru": {
+      "command": "uv",
+      "args": ["run", "sanzaru"],
+      "env": {
+        "OPENAI_API_KEY": "${OPENAI_API_KEY}",
+        "VIDEO_PATH": "${VIDEO_PATH}",
+        "IMAGE_PATH": "${IMAGE_PATH}",
+        "AUDIO_PATH": "${AUDIO_PATH}",
+        "LOG_LEVEL": "${LOG_LEVEL}"
+      }
+    }
+  }
+}
+```
+
+**For local development with .env files:**
+1. Run `./setup.sh` for interactive setup, or manually copy `.env.example` to `.env`
+2. Install dotenv: `uv add --dev python-dotenv`
+3. Run Claude with dotenv-cli to inject env vars: `npx dotenv-cli -- claude` (or `bunx dotenv-cli -- claude`)
+
+This approach makes environment configuration explicit and avoids confusion from implicit `.env` loading.
 
 ## Model Selection Guidelines
 

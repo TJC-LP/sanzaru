@@ -5,7 +5,21 @@
       "args": [
         "run",
         "sanzaru"
-      ]
+      ],
+      "env": {
+        "OPENAI_API_KEY": "${OPENAI_API_KEY}",
+        "VIDEO_PATH": "${VIDEO_PATH}",
+        "IMAGE_PATH": "${IMAGE_PATH}",
+        "AUDIO_PATH": "${AUDIO_PATH}",
+        "LOG_LEVEL": "${LOG_LEVEL}"
+      }
+    },
+    "context7": {
+      "type": "http",
+      "url": "https://mcp.context7.com/mcp",
+      "headers": {
+        "CONTEXT7_API_KEY": "${CONTEXT7_API_KEY}"
+      }
     }
   }
 }

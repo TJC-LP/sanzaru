@@ -38,6 +38,15 @@ class TestGetPathHappyPath:
         assert result == tmp_reference_path.resolve()
         assert result.is_dir()
 
+    def test_get_path_audio_valid(self, mocker, tmp_audio_path):
+        """Test that valid AUDIO_PATH returns correct path."""
+        mocker.patch.dict(os.environ, {"AUDIO_PATH": str(tmp_audio_path)})
+
+        result = get_path("audio")
+
+        assert result == tmp_audio_path.resolve()
+        assert result.is_dir()
+
 
 @pytest.mark.unit
 class TestGetPathCaching:
@@ -75,6 +84,31 @@ class TestGetPathCaching:
         assert result_video == tmp_video_path.resolve()
         assert result_reference == tmp_reference_path.resolve()
 
+    def test_cache_separate_for_all_path_types(self, mocker, tmp_video_path, tmp_reference_path, tmp_audio_path):
+        """Test that video, reference, and audio paths are cached separately."""
+        mocker.patch.dict(
+            os.environ,
+            {
+                "VIDEO_PATH": str(tmp_video_path),
+                "IMAGE_PATH": str(tmp_reference_path),
+                "AUDIO_PATH": str(tmp_audio_path),
+            },
+        )
+
+        result_video = get_path("video")
+        result_reference = get_path("reference")
+        result_audio = get_path("audio")
+
+        # All paths should be different
+        assert result_video != result_reference
+        assert result_video != result_audio
+        assert result_reference != result_audio
+
+        # Each should match its expected path
+        assert result_video == tmp_video_path.resolve()
+        assert result_reference == tmp_reference_path.resolve()
+        assert result_audio == tmp_audio_path.resolve()
+
 
 @pytest.mark.unit
 class TestGetPathErrorCases:
@@ -93,6 +127,13 @@ class TestGetPathErrorCases:
 
         with pytest.raises(RuntimeError, match="IMAGE_PATH environment variable is not set"):
             get_path("reference")
+
+    def test_missing_audio_env_var(self, mocker):
+        """Test that missing AUDIO_PATH raises RuntimeError."""
+        mocker.patch.dict(os.environ, {}, clear=True)
+
+        with pytest.raises(RuntimeError, match="AUDIO_PATH environment variable is not set"):
+            get_path("audio")
 
     def test_empty_string_env_var(self, mocker):
         """Test that empty string env var raises RuntimeError."""

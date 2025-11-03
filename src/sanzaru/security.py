@@ -42,8 +42,10 @@ def validate_safe_path(base_path: pathlib.Path, filename: str, *, allow_create: 
         raise ValueError(f"Invalid filename '{filename}': {e}") from e
 
     # Security: prevent path traversal - ensure resolved path is within base_path
-    if not str(file_path).startswith(str(base_path)):
-        raise ValueError(f"Invalid filename: path traversal detected in '{filename}'")
+    try:
+        file_path.relative_to(base_path)
+    except ValueError:
+        raise ValueError(f"Invalid filename: path traversal detected in '{filename}'") from None
 
     # Validate existence unless creating new file
     if not allow_create and not file_path.exists():

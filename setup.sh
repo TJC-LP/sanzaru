@@ -78,6 +78,19 @@ else
     fi
 fi
 
+# Get audio path
+echo ""
+echo "Default audio files path: $PROJECT_DIR/audio"
+read -p "Press Enter to accept, or type a custom path: " AUDIO_PATH
+if [ -z "$AUDIO_PATH" ]; then
+    AUDIO_PATH="$PROJECT_DIR/audio"
+else
+    # Convert to absolute path if relative
+    if [[ "$AUDIO_PATH" != /* ]]; then
+        AUDIO_PATH="$(cd "$(dirname "$AUDIO_PATH")" 2>/dev/null && pwd)/$(basename "$AUDIO_PATH")" || AUDIO_PATH="$PROJECT_DIR/$AUDIO_PATH"
+    fi
+fi
+
 echo ""
 echo "============================================"
 echo "  Creating directories..."
@@ -90,6 +103,9 @@ echo "✓ Created $VIDEO_PATH"
 mkdir -p "$REFERENCE_PATH"
 echo "✓ Created $REFERENCE_PATH"
 
+mkdir -p "$AUDIO_PATH"
+echo "✓ Created $AUDIO_PATH"
+
 echo ""
 echo "============================================"
 echo "  Writing .env file..."
@@ -100,6 +116,7 @@ cat > .env << EOF
 OPENAI_API_KEY="$API_KEY"
 VIDEO_PATH="$VIDEO_PATH"
 IMAGE_PATH="$REFERENCE_PATH"
+AUDIO_PATH="$AUDIO_PATH"
 EOF
 
 echo "✓ Created .env file"
@@ -131,4 +148,5 @@ echo ""
 echo "Configuration saved to .env:"
 echo "  - Videos will be saved to: $VIDEO_PATH"
 echo "  - Reference images: $REFERENCE_PATH"
+echo "  - Audio files: $AUDIO_PATH"
 echo ""

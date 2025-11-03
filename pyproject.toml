@@ -1,7 +1,7 @@
 [project]
 name = "sanzaru"
-version = "0.1.0"
-description = "Lightweight FastMCP wrapper around the OpenAI Sora Video API"
+version = "0.2.0"
+description = "Unified MCP server for OpenAI multimodal APIs (Sora, Whisper, GPT Vision)"
 readme = "README.md"
 requires-python = ">=3.10"
 license = {text = "MIT"}
@@ -16,9 +16,26 @@ dependencies = [
   "openai>=2.6.0",
   "mcp>=1.20.0",
   "httpx>=0.27.0",
-  "pillow>=12.0.0",
   "anyio>=4.0.0",
   "aiofiles>=24.0.0",
+  "pydantic>=2.0.0",
+  "pydantic-settings>=2.11.0",
+]
+
+[project.optional-dependencies]
+video = []  # No extra deps needed - video uses base OpenAI client
+audio = [
+  "pydub",
+  "ffmpeg-python",
+  "async-lru>=2.0.5",
+  "aioresult>=1.0.0",
+  "audioop-lts; python_version >= '3.13'",
+]
+image = [
+  "pillow>=12.0.0",
+]
+all = [
+  "sanzaru[video,audio,image]",
 ]
 
 [dependency-groups]
@@ -31,6 +48,7 @@ dev = [
   "pre-commit>=3.6.0",
   "mypy>=1.18.0",
   "types-aiofiles",
+  "python-dotenv",
 ]
 
 [project.scripts]
@@ -79,4 +97,8 @@ asyncio_default_fixture_loop_scope = "function"
 markers = [
   "unit: Unit tests for pure functions (no external dependencies)",
   "integration: Integration tests with mocked external APIs",
+  "audio: Tests for audio feature (requires audio dependencies)",
 ]
+
+[tool.mypy]
+disable_error_code = ["import-untyped", "import-not-found"]
