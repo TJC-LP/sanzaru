@@ -1445,7 +1445,6 @@ dependencies = [
     { name = "openai" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
-    { name = "python-dotenv" },
 ]
 
 [package.optional-dependencies]
@@ -1476,6 +1475,7 @@ dev = [
     { name = "pytest-asyncio" },
     { name = "pytest-cov" },
     { name = "pytest-mock" },
+    { name = "python-dotenv" },
     { name = "ruff" },
     { name = "types-aiofiles" },
 ]
@@ -1495,7 +1495,6 @@ requires-dist = [
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic-settings", specifier = ">=2.11.0" },
     { name = "pydub", marker = "extra == 'audio'" },
-    { name = "python-dotenv" },
     { name = "sanzaru", extras = ["video", "audio", "image"], marker = "extra == 'all'" },
 ]
 provides-extras = ["video", "audio", "image", "all"]
@@ -1508,6 +1507,7 @@ dev = [
     { name = "pytest-asyncio", specifier = ">=0.24.0" },
     { name = "pytest-cov", specifier = ">=6.0.0" },
     { name = "pytest-mock", specifier = ">=3.14.0" },
+    { name = "python-dotenv" },
     { name = "ruff", specifier = ">=0.14.3" },
     { name = "types-aiofiles" },
 ]

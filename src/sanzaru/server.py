@@ -9,13 +9,20 @@ Business logic is organized into submodules under tools/.
 
 from typing import Literal
 
-from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 from openai.types import VideoModel, VideoSeconds, VideoSize
 from openai.types.responses.tool_param import ImageGeneration
 
 from .config import logger
 from .features import check_audio_available, check_image_available, check_video_available
+
+# Optional dotenv support for local development
+try:
+    from dotenv import load_dotenv
+
+    _DOTENV_AVAILABLE = True
+except ImportError:
+    _DOTENV_AVAILABLE = False
 
 # Initialize FastMCP server
 mcp = FastMCP("sanzaru")
@@ -231,9 +238,16 @@ def main():
     Install with: uv add "sanzaru[video,audio,image]" or any combination.
 
     Paths are validated lazily at runtime when tools are called.
+
+    Environment variables should be set explicitly in .mcp.json or passed via the calling environment.
+    For local development with .env files, install python-dotenv: uv add --dev python-dotenv
     """
     logger.info("Starting sanzaru MCP server over stdio")
-    load_dotenv()  # Load environment variables at runtime
+
+    # Optional: Load .env file if dotenv is installed (local development only)
+    if _DOTENV_AVAILABLE:
+        load_dotenv()
+        logger.debug("Loaded environment variables from .env file")
 
     # Log enabled features
     enabled = []
