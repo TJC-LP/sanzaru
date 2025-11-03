@@ -7,7 +7,7 @@ import time
 
 from openai.types.audio.speech_model import SpeechModel
 
-from ...config import get_client, get_path
+from ...config import get_client, get_path, logger
 from ...infrastructure import FileSystemRepository, SecurePathResolver, split_text_for_tts
 from .. import AudioProcessor
 from ..constants import TTSVoice
@@ -77,7 +77,7 @@ class TTSService:
 
         else:
             # Multiple chunks - process in parallel and concatenate
-            print(f"Text exceeds TTS API limit, splitting into {len(text_chunks)} chunks")
+            logger.info(f"Text exceeds TTS API limit, splitting into {len(text_chunks)} chunks")
 
             # Generate TTS for all chunks in parallel using anyio and aioresult
             import anyio

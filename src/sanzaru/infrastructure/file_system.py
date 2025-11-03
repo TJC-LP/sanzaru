@@ -217,6 +217,4 @@ class FileSystemRepository:
         if not file_path.exists():
             raise AudioFileNotFoundError(f"File not found: {file_path}")
 
-        async with aiofiles.open(file_path, "rb") as f:
-            content = await f.read()
-        return len(content)
+        return file_path.stat().st_size

@@ -5,7 +5,7 @@ Migrated from mcp-server-whisper v1.1.0 by Richie Caputo (MIT license).
 
 from pathlib import Path
 
-from ...config import get_path
+from ...config import get_path, logger
 from ...infrastructure import FileSystemRepository, SecurePathResolver
 from .. import AudioProcessor
 from ..constants import DEFAULT_MAX_FILE_SIZE_MB, SupportedChatWithAudioFormat
@@ -92,11 +92,11 @@ class AudioService:
         if not needs_compression:
             return AudioProcessingResult(output_file=input_filename)  # No compression needed
 
-        print(f"\n[AudioService] File '{input_filename}' size > {max_mb}MB. Attempting compression...")
+        logger.info(f"File '{input_filename}' size > {max_mb}MB. Attempting compression...")
 
         # Convert to MP3 if not already
         if input_file.suffix.lower() != ".mp3":
-            print("[AudioService] Converting to MP3 first...")
+            logger.info("Converting to MP3 first...")
             conversion_result = await self.convert_audio(input_filename, None, "mp3")
             # Update input to use the converted file
             input_filename = conversion_result.output_file
@@ -106,8 +106,8 @@ class AudioService:
         output_name = f"compressed_{input_file.stem}.mp3" if output_filename is None else output_filename
         output_path = self.path_resolver.resolve_output(output_name, f"compressed_{input_file.stem}.mp3")
 
-        print(f"[AudioService] Original file: {input_filename}")
-        print(f"[AudioService] Output file: {output_name}")
+        logger.debug(f"Original file: {input_filename}")
+        logger.debug(f"Output file: {output_name}")
 
         # Load and compress
         audio_data = await self.processor.load_audio_from_path(input_file)
@@ -116,7 +116,7 @@ class AudioService:
         # Write compressed file
         await self.file_repo.write_audio_file(output_path, compressed_bytes)
 
-        print(f"[AudioService] Compressed file size: {len(compressed_bytes)} bytes")
+        logger.info(f"Compressed file size: {len(compressed_bytes)} bytes")
 
         return AudioProcessingResult(output_file=output_path.name)
 
