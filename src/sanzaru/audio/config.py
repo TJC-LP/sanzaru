@@ -3,6 +3,12 @@
 
 Manages AUDIO_FILES_PATH validation and audio-specific settings.
 
+NOTE: This module exists separately from root config.py because:
+- Uses pydantic-settings for auto env loading (different pattern from root config's explicit get_path())
+- Migrated from mcp-server-whisper which used this pattern
+- Provides AudioConfig class for structured validation vs root config's function-based approach
+- Eventually, this could be consolidated into root config.py if unified configuration is desired
+
 Migrated from mcp-server-whisper v1.1.0 by Richie Caputo (MIT license).
 """
 

@@ -6,9 +6,11 @@ Migrated from mcp-server-whisper v1.1.0 by Richie Caputo (MIT license).
 
 from pathlib import Path
 
+import aiofiles
 import anyio
 from pydub import AudioSegment  # type: ignore
 
+from ..config import logger
 from ..exceptions import AudioCompressionError, AudioConversionError
 from .constants import DEFAULT_MAX_FILE_SIZE_MB, DEFAULT_TTS_SAMPLE_RATE, SupportedChatWithAudioFormat
 
@@ -54,8 +56,8 @@ class AudioProcessor:
             )
 
             # Read the converted file
-            with open(output_path, "rb") as f:
-                return f.read()
+            async with aiofiles.open(output_path, "rb") as f:
+                return await f.read()
 
         except Exception as e:
             raise AudioConversionError(f"Audio conversion to {target_format} failed: {e}") from e
@@ -85,7 +87,7 @@ class AudioProcessor:
         """
         try:
             original_frame_rate = audio_data.frame_rate
-            print(f"[Compression] Original frame rate: {original_frame_rate}, converting to {target_sample_rate}.")
+            logger.debug(f"Compressing audio: {original_frame_rate}Hz → {target_sample_rate}Hz")
 
             await anyio.to_thread.run_sync(
                 lambda: audio_data.export(
@@ -96,8 +98,8 @@ class AudioProcessor:
             )
 
             # Read the compressed file
-            with open(output_path, "rb") as f:
-                return f.read()
+            async with aiofiles.open(output_path, "rb") as f:
+                return await f.read()
 
         except Exception as e:
             raise AudioCompressionError(f"MP3 compression failed: {e}") from e
@@ -174,20 +176,20 @@ class AudioProcessor:
                 # Create functions with bound variables to avoid loop variable capture issues
                 if format == "mp3":
 
-                    def load_mp3(io: BytesIO = chunk_io) -> AudioSegment:  # type: ignore
-                        return AudioSegment.from_mp3(io)  # type: ignore
+                    def load_mp3(io: BytesIO = chunk_io) -> AudioSegment:  # type: ignore[misc]  # default arg captures loop var
+                        return AudioSegment.from_mp3(io)  # type: ignore[no-untyped-call]  # pydub lacks stubs
 
                     segment = await anyio.to_thread.run_sync(load_mp3)
                 elif format == "wav":
 
-                    def load_wav(io: BytesIO = chunk_io) -> AudioSegment:  # type: ignore
-                        return AudioSegment.from_wav(io)  # type: ignore
+                    def load_wav(io: BytesIO = chunk_io) -> AudioSegment:  # type: ignore[misc]  # default arg captures loop var
+                        return AudioSegment.from_wav(io)  # type: ignore[no-untyped-call]  # pydub lacks stubs
 
                     segment = await anyio.to_thread.run_sync(load_wav)
                 else:
 
-                    def load_file(io: BytesIO = chunk_io, fmt: str = format) -> AudioSegment:  # type: ignore
-                        return AudioSegment.from_file(io, format=fmt)  # type: ignore
+                    def load_file(io: BytesIO = chunk_io, fmt: str = format) -> AudioSegment:  # type: ignore[misc]  # default arg captures loop var
+                        return AudioSegment.from_file(io, format=fmt)  # type: ignore[no-untyped-call]  # pydub lacks stubs
 
                     segment = await anyio.to_thread.run_sync(load_file)
 

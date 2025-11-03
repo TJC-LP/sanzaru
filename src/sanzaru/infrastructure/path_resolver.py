@@ -41,8 +41,10 @@ class SecurePathResolver:
         full_path = (self.base_path / safe_filename).resolve()
 
         # Ensure resolved path is still within base_path
-        if not str(full_path).startswith(str(self.base_path)):
-            raise ValueError(f"Access denied: path traversal attempt detected in '{filename}'")
+        try:
+            full_path.relative_to(self.base_path)
+        except ValueError:
+            raise ValueError(f"Access denied: path traversal attempt detected in '{filename}'") from None
 
         if not full_path.exists():
             raise FileNotFoundError(f"File not found: {safe_filename}")
@@ -68,8 +70,10 @@ class SecurePathResolver:
         full_path = (self.base_path / safe_filename).resolve()
 
         # Ensure resolved path is still within base_path
-        if not str(full_path).startswith(str(self.base_path)):
-            raise ValueError(f"Access denied: path traversal attempt detected in '{name}'")
+        try:
+            full_path.relative_to(self.base_path)
+        except ValueError:
+            raise ValueError(f"Invalid output path: '{name}' resolves outside base directory") from None
 
         return full_path
 
