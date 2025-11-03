@@ -7,6 +7,8 @@ Migrated from mcp-server-whisper v1.1.0 by Richie Caputo (MIT license).
 from enum import Enum
 from typing import Literal
 
+from openai.types import AudioModel
+
 # Type Aliases
 SupportedChatWithAudioFormat = Literal["mp3", "wav"]
 AudioChatModel = Literal[
@@ -19,6 +21,23 @@ AudioChatModel = Literal[
 ]
 EnhancementType = Literal["detailed", "storytelling", "professional", "analytical"]
 TTSVoice = Literal["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar"]
+
+# Model Lists (for file support detection)
+TRANSCRIPTION_MODELS: list[AudioModel] = [
+    "whisper-1",
+    "gpt-4o-transcribe",
+    "gpt-4o-mini-transcribe",
+    "gpt-4o-transcribe-diarize",
+]
+
+AUDIO_CHAT_MODELS: list[AudioChatModel] = [
+    "gpt-4o-audio-preview",
+    "gpt-4o-audio-preview-2024-10-01",
+    "gpt-4o-audio-preview-2024-12-17",
+    "gpt-4o-audio-preview-2025-06-03",
+    "gpt-4o-mini-audio-preview",
+    "gpt-4o-mini-audio-preview-2024-12-17",
+]
 
 # Supported Audio Formats
 TRANSCRIBE_AUDIO_FORMATS = {

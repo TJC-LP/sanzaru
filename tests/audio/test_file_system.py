@@ -5,6 +5,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from sanzaru.audio.constants import TRANSCRIPTION_MODELS
 from sanzaru.exceptions import AudioFileNotFoundError
 from sanzaru.infrastructure.file_system import FileSystemRepository
 
@@ -41,7 +42,7 @@ class TestFileSystemRepository:
             assert result.file_name == "test.mp3"
             assert result.format == "mp3"
             assert result.size_bytes == 10  # len(b"fake audio")
-            assert result.transcription_support == ["whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe"]
+            assert result.transcription_support == TRANSCRIPTION_MODELS
             assert result.chat_support and "gpt-4o-audio-preview" in result.chat_support[0]  # MP3 supports chat
             assert result.duration_seconds == 60.0
 

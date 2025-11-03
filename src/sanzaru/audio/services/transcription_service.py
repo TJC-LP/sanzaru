@@ -3,14 +3,16 @@
 Migrated from mcp-server-whisper v1.1.0 by Richie Caputo (MIT license).
 """
 
-from typing import Literal
+import base64
+from io import BytesIO
+from typing import Any, Literal
 
 from openai._types import omit
 from openai.types import AudioModel, AudioResponseFormat
 
 from ...config import get_client, get_path
 from ...infrastructure import FileSystemRepository, SecurePathResolver
-from ..constants import AudioChatModel, EnhancementType
+from ..constants import ENHANCEMENT_PROMPTS, AudioChatModel, EnhancementType
 from ..models import ChatResult, TranscriptionResult
 
 
@@ -55,8 +57,6 @@ class TranscriptionService:
         audio_bytes = await self.file_repo.read_audio_file(file_path)
 
         # Transcribe using OpenAI
-        from io import BytesIO
-
         transcription = await client.audio.transcriptions.create(
             file=(filename, BytesIO(audio_bytes)),
             model=model,
@@ -106,13 +106,9 @@ class TranscriptionService:
         audio_bytes = await self.file_repo.read_audio_file(file_path)
 
         # Encode audio to base64
-        import base64
-
         audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
 
         # Build messages
-        from typing import Any
-
         messages: list[dict[str, Any]] = []
         if system_prompt:
             messages.append({"role": "system", "content": system_prompt})
@@ -160,15 +156,8 @@ class TranscriptionService:
             TranscriptionResult: Enhanced transcription result.
 
         """
-        # Enhancement prompts for different styles
-        enhancement_prompts = {
-            "detailed": "Transcribe this audio in detail, including tone, emotion, and background sounds.",
-            "storytelling": "Transcribe this audio and transform it into a narrative story format.",
-            "professional": "Transcribe this audio in a formal, business-appropriate style.",
-            "analytical": "Transcribe this audio and add analysis of speech patterns and key points.",
-        }
-
-        prompt = enhancement_prompts.get(enhancement_type, enhancement_prompts["detailed"])
+        # Use enhancement prompts from constants
+        prompt = ENHANCEMENT_PROMPTS.get(enhancement_type, ENHANCEMENT_PROMPTS["detailed"])
 
         return await self.transcribe_audio(
             filename=filename,

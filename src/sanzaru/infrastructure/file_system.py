@@ -12,7 +12,13 @@ import anyio
 from openai.types import AudioModel
 from pydub import AudioSegment  # type: ignore
 
-from ..audio.constants import CHAT_WITH_AUDIO_FORMATS, TRANSCRIBE_AUDIO_FORMATS, AudioChatModel
+from ..audio.constants import (
+    AUDIO_CHAT_MODELS,
+    CHAT_WITH_AUDIO_FORMATS,
+    TRANSCRIBE_AUDIO_FORMATS,
+    TRANSCRIPTION_MODELS,
+    AudioChatModel,
+)
 from ..audio.models import FilePathSupportParams
 from ..exceptions import AudioFileError, AudioFileNotFoundError
 
@@ -42,19 +48,9 @@ class FileSystemRepository:
         file_ext = file_path.suffix.lower()
 
         transcription_support: list[AudioModel] | None = (
-            ["whisper-1", "gpt-4o-transcribe", "gpt-4o-mini-transcribe"]
-            if file_ext in TRANSCRIBE_AUDIO_FORMATS
-            else None
+            TRANSCRIPTION_MODELS if file_ext in TRANSCRIBE_AUDIO_FORMATS else None
         )
-        chat_support: list[AudioChatModel] | None = (
-            [
-                "gpt-4o-audio-preview-2024-10-01",
-                "gpt-4o-audio-preview-2024-12-17",
-                "gpt-4o-mini-audio-preview-2024-12-17",
-            ]
-            if file_ext in CHAT_WITH_AUDIO_FORMATS
-            else None
-        )
+        chat_support: list[AudioChatModel] | None = AUDIO_CHAT_MODELS if file_ext in CHAT_WITH_AUDIO_FORMATS else None
 
         # Get file stats (including size - much faster than reading entire file!)
         file_stats = file_path.stat()

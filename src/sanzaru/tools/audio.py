@@ -119,7 +119,14 @@ async def compress_audio(
 
     Returns:
         AudioProcessingResult with name of compressed file (or original if no compression needed)
+
+    Raises:
+        ValueError: If max_mb is out of valid range (1-1000)
     """
+    # Validate max_mb parameter
+    if not 1 <= max_mb <= 1000:
+        raise ValueError(f"max_mb must be between 1 and 1000, got {max_mb}")
+
     service = AudioService()
     return await service.compress_audio(
         input_filename=input_file_name,
@@ -250,7 +257,14 @@ async def create_audio(
 
     Returns:
         TTSResult with name of the generated audio file
+
+    Raises:
+        ValueError: If speed is out of valid range (0.25-4.0)
     """
+    # Validate speed parameter
+    if not 0.25 <= speed <= 4.0:
+        raise ValueError(f"speed must be between 0.25 and 4.0, got {speed}")
+
     service = TTSService()
     return await service.create_speech(
         text_prompt=text_prompt,
