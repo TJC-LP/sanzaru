@@ -7,6 +7,7 @@ based on installed optional dependencies (video, audio, image).
 Business logic is organized into submodules under tools/.
 """
 
+import argparse
 from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
@@ -24,7 +25,7 @@ try:
 except ImportError:
     _DOTENV_AVAILABLE = False
 
-# Initialize FastMCP server
+# Initialize FastMCP server (stateless configuration set at runtime)
 mcp = FastMCP("sanzaru")
 
 
@@ -241,8 +242,31 @@ def main():
 
     Environment variables should be set explicitly in .mcp.json or passed via the calling environment.
     For local development with .env files, install python-dotenv: uv add --dev python-dotenv
+
+    Transport options:
+    - stdio (default): Standard I/O for Claude Desktop and MCP clients
+    - http: Stateless HTTP streaming for web clients and remote access
     """
-    logger.info("Starting sanzaru MCP server over stdio")
+    # Parse CLI arguments
+    parser = argparse.ArgumentParser(description="Sanzaru MCP Server")
+    parser.add_argument(
+        "--transport",
+        choices=["stdio", "http"],
+        default="stdio",
+        help="Transport type (default: stdio)",
+    )
+    parser.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="Host to bind for HTTP transport (default: 127.0.0.1)",
+    )
+    parser.add_argument(
+        "--port",
+        type=int,
+        default=8000,
+        help="Port to bind for HTTP transport (default: 8000)",
+    )
+    args = parser.parse_args()
 
     # Optional: Load .env file if dotenv is installed (local development only)
     if _DOTENV_AVAILABLE:
@@ -263,7 +287,17 @@ def main():
     else:
         logger.warning("No features enabled - install optional dependencies with: uv add 'sanzaru[all]'")
 
-    mcp.run()
+    # Run server with selected transport
+    if args.transport == "http":
+        logger.info(f"Starting sanzaru MCP server over HTTP at http://{args.host}:{args.port}/mcp")
+        # Configure for stateless HTTP (no session IDs needed - all state in OpenAI cloud)
+        mcp.settings.stateless_http = True
+        mcp.settings.host = args.host
+        mcp.settings.port = args.port
+        mcp.run(transport="streamable-http")
+    else:
+        logger.info("Starting sanzaru MCP server over stdio")
+        mcp.run()
 
 
 if __name__ == "__main__":
