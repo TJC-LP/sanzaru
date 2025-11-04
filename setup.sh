@@ -128,10 +128,10 @@ echo "============================================"
 
 # Run uv sync
 if command -v uv &> /dev/null; then
-    uv sync --dev
+    uv sync --all-extras --dev
     echo "✓ Dependencies installed"
 else
-    echo "⚠️  'uv' command not found. Please install uv and run 'uv sync' manually."
+    echo "⚠️  'uv' command not found. Please install uv and run 'uv sync --all-extras --dev' manually."
     echo "   Visit: https://github.com/astral-sh/uv"
 fi
 

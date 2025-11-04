@@ -3,6 +3,7 @@
 from pathlib import Path
 
 import pytest
+
 from sanzaru.infrastructure.path_resolver import SecurePathResolver
 
 pytestmark = pytest.mark.audio

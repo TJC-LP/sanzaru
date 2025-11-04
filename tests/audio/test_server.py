@@ -1,6 +1,7 @@
 """Test the whisper server functionality."""
 
 import pytest
+
 from sanzaru.audio.constants import SortBy
 from sanzaru.audio.models import ListAudioFilesInputParams
 

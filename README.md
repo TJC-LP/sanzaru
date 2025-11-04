@@ -91,7 +91,7 @@ uv sync --all-extras
    - Prompt for your OpenAI API key with hidden input (or use `$OPENAI_API_KEY` if set)
    - Create default directories with absolute paths in project root
    - Generate `.env` configuration file
-   - Install dependencies with `uv sync`
+   - Install all dependencies with `uv sync --all-extras --dev`
 
 3. **Start generating videos:**
    ```bash

@@ -5,6 +5,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
+
 from sanzaru.audio.models import FilePathSupportParams
 from sanzaru.infrastructure.cache import (
     clear_global_cache,
