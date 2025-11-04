@@ -123,10 +123,16 @@ Add the following to your `claude_desktop_config.json`
 
 **Codex MCP Setup:**
 ```bash
-# From the repo root
-codex mcp add sanzaru -- uv run --directory "$(pwd)" sanzaru
+# From the repo root, load environment from .env and add server
+set -a; source .env; set +a
+codex mcp add sanzaru \
+  --env OPENAI_API_KEY="$OPENAI_API_KEY" \
+  --env VIDEO_PATH="$VIDEO_PATH" \
+  --env IMAGE_PATH="$IMAGE_PATH" \
+  --env AUDIO_PATH="$AUDIO_PATH" \
+  --env LOG_LEVEL="$LOG_LEVEL" \
+  -- uv run --directory "$(pwd)" sanzaru
 ```
-Ensure your `.env` is configured or relevant env vars are exported before starting.
 
 ## Manual Installation (without Claude Code)
 
