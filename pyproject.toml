@@ -1,0 +1,141 @@
+[project]
+name = "sanzaru"
+version = "0.2.0"
+description = "Unified MCP server for OpenAI multimodal APIs (Sora, Whisper, GPT Vision)"
+readme = "README.md"
+requires-python = ">=3.10"
+license = {text = "MIT"}
+authors = [
+    {name = "Richie Caputo", email = "rcaputo3@tjclp.com"}
+]
+maintainers = [
+    {name = "Richie Caputo", email = "rcaputo3@tjclp.com"}
+]
+keywords = [
+    "openai",
+    "sora",
+    "video-generation",
+    "mcp",
+    "mcp-server",
+    "whisper",
+    "gpt-4o",
+    "audio-transcription",
+    "tts",
+    "image-generation",
+    "ai",
+    "multimodal",
+    "fastmcp",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Framework :: FastAPI",
+    "Operating System :: OS Independent",
+]
+dependencies = [
+  "openai>=2.6.0",
+  "mcp>=1.20.0",
+  "httpx>=0.27.0",
+  "anyio>=4.0.0",
+  "aiofiles>=24.0.0",
+  "pydantic>=2.0.0",
+  "pydantic-settings>=2.11.0",
+]
+
+[project.urls]
+Homepage = "https://github.com/TJC-LP/sanzaru"
+"Bug Tracker" = "https://github.com/TJC-LP/sanzaru/issues"
+Documentation = "https://github.com/TJC-LP/sanzaru/tree/main/docs"
+"Source Code" = "https://github.com/TJC-LP/sanzaru"
+
+[project.optional-dependencies]
+video = []  # No extra deps needed - video uses base OpenAI client
+audio = [
+  "pydub",
+  "ffmpeg-python",
+  "async-lru>=2.0.5",
+  "aioresult>=1.0.0",
+  "audioop-lts; python_version >= '3.13'",
+]
+image = [
+  "pillow>=12.0.0",
+]
+all = [
+  "sanzaru[video,audio,image]",
+]
+
+[dependency-groups]
+dev = [
+  "ruff>=0.14.3",
+  "pytest>=8.0.0",
+  "pytest-asyncio>=0.24.0",
+  "pytest-mock>=3.14.0",
+  "pytest-cov>=6.0.0",
+  "pre-commit>=3.6.0",
+  "mypy>=1.18.0",
+  "types-aiofiles",
+  "python-dotenv",
+]
+
+[project.scripts]
+sanzaru = "sanzaru.server:main"
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.uv]
+# Use `uv sync` to install dependencies.
+
+[tool.ruff]
+line-length = 120
+target-version = "py310"
+
+[tool.ruff.lint]
+select = [
+  "E",   # pycodestyle errors
+  "W",   # pycodestyle warnings
+  "F",   # pyflakes
+  "I",   # isort
+  "N",   # pep8-naming
+  "UP",  # pyupgrade
+  "B",   # flake8-bugbear
+  "C4",  # flake8-comprehensions
+  "SIM", # flake8-simplify
+]
+# Ignore line-too-long for strings (allows readable multi-line tool descriptions)
+ignore = ["E501"]
+
+[tool.ruff.lint.per-file-ignores]
+# Ignore SIM117 in tests - nested with statements are intentional for pytest.raises
+"tests/**/*.py" = ["SIM117"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = "test_*.py"
+python_functions = "test_*"
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+markers = [
+  "unit: Unit tests for pure functions (no external dependencies)",
+  "integration: Integration tests with mocked external APIs",
+  "audio: Tests for audio feature (requires audio dependencies)",
+]
+
+[tool.mypy]
+disable_error_code = ["import-untyped", "import-not-found"]

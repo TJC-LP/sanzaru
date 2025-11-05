@@ -1,0 +1,17 @@
+{
+  "mcpServers": {
+    "sanzaru": {
+      "command": "uv",
+      "args": [
+        "run",
+        "sanzaru"
+      ],
+      "env": {
+        "OPENAI_API_KEY": "${OPENAI_API_KEY}",
+        "VIDEO_PATH": "${VIDEO_PATH}",
+        "IMAGE_PATH": "${IMAGE_PATH}",
+        "AUDIO_PATH": "${AUDIO_PATH}"
+      }
+    }
+  }
+}

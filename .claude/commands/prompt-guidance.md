@@ -1,0 +1,1 @@
+Read the entirety of @docs/sora2-prompting-guide.md and await further instruction.
