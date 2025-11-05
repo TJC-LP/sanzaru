@@ -69,7 +69,7 @@ uv add "sanzaru[all]"
 
 # Specific features
 uv add "sanzaru[audio]"  # With audio support
-uv add sanzaru            # Base (video + image only)
+uv add sanzaru           # Base (video + image only)
 ```
 
 <details>
