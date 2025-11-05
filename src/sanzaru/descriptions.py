@@ -497,11 +497,10 @@ Available voices (each with distinct characteristics):
 - coral: Bright, energetic
 - echo: Deep, resonant
 - fable: Storytelling, engaging
-- onyx: Professional, clear
 - nova: Youthful, friendly
+- onyx: Professional, clear
 - sage: Calm, soothing
 - shimmer: Smooth, polished
-- verse: Dynamic, varied
 
 Parameters:
 - text_prompt: Text to convert to speech (required, any length)
