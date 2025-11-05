@@ -11,7 +11,38 @@ authors = [
 maintainers = [
     {name = "Richie Caputo", email = "rcaputo3@tjclp.com"}
 ]
-
+keywords = [
+    "openai",
+    "sora",
+    "video-generation",
+    "mcp",
+    "mcp-server",
+    "whisper",
+    "gpt-4o",
+    "audio-transcription",
+    "tts",
+    "image-generation",
+    "ai",
+    "multimodal",
+    "fastmcp",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Multimedia :: Video",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Framework :: FastAPI",
+    "Operating System :: OS Independent",
+]
 dependencies = [
   "openai>=2.6.0",
   "mcp>=1.20.0",
@@ -21,6 +52,12 @@ dependencies = [
   "pydantic>=2.0.0",
   "pydantic-settings>=2.11.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/TJC-LP/sanzaru"
+"Bug Tracker" = "https://github.com/TJC-LP/sanzaru/issues"
+Documentation = "https://github.com/TJC-LP/sanzaru/tree/main/docs"
+"Source Code" = "https://github.com/TJC-LP/sanzaru"
 
 [project.optional-dependencies]
 video = []  # No extra deps needed - video uses base OpenAI client
