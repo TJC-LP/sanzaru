@@ -89,8 +89,26 @@ Add to your `claude_desktop_config.json`:
 {
   "mcpServers": {
     "sanzaru": {
+      "command": "uvx",
+      "args": ["sanzaru[all]"],
+      "env": {
+        "OPENAI_API_KEY": "your-api-key-here",
+        "VIDEO_PATH": "/absolute/path/to/videos",
+        "IMAGE_PATH": "/absolute/path/to/images",
+        "AUDIO_PATH": "/absolute/path/to/audio"
+      }
+    }
+  }
+}
+```
+
+Or from source:
+```json
+{
+  "mcpServers": {
+    "sanzaru": {
       "command": "uv",
-      "args": ["run", "--directory", "/path/to/repo", "sanzaru"]
+      "args": ["run", "--directory", "/path/to/sanzaru", "sanzaru"]
     }
   }
 }
@@ -98,14 +116,22 @@ Add to your `claude_desktop_config.json`:
 
 ### Codex MCP
 ```bash
-# From repo root, load .env and add server
+# Using uvx (from PyPI)
+codex mcp add sanzaru \
+  --env OPENAI_API_KEY="sk-..." \
+  --env VIDEO_PATH="$HOME/sanzaru-videos" \
+  --env IMAGE_PATH="$HOME/sanzaru-images" \
+  --env AUDIO_PATH="$HOME/sanzaru-audio" \
+  -- uvx "sanzaru[all]"
+
+# Or from source
+cd /path/to/sanzaru
 set -a; source .env; set +a
 codex mcp add sanzaru \
   --env OPENAI_API_KEY="$OPENAI_API_KEY" \
   --env VIDEO_PATH="$VIDEO_PATH" \
   --env IMAGE_PATH="$IMAGE_PATH" \
   --env AUDIO_PATH="$AUDIO_PATH" \
-  --env LOG_LEVEL="$LOG_LEVEL" \
   -- uv run --directory "$(pwd)" sanzaru
 ```
 
