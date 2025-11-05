@@ -1,7 +1,7 @@
 # sanzaru
 
 <div align="center">
-  <img src="assets/logo.png" alt="sanzaru logo" width="400">
+  <img src="https://raw.githubusercontent.com/TJC-LP/sanzaru/main/assets/logo.png" alt="sanzaru logo" width="400">
 </div>
 
 A **stateless**, lightweight **MCP** server that wraps **OpenAI's Sora Video API, Whisper, and GPT-4o Audio APIs** via the OpenAI Python SDK.
