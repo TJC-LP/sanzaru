@@ -10,8 +10,7 @@
         "OPENAI_API_KEY": "${OPENAI_API_KEY}",
         "VIDEO_PATH": "${VIDEO_PATH}",
         "IMAGE_PATH": "${IMAGE_PATH}",
-        "AUDIO_PATH": "${AUDIO_PATH}",
-        "LOG_LEVEL": "${LOG_LEVEL}"
+        "AUDIO_PATH": "${AUDIO_PATH}"
       }
     }
   }

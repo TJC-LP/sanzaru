@@ -202,7 +202,11 @@ OPENAI_API_KEY="sk-..."
 VIDEO_PATH="/absolute/path/to/videos"
 IMAGE_PATH="/absolute/path/to/references"
 AUDIO_PATH="/absolute/path/to/audio"
-LOG_LEVEL="INFO"  # Optional: DEBUG, INFO, WARNING, ERROR
+```
+
+Optional environment variables:
+```bash
+LOG_LEVEL="INFO"  # Optional: DEBUG, INFO, WARNING, ERROR (defaults to INFO)
 ```
 
 **For MCP servers (Claude Desktop):**
@@ -217,13 +221,14 @@ Set environment variables explicitly in `.mcp.json` using template variables:
         "OPENAI_API_KEY": "${OPENAI_API_KEY}",
         "VIDEO_PATH": "${VIDEO_PATH}",
         "IMAGE_PATH": "${IMAGE_PATH}",
-        "AUDIO_PATH": "${AUDIO_PATH}",
-        "LOG_LEVEL": "${LOG_LEVEL}"
+        "AUDIO_PATH": "${AUDIO_PATH}"
       }
     }
   }
 }
 ```
+
+**Note:** `LOG_LEVEL` can be optionally added to the `env` object if you want to override the default (INFO).
 
 **For local development with .env files:**
 1. Run `./setup.sh` for interactive setup, or manually copy `.env.example` to `.env`
