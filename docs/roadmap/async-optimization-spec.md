@@ -2,9 +2,11 @@
 
 ✅ **IMPLEMENTATION COMPLETE**
 
+**Status:** This document is preserved for historical reference. The implementation was successfully completed as described.
+
 ## Overview
 
-This document outlines a plan to make the Sora MCP server fully asynchronous using `anyio` and `aiofiles`. Currently, several operations block the event loop, which limits throughput under heavy load. With Python 3.14's free-threading support, making these operations truly async will maximize concurrency.
+This document outlines a plan to make sanzaru fully asynchronous using `anyio` and `aiofiles`. At the time of writing, several operations were blocking the event loop, which limited throughput under heavy load. With Python 3.14's free-threading support, making these operations truly async maximized concurrency.
 
 ## Current Blocking Operations
 

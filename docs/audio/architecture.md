@@ -1,5 +1,9 @@
 # MCP Server Whisper Architecture
 
+> **Note:** This document describes the architecture of the source project ([mcp-server-whisper](https://github.com/arcaputo3/mcp-server-whisper)) that was integrated into sanzaru's audio feature. For sanzaru's overall architecture, see [CLAUDE.md](../../CLAUDE.md).
+
+---
+
 ## Overview
 
 MCP Server Whisper is an MCP-compatible server that provides audio transcription and processing capabilities using OpenAI's Whisper and GPT-4o models. It follows a **layered architecture** based on Domain-Driven Design principles with clean separation of concerns.

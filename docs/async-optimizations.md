@@ -2,7 +2,7 @@
 
 ## Overview
 
-The Sora MCP server is fully asynchronous, utilizing `anyio` and `aiofiles` for non-blocking operations. This design enables high throughput under concurrent load and takes full advantage of Python 3.14's free-threading capabilities.
+Sanzaru is fully asynchronous, utilizing `anyio` and `aiofiles` for non-blocking operations. This design enables high throughput under concurrent load and takes full advantage of Python 3.14's free-threading capabilities.
 
 ## Key Optimizations
 
