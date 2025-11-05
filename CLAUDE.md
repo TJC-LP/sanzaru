@@ -4,13 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A stateless FastMCP server wrapping OpenAI's Sora Video API and Responses API (image generation). Runs over stdio and exposes MCP tools for async video/image generation with polling-based workflows.
+A stateless FastMCP server wrapping OpenAI's Sora Video API and Responses API (image generation). Supports both stdio (for MCP clients) and HTTP streaming (for web clients) transports. Exposes MCP tools for async video/image generation with polling-based workflows.
 
 **Key Architecture Principles:**
 - **Stateless**: No database, no in-memory job tracking. All state lives in OpenAI's cloud.
 - **Async polling pattern**: Create → Poll → Download workflow for both videos and images
 - **Security sandbox**: Reference images restricted to `IMAGE_PATH` with path traversal protection
 - **Type-safe**: Extensive use of TypedDict and Literal types from OpenAI SDK
+- **Dual transport**: stdio (default) for Claude Desktop, HTTP for web clients and remote access
 
 ## Development Commands
 
@@ -18,8 +19,13 @@ A stateless FastMCP server wrapping OpenAI's Sora Video API and Responses API (i
 # Install dependencies
 uv sync
 
-# Run the MCP server (stdio mode)
+# Run the MCP server (stdio mode - default)
 uv run sanzaru
+
+# Run the MCP server (HTTP mode - stateless)
+uv run sanzaru --transport http
+uv run sanzaru --transport http --port 3000
+uv run sanzaru --transport http --host 0.0.0.0 --port 8080
 
 # Lint and format code
 ruff check .
@@ -225,6 +231,58 @@ Set environment variables explicitly in `.mcp.json` using template variables:
 3. Run Claude with dotenv-cli to inject env vars: `npx dotenv-cli -- claude` (or `bunx dotenv-cli -- claude`)
 
 This approach makes environment configuration explicit and avoids confusion from implicit `.env` loading.
+
+## Transport Modes
+
+Sanzaru supports two transport modes for different deployment scenarios:
+
+### stdio (Default)
+Standard I/O transport for MCP clients like Claude Desktop:
+```bash
+uv run sanzaru
+```
+
+**Use cases:**
+- Claude Desktop integration
+- Local MCP client connections
+- Development and testing
+
+**Configuration:** Set environment variables in `.mcp.json` or via dotenv-cli
+
+### http (Stateless HTTP Streaming)
+HTTP streaming transport for web clients and remote access:
+```bash
+# Local HTTP server
+uv run sanzaru --transport http
+
+# Custom host/port
+uv run sanzaru --transport http --host 0.0.0.0 --port 3000
+```
+
+**Use cases:**
+- Web-based MCP clients
+- Remote server deployments
+- Multi-user access (stateless, no session management)
+- Browser-based integrations
+
+**Endpoints:** MCP tools available at `http://{host}:{port}/mcp`
+
+**Key features:**
+- **Stateless by design:** No session IDs required (all state lives in OpenAI's cloud)
+- **SSE streaming:** Server-Sent Events for real-time communication
+- **CORS support:** Can be configured via Starlette middleware (see Python MCP SDK docs)
+
+**Production deployment:**
+For advanced deployments with CORS, multiple servers, or custom middleware, mount the server in a Starlette app:
+```python
+from starlette.applications import Starlette
+from starlette.routing import Mount
+from starlette.middleware.cors import CORSMiddleware
+from sanzaru.server import mcp
+
+app = Starlette(routes=[Mount("/mcp", mcp.streamable_http_app())])
+app = CORSMiddleware(app, allow_origins=["*"], expose_headers=["Mcp-Session-Id"])
+```
 
 ## Model Selection Guidelines
 

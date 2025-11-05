@@ -9,71 +9,32 @@ A **stateless**, lightweight **MCP** server that wraps **OpenAI's Sora Video API
 ## Features
 
 ### Video Generation (Sora)
-- **Video Generation**: Create Sora jobs (`sora-2` / `sora-2-pro`), optional image reference, optional remix
-- Get status, wait until completion (polling), download assets
-- List and delete videos
-- Remix existing videos
+- Create videos with `sora-2` or `sora-2-pro` models
+- Use reference images to guide generation
+- Remix and refine existing videos
+- Download variants (video, thumbnail, spritesheet)
 
 ### Image Generation
-- **Image Generation**: Create reference images using GPT-5/GPT-4.1 with iterative refinement
-- List and prepare reference images
-- Reference image management with automatic resizing
+- Generate reference images with GPT-5/GPT-4.1
+- Iterative refinement and image editing
+- Automatic resizing for Sora compatibility
 
 ### Audio Processing
-- **Audio Transcription**: Whisper and GPT-4o transcription models
-- **Audio Chat**: Interactive audio analysis with GPT-4o
-- **Text-to-Speech**: High-quality TTS with multiple voices
-- **Audio Processing**: Format conversion, compression, file management
-- **Enhanced Transcription**: Specialized templates for detailed, storytelling, professional, or analytical output
-
-**Architecture:** Stateless by default; no DB, no in-memory job tracking
+- **Transcription**: Whisper and GPT-4o models
+- **Audio Chat**: Interactive analysis with GPT-4o
+- **Text-to-Speech**: Multi-voice TTS generation
+- **Processing**: Format conversion, compression, file management
 
 > **Note:** Content guardrails are enforced by OpenAI. This server does not run local moderation.
-
-## Performance
-
-The server is **fully asynchronous** with proven concurrency at scale:
-- ✅ **32+ concurrent downloads** verified in stress testing
-- ✅ **8-10x speedup** for parallel operations (image processing, file I/O, base64 decoding)
-- ✅ **Non-blocking architecture** using `aiofiles` + `anyio` thread pools
-- ✅ **Python 3.14 ready** - Optimized for free-threading support
-
-See [`docs/async-optimizations.md`](docs/async-optimizations.md) for technical details and benchmarks.
 
 ## Requirements
 - Python 3.10+
 - `OPENAI_API_KEY` environment variable
 
-**Feature-specific environment variables:**
-- `VIDEO_PATH` - Directory for downloaded videos (enables video features)
-- `IMAGE_PATH` - Directory for reference images (enables image features)
-- `AUDIO_PATH` - Directory containing audio files (enables audio features)
-
-**Feature Auto-Detection:** Features are automatically enabled based on which paths you configure. Set only the paths for features you want to use.
-
-## Installation
-
-### Base Installation (Video + Image)
-```bash
-uv add sanzaru
-```
-
-### With Audio Support
-```bash
-uv add "sanzaru[audio]"
-```
-
-### All Features
-```bash
-uv add "sanzaru[all]"
-```
-
-### Development Installation
-```bash
-git clone https://github.com/TJC-LP/sanzaru.git
-cd sanzaru
-uv sync --all-extras
-```
+**Feature-specific paths** (set only what you need):
+- `VIDEO_PATH` - Enables video generation features
+- `IMAGE_PATH` - Enables image generation features
+- `AUDIO_PATH` - Enables audio processing features
 
 ## Quick Start
 
@@ -88,176 +49,166 @@ uv sync --all-extras
    ./setup.sh
    ```
    The script will:
-   - Prompt for your OpenAI API key with hidden input (or use `$OPENAI_API_KEY` if set)
-   - Create default directories with absolute paths in project root
-   - Generate `.env` configuration file
-   - Install dependencies with `uv sync`
+   - Prompt for your OpenAI API key
+   - Create directories and `.env` configuration
+   - Install dependencies with `uv sync --all-extras --dev`
 
-3. **Start generating videos:**
+3. **Start using:**
    ```bash
    claude
    ```
 
-That's it! Claude Code will automatically connect to the sanzaru MCP server and you can start generating videos.
+That's it! Claude Code will automatically connect and you can start generating videos, images, and processing audio.
 
-## Alternative Installation Methods
+## Installation
 
-**Claude Desktop:**
-Add the following to your `claude_desktop_config.json`
+### Quick Install
+```bash
+# All features
+uv add "sanzaru[all]"
+
+# Specific features
+uv add "sanzaru[audio]"  # With audio support
+uv add sanzaru            # Base (video + image only)
+```
+
+<details>
+<summary><strong>Alternative Installation Methods</strong></summary>
+
+### From Source
+```bash
+git clone https://github.com/TJC-LP/sanzaru.git
+cd sanzaru
+uv sync --all-extras
+```
+
+### Claude Desktop
+Add to your `claude_desktop_config.json`:
 
 ```json
 {
   "mcpServers": {
     "sanzaru": {
       "command": "uv",
-      "args": [
-        "run",
-        "--directory",
-        "/path/to/repo",
-        "sanzaru"
-      ]
+      "args": ["run", "--directory", "/path/to/repo", "sanzaru"]
     }
   }
 }
 ```
 
-**Codex MCP Setup:**
+### Codex MCP
 ```bash
-# From the repo root
-codex mcp add sanzaru -- uv run --directory "$(pwd)" sanzaru
+# From repo root, load .env and add server
+set -a; source .env; set +a
+codex mcp add sanzaru \
+  --env OPENAI_API_KEY="$OPENAI_API_KEY" \
+  --env VIDEO_PATH="$VIDEO_PATH" \
+  --env IMAGE_PATH="$IMAGE_PATH" \
+  --env AUDIO_PATH="$AUDIO_PATH" \
+  --env LOG_LEVEL="$LOG_LEVEL" \
+  -- uv run --directory "$(pwd)" sanzaru
 ```
-Ensure your `.env` is configured or relevant env vars are exported before starting.
 
-## Manual Installation (without Claude Code)
-
-If you want to run the server manually or integrate it with other MCP clients:
-
+### Manual Setup
 ```bash
 uv venv
 uv sync
 
-# All features - set all paths
+# Set required environment variables
 export OPENAI_API_KEY=sk-...
 export VIDEO_PATH=~/videos
 export IMAGE_PATH=~/images
 export AUDIO_PATH=~/audio
+
+# Run server
 uv run sanzaru
-
-# Audio-only mode - set only AUDIO_PATH
-export OPENAI_API_KEY=sk-...
-export AUDIO_PATH=~/audio
-uv run sanzaru  # Only audio tools will be registered
-
-# Video + Audio - set only VIDEO_PATH and AUDIO_PATH
-export OPENAI_API_KEY=sk-...
-export VIDEO_PATH=~/videos
-export AUDIO_PATH=~/audio
-uv run sanzaru  # Video and audio tools only
 ```
 
-**Feature Auto-Detection:** Set only the paths for features you want to use. Features are automatically enabled based on configured paths. Directories must exist before starting the server.
+**Feature Auto-Detection:** Features are automatically enabled based on configured paths. Set only the paths you need.
 
-## MCP Tools
+</details>
 
-This runs an MCP server over stdio that exposes these tools:
+## Available Tools
 
-### Video Generation
-- `create_video(prompt, model="sora-2", seconds?, size?, input_reference_filename?)`
-  - Note: `seconds` must be a string: `"4"`, `"8"`, or `"12"` (not an integer)
-  - Note: `size` must be one of: `"720x1280"`, `"1280x720"`, `"1024x1792"`, `"1792x1024"`
-  - Note: `model` must be one of: `"sora-2"`, `"sora-2-pro"`
-  - Note: `input_reference_filename` is a filename (not path) from `IMAGE_PATH`
-- `get_video_status(video_id)` - Returns Video object with status/progress
-- `download_video(video_id, filename?, variant="video")` - Downloads to `VIDEO_PATH`
-  - `filename` is optional - defaults to `{video_id}.{extension}` if not provided
-  - Example: `download_video(video_id, filename="my_video.mp4")`
-- `list_videos(limit=20, after?, order="desc")` - Returns paginated list of videos
-- `delete_video(video_id)` - Deletes video from OpenAI storage
-- `remix_video(previous_video_id, prompt)` - Creates a remix
+| Category | Tools | Description |
+|----------|-------|-------------|
+| **Video** | `create_video`, `get_video_status`, `download_video`, `list_videos`, `delete_video`, `remix_video` | Generate and manage Sora videos with optional reference images |
+| **Image** | `create_image`, `get_image_status`, `download_image` | Generate reference images with GPT-5/GPT-4.1 |
+| **Reference** | `list_reference_images`, `prepare_reference_image` | Manage and resize images for Sora compatibility |
+| **Audio** | `transcribe_audio`, `chat_with_audio`, `create_audio`, `convert_audio`, `compress_audio`, `list_audio_files`, `get_latest_audio`, `transcribe_with_enhancement` | Transcription, analysis, TTS, and file management |
 
-### Image Generation
-- `create_image(prompt, model="gpt-5", size?, quality?, output_format?, background?, previous_response_id?)` - Generate images with GPT-5/GPT-4.1
-  - Supported sizes: `1024x1024`, `1024x1536`, `1536x1024`, or `auto`
-- `get_image_status(response_id)` - Check image generation status
-- `download_image(response_id, filename?)` - Download completed image to `IMAGE_PATH`
+> **Full API documentation**: See [docs/api-reference.md](docs/api-reference.md)
 
-### Reference Image Management
-- `list_reference_images(pattern?, file_type="all", sort_by="modified", order="desc", limit=50)` - Search reference images
-- `prepare_reference_image(input_filename, target_size, output_filename?, resize_mode="crop")` - Resize images to match Sora dimensions
+## Basic Workflows
 
-> **Note:** To wait for completion, poll `get_video_status` or `get_image_status` periodically rather than blocking. This keeps the LLM session responsive.
+### Generate a Video
+```python
+# Create video from text
+video = create_video(
+    prompt="A serene mountain landscape at sunrise",
+    model="sora-2",
+    seconds="8",
+    size="1280x720"
+)
 
-## Prompting Guide
-For practical tips and examples to craft effective Sora prompts, see `docs/sora2-prompting-guide.md`.
+# Poll for completion
+status = get_video_status(video.id)
 
-## Download variants
-- `variant="video"` → `mp4`
-- `variant="thumbnail"` → `webp`
-- `variant="spritesheet"` → `jpg`
-
-## Reference Images
-- Supported formats: JPEG, PNG, WEBP
-- Place reference images in `IMAGE_PATH` directory
-- Use `list_reference_images` to discover available images
-- Reference image dimensions must match target video `size` parameter
-- LLMs can only access images in the configured reference directory (security sandbox)
-
-### Automatic Image Resizing
-Use `prepare_reference_image` to automatically resize any image to match Sora's required dimensions:
-
-**Workflow:**
-1. List available images: `list_reference_images()`
-2. Prepare image: `prepare_reference_image("photo.jpg", "1280x720", resize_mode="crop")`
-3. Create video: `create_video(prompt="...", size="1280x720", input_reference_filename="photo_1280x720.png")`
-
-**Resize modes:**
-- `crop` (default): Scale to cover target dimensions, center crop excess. No distortion, but may lose edges.
-- `pad`: Scale to fit inside target, add black letterbox bars. No distortion, preserves full image.
-- `rescale`: Stretch/squash to exact dimensions. May distort image, but uses full canvas with no cropping or padding.
-
-The original image is preserved; a new resized PNG is created with dimensions in the filename.
-
-## Image Generation
-
-Generate reference images using OpenAI's Responses API with GPT-5 or GPT-4.1 models. Images are automatically saved to `IMAGE_PATH` for use with Sora video generation.
-
-### Basic Workflow
-```
-1. create_image(prompt="sunset over mountains") -> response_id
-2. get_image_status(response_id) -> poll until status='completed'
-3. download_image(response_id, filename="sunset.png")
-4. create_video(prompt="...", input_reference_filename="sunset.png")
+# Download when ready
+download_video(video.id, filename="mountain_sunrise.mp4")
 ```
 
-### Iterative Refinement
-Use `previous_response_id` to refine images conversationally:
-```
-1. resp1 = create_image(prompt="a cat")
-2. Wait for completion with get_image_status(resp1.id)
-3. resp2 = create_image(prompt="make it more realistic", previous_response_id=resp1.id)
-4. Wait for completion with get_image_status(resp2.id)
-5. download_image(resp2.id, filename="realistic_cat.png")
+### Generate with Reference Image
+```python
+# 1. Generate reference image
+resp = create_image(prompt="futuristic pilot in mech cockpit")
+download_image(resp.id, filename="pilot.png")
+
+# 2. Prepare for video
+prepare_reference_image("pilot.png", "1280x720", resize_mode="crop")
+
+# 3. Animate
+video = create_video(
+    prompt="The pilot looks up and smiles",
+    size="1280x720",
+    input_reference_filename="pilot_1280x720.png"
+)
 ```
 
-### Parameters
-- **model**: `gpt-5` (default), `gpt-4.1`, or other models with image generation support
-- **size**: `auto` (default), `1024x1024`, `1024x1536`, `1536x1024`
-- **quality**: `high` (default), `low`, `medium`, `auto`
-- **output_format**: `png` (default), `jpeg`, `webp`
-- **background**: `auto` (default), `transparent`, `opaque`
+### Audio Transcription
+```python
+# List available audio files
+files = list_audio_files(format="mp3")
 
-### Combined Workflow
-Generate a reference image and create a video from it:
-```
-1. create_image(prompt="futuristic cityscape at night", size="1280x720")
-2. Poll with get_image_status until completed
-3. download_image with custom filename
-4. create_video using the generated reference image
+# Transcribe
+result = transcribe_audio("interview.mp3")
+
+# Or analyze with GPT-4o
+analysis = chat_with_audio(
+    "meeting.mp3",
+    user_prompt="Summarize key decisions and action items"
+)
 ```
 
-## Notes
-- Download URLs from OpenAI are time-limited
-- Videos are automatically saved to `VIDEO_PATH` when downloaded
+## Documentation
+
+- **[API Reference](docs/api-reference.md)** - Complete tool documentation with parameters and examples
+- **[Reference Images Guide](docs/reference-images.md)** - Working with reference images and resizing
+- **[Image Generation Guide](docs/image-generation.md)** - Generating and editing reference images
+- **[Sora Prompting Guide](docs/sora2-prompting-guide.md)** - Crafting effective video prompts
+- **[Audio Features](docs/audio/README.md)** - Audio transcription, chat, and TTS
+- **[Performance & Architecture](docs/async-optimizations.md)** - Technical details and benchmarks
+
+## Performance
+
+Fully asynchronous architecture with proven scalability:
+- ✅ 32+ concurrent operations verified
+- ✅ 8-10x speedup for parallel tasks
+- ✅ Non-blocking I/O with `aiofiles` + `anyio`
+- ✅ Python 3.14 free-threading ready
+
+See [docs/async-optimizations.md](docs/async-optimizations.md) for technical details.
 
 ## License
+
 [MIT](LICENSE)

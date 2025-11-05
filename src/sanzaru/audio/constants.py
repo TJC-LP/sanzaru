@@ -20,7 +20,7 @@ AudioChatModel = Literal[
     "gpt-4o-mini-audio-preview-2024-12-17",
 ]
 EnhancementType = Literal["detailed", "storytelling", "professional", "analytical"]
-TTSVoice = Literal["alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse", "marin", "cedar"]
+TTSVoice = Literal["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"]
 
 # Model Lists (for file support detection)
 TRANSCRIPTION_MODELS: list[AudioModel] = [
