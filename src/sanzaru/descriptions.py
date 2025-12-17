@@ -185,7 +185,7 @@ Parameters:
 - prompt: Text description (required)
   * Without input_images: Describe what to generate
   * With input_images: Describe what changes to make
-- model: Mainline model - "gpt-5", "gpt-4.1", etc. Default: "gpt-5"
+- model: Mainline model - "gpt-5.2" (default), "gpt-5.1", "gpt-5", etc.
 - tool_config: Optional ImageGeneration configuration object (optional)
   * Supports all fields: model, size, quality, moderation, input_fidelity, etc.
   * MCP library handles serialization automatically
@@ -200,7 +200,15 @@ Parameters:
   * Transparent = edit this area, black = keep original
   * Requires input_images parameter
 
+**Image generation models (tool_config.model):**
+- gpt-image-1.5: STATE-OF-THE-ART - Best quality, better instruction following, improved text rendering (RECOMMENDED)
+- gpt-image-1: High quality image generation
+- gpt-image-1-mini: Fast, cost-effective generation
+
 Common tool_config examples:
+
+Best quality with GPT Image 1.5:
+  tool_config={"type": "image_generation", "model": "gpt-image-1.5"}
 
 Fast generation with mini model:
   tool_config={"type": "image_generation", "model": "gpt-image-1-mini"}
@@ -211,7 +219,7 @@ Lower content moderation:
 High-fidelity with custom settings:
   tool_config={
       "type": "image_generation",
-      "model": "gpt-image-1",
+      "model": "gpt-image-1.5",
       "quality": "high",
       "input_fidelity": "high",
       "size": "1536x1024"
@@ -222,23 +230,26 @@ Workflows:
 1. Text-only generation:
    create_image("sunset over mountains")
 
-2. Single image editing:
+2. Best quality generation with GPT Image 1.5:
+   create_image("sunset over mountains", tool_config={"type": "image_generation", "model": "gpt-image-1.5"})
+
+3. Single image editing:
    create_image("add a flamingo to the pool", input_images=["lounge.png"])
 
-3. Multi-image composition:
+4. Multi-image composition:
    create_image("gift basket with all these items", input_images=["lotion.png", "soap.png", "bomb.jpg"])
 
-4. High-fidelity logo placement:
+5. High-fidelity logo placement:
    create_image(
        "add logo to woman's shirt",
        input_images=["woman.jpg", "logo.png"],
        tool_config={"type": "image_generation", "input_fidelity": "high"}
    )
 
-5. Masked inpainting:
+6. Masked inpainting:
    create_image("add flamingo", input_images=["pool.png"], mask_filename="pool_mask.png")
 
-6. Fast generation with mini model:
+7. Fast generation with mini model:
    create_image("quick sketch of a cat", tool_config={"type": "image_generation", "model": "gpt-image-1-mini"})
 
 Returns ImageResponse with: id, status, created_at"""
@@ -261,6 +272,93 @@ Parameters:
 - filename: Custom filename (optional, auto-generates if not provided)
 
 Returns ImageDownloadResult with: filename, path, size, format"""
+
+
+# ==================== IMAGES API TOOL DESCRIPTIONS ====================
+
+GENERATE_IMAGE = """Generate images using OpenAI's Images API with gpt-image-1.5.
+
+RECOMMENDED for new image generation - uses the latest gpt-image-1.5 model.
+Returns immediately with the generated image (no polling required).
+
+Unlike create_image (which uses Responses API), this tool:
+- Supports gpt-image-1.5 (state-of-the-art, 20% cheaper)
+- Returns synchronously (no polling needed)
+- Provides token usage for cost tracking
+- Does NOT support iterative refinement (use create_image for that)
+
+Parameters:
+- prompt: Text description of the image (required, max 32k chars)
+- model: Image model to use. Default: "gpt-image-1.5"
+  * gpt-image-1.5: STATE-OF-THE-ART (recommended) - best quality, improved text rendering
+  * gpt-image-1: High quality
+  * gpt-image-1-mini: Fast, cost-effective
+  * dall-e-3: Legacy DALL-E 3
+  * dall-e-2: Legacy DALL-E 2
+- size: Image dimensions. Default: "auto"
+  * "auto", "1024x1024", "1536x1024" (landscape), "1024x1536" (portrait)
+- quality: Generation quality. Default: "auto"
+  * "auto", "low", "medium", "high"
+- background: Background type. Default: "auto"
+  * "auto", "transparent", "opaque"
+- output_format: Output format. Default: "png"
+  * "png", "jpeg", "webp"
+- moderation: Content moderation. Default: "auto"
+  * "auto", "low"
+- filename: Custom output filename (optional)
+
+Returns ImageGenerateResult with: filename, path, size, format, model, usage
+
+Example workflows:
+
+1. Basic generation with gpt-image-1.5:
+   generate_image("a sunset over mountains")
+
+2. High quality portrait:
+   generate_image("professional headshot", size="1024x1536", quality="high")
+
+3. Transparent background:
+   generate_image("product icon", background="transparent", output_format="png")
+
+4. Fast generation with mini model:
+   generate_image("quick sketch", model="gpt-image-1-mini")"""
+
+EDIT_IMAGE = """Edit images using OpenAI's Images API with gpt-image-1.5.
+
+Modify existing images based on a prompt. Supports up to 16 input images.
+Returns immediately with the edited image (no polling required).
+
+Parameters:
+- prompt: Text description of desired edits (required, max 32k chars)
+- input_images: List of image filenames from IMAGE_PATH (required, max 16 images)
+- model: Image model. Default: "gpt-image-1.5"
+- mask_filename: PNG mask with alpha channel for inpainting (optional)
+  * Transparent areas = edit these regions
+  * Opaque areas = preserve original
+- size: Output dimensions. Default: "auto"
+- quality: Generation quality. Default: "auto"
+- background: Background type. Default: "auto"
+- output_format: Output format. Default: "png"
+- input_fidelity: Control fidelity to input (gpt-image-1 only). Default: None
+  * "high" - better face/style preservation
+  * "low" - more creative freedom
+- filename: Custom output filename (optional)
+
+Returns ImageGenerateResult with: filename, path, size, format, model, usage
+
+Example workflows:
+
+1. Simple edit:
+   edit_image("add a hat", input_images=["person.png"])
+
+2. Multi-image composition:
+   edit_image("combine into collage", input_images=["photo1.jpg", "photo2.jpg", "photo3.jpg"])
+
+3. Inpainting with mask:
+   edit_image("add flamingo", input_images=["pool.png"], mask_filename="pool_mask.png")
+
+4. High-fidelity face edit:
+   edit_image("change hair color to red", input_images=["portrait.jpg"], input_fidelity="high")"""
 
 
 # ==================== AUDIO TOOL DESCRIPTIONS ====================

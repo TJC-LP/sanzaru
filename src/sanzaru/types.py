@@ -1,12 +1,14 @@
 # SPDX-License-Identifier: MIT
 """Type definitions for Sora MCP server.
 
-This module contains all TypedDict definitions used across the server.
+This module contains TypedDict and Pydantic model definitions used across the server.
 """
 
 from typing import Literal, TypedDict
 
 from openai.types import VideoModel, VideoSeconds, VideoSize
+from openai.types.images_response import Usage as ImageUsage
+from pydantic import BaseModel
 
 
 class DownloadResult(TypedDict):
@@ -71,3 +73,14 @@ class ImageDownloadResult(TypedDict):
     path: str
     size: tuple[int, int]
     format: str
+
+
+class ImageGenerateResult(BaseModel):
+    """Result from generating an image via Images API."""
+
+    filename: str
+    path: str
+    size: tuple[int, int]
+    format: str
+    model: str
+    usage: ImageUsage | None = None
