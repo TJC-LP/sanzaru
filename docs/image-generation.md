@@ -1,10 +1,120 @@
 # Image Generation Guide
 
-Complete guide to generating reference images using OpenAI's Responses API with GPT-5 and GPT-4.1.
+Complete guide to generating and editing images using OpenAI's APIs.
 
 ## Overview
 
-Generate high-quality reference images for use with Sora video generation. Images are created using OpenAI's Responses API with GPT-5 (recommended) or GPT-4.1 models, then automatically saved to `IMAGE_PATH` for use as video reference images.
+Generate high-quality images for use with Sora video generation or standalone use. Two APIs are available:
+
+| API | Tool | Best For |
+|-----|------|----------|
+| **Images API** | `generate_image`, `edit_image` | New generation with gpt-image-1.5 (RECOMMENDED) |
+| **Responses API** | `create_image` | Iterative refinement with `previous_response_id` |
+
+**Choose Images API when:**
+- Creating new images from scratch
+- Editing existing images
+- You want gpt-image-1.5 (state-of-the-art quality, 20% cheaper)
+- You want synchronous results (no polling)
+
+**Choose Responses API when:**
+- Building iterative refinement chains with `previous_response_id`
+- Working with GPT-5.2's conversational image generation
+
+---
+
+## Images API with gpt-image-1.5 (Recommended)
+
+The Images API provides synchronous image generation with OpenAI's latest gpt-image-1.5 model. **This is the recommended path for new image generation.**
+
+### Key Advantages
+- **Synchronous**: Returns immediately (no polling required)
+- **gpt-image-1.5**: State-of-the-art quality, better instruction following, improved text rendering
+- **Token usage tracking**: Monitor costs with detailed token counts
+- **20% cheaper**: More cost-effective than Responses API
+
+### Basic Generation
+
+```python
+# Generate an image (returns immediately)
+result = generate_image(prompt="sunset over mountains")
+# File immediately available at result.path
+
+# With quality and size options
+result = generate_image(
+    prompt="professional product photo, studio lighting",
+    size="1536x1024",
+    quality="high",
+    filename="product.png"
+)
+```
+
+### Image Editing
+
+```python
+# Edit a single image
+result = edit_image(
+    prompt="add a hat to the person",
+    input_images=["portrait.png"]
+)
+
+# Multi-image composition (up to 16 images)
+result = edit_image(
+    prompt="create a gift basket containing all these items",
+    input_images=["lotion.png", "soap.png", "candle.png"]
+)
+
+# Masked inpainting
+result = edit_image(
+    prompt="add a flamingo standing in the water",
+    input_images=["pool.png"],
+    mask_filename="pool_mask.png"  # PNG with alpha channel
+)
+```
+
+### Token Usage Tracking
+
+```python
+result = generate_image(prompt="cityscape at night")
+if result.usage:
+    print(f"Input tokens: {result.usage.input_tokens}")
+    print(f"Output tokens: {result.usage.output_tokens}")
+    print(f"Total tokens: {result.usage.total_tokens}")
+```
+
+### Complete Workflow: Generate → Animate
+
+```python
+# 1. Generate reference image (synchronous, no polling!)
+result = generate_image(
+    prompt="A lone astronaut standing on a red desert planet, cinematic lighting",
+    size="1536x1024",
+    quality="high",
+    filename="astronaut.png"
+)
+
+# 2. Prepare for Sora (resize if needed)
+prep = prepare_reference_image(
+    "astronaut.png",
+    "1280x720",
+    resize_mode="crop"
+)
+
+# 3. Generate video
+video = create_video(
+    prompt="The astronaut turns and walks toward the horizon",
+    size="1280x720",
+    input_reference_filename=prep.output_filename
+)
+```
+
+---
+
+## Responses API with GPT-5.2
+
+Use the Responses API when you need iterative refinement with `previous_response_id`. This creates a conversational workflow where each image builds on the previous.
+
+**Note:** gpt-image-1.5 is not yet available via Responses API. Use `generate_image` for gpt-image-1.5.
 
 ## Basic Workflow
 
@@ -29,30 +139,29 @@ video = create_video(
 
 ## Models
 
-### GPT-5 (Recommended)
+### GPT-5.2 (Default)
 ```python
-create_image(prompt="...", model="gpt-5")  # Default
+create_image(prompt="...", model="gpt-5.2")  # Default
 ```
 **Best for:**
-- High-quality reference images
-- Complex scenes
-- Photorealistic output
-- Production use
+- Iterative refinement workflows
+- Conversational image generation
+- Complex multi-step prompts
 
 **Characteristics:**
+- OpenAI's latest model
 - Excellent prompt following
-- High detail and quality
-- Fast generation
-- Cost-effective
+- Supports `previous_response_id` chains
 
-### GPT-4.1
+### GPT-5.1 / GPT-5 / GPT-4.1
 ```python
+create_image(prompt="...", model="gpt-5.1")
+create_image(prompt="...", model="gpt-5")
 create_image(prompt="...", model="gpt-4.1")
 ```
 **Best for:**
-- Alternative style
-- Different artistic interpretation
-- Experimentation
+- Alternative interpretations
+- Experimentation with different styles
 
 ## Iterative Refinement
 
@@ -94,7 +203,7 @@ download_image(resp3.id, filename="cityscape_final.png")
 ```python
 create_image(
     prompt="your description here",  # Required
-    model="gpt-5",                    # Optional: "gpt-5" (default) or "gpt-4.1"
+    model="gpt-5.2",                  # Optional: "gpt-5.2" (default), "gpt-5.1", "gpt-5", "gpt-4.1"
     previous_response_id="resp_123"  # Optional: for refinement
 )
 ```
@@ -404,7 +513,7 @@ else:
 - Wait longer (complex images take time)
 - Check OpenAI status page for service issues
 - Try simpler prompt
-- Use `model="gpt-4.1"` as alternative
+- Use `generate_image` instead (synchronous, no polling needed)
 
 ### Low Quality Output
 **Problem:** Image doesn't match expectations

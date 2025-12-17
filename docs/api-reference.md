@@ -119,12 +119,138 @@ Create a new video by remixing an existing completed video.
 
 ## Image Generation Tools
 
+Two APIs are available for image generation:
+
+| Tool | API | Best For |
+|------|-----|----------|
+| `generate_image` | Images API | New generation with gpt-image-1.5 (RECOMMENDED) |
+| `edit_image` | Images API | Editing existing images |
+| `create_image` | Responses API | Iterative refinement with `previous_response_id` |
+
+**Images API** (gpt-image-1.5): Synchronous, returns immediately, no polling required, 20% cheaper
+**Responses API** (GPT-5.2): Async polling pattern, supports iterative refinement chains (gpt-image-1.5 not yet available)
+
+---
+
+### `generate_image`
+Generate images using OpenAI's Images API with gpt-image-1.5. **RECOMMENDED** for new image generation.
+
+**Key advantages:**
+- Synchronous - returns immediately (no polling)
+- gpt-image-1.5 - state-of-the-art quality, better instruction following, improved text rendering
+- Token usage tracking for cost monitoring
+- 20% cheaper than Responses API
+
+**Parameters:**
+- `prompt` (string, required): Text description of the image (max 32k chars)
+- `model` (string, optional): Model - `"gpt-image-1.5"` (default, recommended), `"gpt-image-1"`, `"gpt-image-1-mini"`, `"dall-e-3"`, `"dall-e-2"`
+- `size` (string, optional): Dimensions - `"auto"` (default), `"1024x1024"`, `"1536x1024"` (landscape), `"1024x1536"` (portrait)
+- `quality` (string, optional): Quality - `"auto"` (default), `"low"`, `"medium"`, `"high"`
+- `background` (string, optional): Background - `"auto"` (default), `"transparent"`, `"opaque"`
+- `output_format` (string, optional): Format - `"png"` (default), `"jpeg"`, `"webp"`
+- `moderation` (string, optional): Content moderation - `"auto"` (default), `"low"`
+- `filename` (string, optional): Custom output filename (auto-generated if omitted)
+
+**Returns:** ImageGenerateResult with `filename`, `path`, `size`, `format`, `model`, `usage`
+
+**Usage tracking:** Returns token counts for cost monitoring:
+```python
+result.usage.input_tokens   # Text tokens
+result.usage.output_tokens  # Image tokens
+result.usage.total_tokens   # Combined total
+```
+
+**Examples:**
+```python
+# Basic generation (recommended path)
+result = generate_image(prompt="a sunset over mountains")
+# File immediately available at result.path
+
+# High quality portrait
+result = generate_image(
+    prompt="professional headshot, studio lighting",
+    size="1024x1536",
+    quality="high"
+)
+
+# Transparent background for icons
+result = generate_image(
+    prompt="product icon, clean design",
+    background="transparent",
+    output_format="png"
+)
+
+# Fast generation with mini model
+result = generate_image(
+    prompt="quick sketch of a cat",
+    model="gpt-image-1-mini"
+)
+```
+
+---
+
+### `edit_image`
+Edit existing images using OpenAI's Images API with gpt-image-1.5.
+
+**Key features:**
+- Synchronous - returns immediately (no polling)
+- Supports up to 16 input images for composition
+- Mask-based inpainting
+- Multi-image composition and blending
+
+**Parameters:**
+- `prompt` (string, required): Description of desired edits (max 32k chars)
+- `input_images` (array, required): List of image filenames from `IMAGE_PATH` (1-16 images)
+- `model` (string, optional): Model - `"gpt-image-1.5"` (default), `"gpt-image-1"`, `"gpt-image-1-mini"`
+- `mask_filename` (string, optional): PNG mask with alpha channel for inpainting (transparent = edit, opaque = keep)
+- `size` (string, optional): Output dimensions - `"auto"` (default), `"1024x1024"`, `"1536x1024"`, `"1024x1536"`
+- `quality` (string, optional): Quality - `"auto"` (default), `"low"`, `"medium"`, `"high"`
+- `background` (string, optional): Background - `"auto"` (default), `"transparent"`, `"opaque"`
+- `output_format` (string, optional): Format - `"png"` (default), `"jpeg"`, `"webp"`
+- `input_fidelity` (string, optional): Fidelity to input - `"high"` (preserve faces/style) or `"low"` (more creative freedom). gpt-image-1 only.
+- `filename` (string, optional): Custom output filename
+
+**Returns:** ImageGenerateResult with `filename`, `path`, `size`, `format`, `model`, `usage`
+
+**Examples:**
+```python
+# Simple edit
+result = edit_image(
+    prompt="add a hat to the person",
+    input_images=["portrait.png"]
+)
+
+# Multi-image composition
+result = edit_image(
+    prompt="create a gift basket containing all these items",
+    input_images=["lotion.png", "soap.png", "candle.png"]
+)
+
+# Inpainting with mask
+result = edit_image(
+    prompt="add a flamingo standing in the water",
+    input_images=["pool.png"],
+    mask_filename="pool_mask.png"
+)
+
+# High-fidelity face preservation
+result = edit_image(
+    prompt="change hair color to red",
+    input_images=["portrait.jpg"],
+    input_fidelity="high"
+)
+```
+
+---
+
 ### `create_image`
-Generate images using OpenAI's Responses API with GPT-5/GPT-4.1.
+Generate images using OpenAI's Responses API. Use for iterative refinement with `previous_response_id`.
+
+**Note:** gpt-image-1.5 is not yet available via the Responses API. Use `generate_image` for gpt-image-1.5.
 
 **Parameters:**
 - `prompt` (string, required): Text description of image to generate
-- `model` (string, optional): Model to use - `"gpt-5"` (default), `"gpt-4.1"`
+- `model` (string, optional): Model to use - `"gpt-5.2"` (default, OpenAI's latest), `"gpt-5.1"`, `"gpt-5"`, `"gpt-4.1"`
 - `tool_config` (object, optional): Advanced configuration (ImageGeneration type)
 - `previous_response_id` (string, optional): Previous response ID for iterative refinement
 - `input_images` (array, optional): Array of filenames from `IMAGE_PATH` for image editing
