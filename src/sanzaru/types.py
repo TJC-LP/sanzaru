@@ -7,6 +7,7 @@ This module contains all TypedDict definitions used across the server.
 from typing import Literal, TypedDict
 
 from openai.types import VideoModel, VideoSeconds, VideoSize
+from openai.types.images_response import Usage as ImageUsage
 
 
 class DownloadResult(TypedDict):
@@ -81,4 +82,4 @@ class ImageGenerateResult(TypedDict):
     size: tuple[int, int]
     format: str
     model: str
-    usage: dict | None  # {input_tokens, output_tokens, total_tokens}
+    usage: ImageUsage | None

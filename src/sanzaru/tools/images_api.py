@@ -105,15 +105,6 @@ async def generate_image(
 
     dimensions, detected_format = await anyio.to_thread.run_sync(_get_dimensions)
 
-    # Extract usage info if available
-    usage_info = None
-    if response.usage:
-        usage_info = {
-            "input_tokens": response.usage.input_tokens,
-            "output_tokens": response.usage.output_tokens,
-            "total_tokens": response.usage.total_tokens,
-        }
-
     logger.info(
         "Generated image %s (%dx%d, %s) with %s",
         filename,
@@ -129,7 +120,7 @@ async def generate_image(
         "size": dimensions,
         "format": detected_format,
         "model": str(model),
-        "usage": usage_info,
+        "usage": response.usage,
     }
 
 
@@ -279,15 +270,6 @@ async def edit_image(
 
     dimensions, detected_format = await anyio.to_thread.run_sync(_get_dimensions)
 
-    # Extract usage info if available
-    usage_info = None
-    if response.usage:
-        usage_info = {
-            "input_tokens": response.usage.input_tokens,
-            "output_tokens": response.usage.output_tokens,
-            "total_tokens": response.usage.total_tokens,
-        }
-
     logger.info(
         "Edited image -> %s (%dx%d, %s) with %s",
         filename,
@@ -303,5 +285,5 @@ async def edit_image(
         "size": dimensions,
         "format": detected_format,
         "model": str(model),
-        "usage": usage_info,
+        "usage": response.usage,
     }
