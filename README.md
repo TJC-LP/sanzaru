@@ -69,9 +69,27 @@ That's it! Claude Code will automatically connect and you can start generating v
 uv add "sanzaru[all]"
 
 # Specific features
-uv add "sanzaru[audio]"  # With audio support
-uv add sanzaru           # Base (video + image only)
+uv add "sanzaru[video]"  # Video generation only
+uv add "sanzaru[image]"  # Image generation only
+uv add "sanzaru[audio]"  # Audio processing only
+uv add sanzaru           # Base (video + image)
 ```
+
+<details>
+<summary><strong>Context Window Usage</strong></summary>
+
+MCP tools consume context tokens. Install only features you need to minimize usage:
+
+| Install | Tools | ~Tokens |
+|---------|-------|---------|
+| `sanzaru[video]` | 8 (video + reference) | ~6k |
+| `sanzaru[image]` | 7 (image + reference) | ~6k |
+| `sanzaru[audio]` | 8 | ~7k |
+| `sanzaru[all]` | 21 | ~18k |
+
+*Token estimates include tool descriptions and JSON schemas.*
+
+</details>
 
 <details>
 <summary><strong>Alternative Installation Methods</strong></summary>
