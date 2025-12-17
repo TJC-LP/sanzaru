@@ -114,14 +114,14 @@ async def generate_image(
         model,
     )
 
-    return {
-        "filename": filename,
-        "path": str(output_path),
-        "size": dimensions,
-        "format": detected_format,
-        "model": str(model),
-        "usage": response.usage,
-    }
+    return ImageGenerateResult(
+        filename=filename,
+        path=str(output_path),
+        size=dimensions,
+        format=detected_format,
+        model=str(model),
+        usage=response.usage,
+    )
 
 
 async def edit_image(
@@ -279,11 +279,11 @@ async def edit_image(
         model,
     )
 
-    return {
-        "filename": filename,
-        "path": str(output_path),
-        "size": dimensions,
-        "format": detected_format,
-        "model": str(model),
-        "usage": response.usage,
-    }
+    return ImageGenerateResult(
+        filename=filename,
+        path=str(output_path),
+        size=dimensions,
+        format=detected_format,
+        model=str(model),
+        usage=response.usage,
+    )
