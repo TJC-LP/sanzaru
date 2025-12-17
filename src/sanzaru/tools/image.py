@@ -101,7 +101,7 @@ async def _upload_mask_file(mask_path: pathlib.Path) -> str:
 
 async def create_image(
     prompt: str,
-    model: str = "gpt-5",
+    model: str = "gpt-5.2",
     tool_config: ImageGeneration | None = None,
     previous_response_id: str | None = None,
     input_images: list[str] | None = None,
@@ -111,7 +111,7 @@ async def create_image(
 
     Args:
         prompt: Text description of image to generate (or edits to make if input_images provided)
-        model: Mainline model to use (gpt-5, gpt-4.1, etc.) - calls the image generation tool
+        model: Mainline model to use (gpt-5.2, gpt-5.1, gpt-5, etc.) - calls the image generation tool
         tool_config: Optional ImageGeneration tool configuration (size, quality, model, moderation, etc.)
         previous_response_id: Optional ID to refine previous generation
         input_images: Optional list of reference image filenames from IMAGE_PATH

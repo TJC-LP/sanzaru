@@ -80,14 +80,18 @@ if check_video_available():
 
 # ==================== IMAGE TOOLS (CONDITIONAL) ====================
 if check_image_available():
+    from openai.types import ImageModel
+
     from .descriptions import (
         CREATE_IMAGE,
         DOWNLOAD_IMAGE,
+        EDIT_IMAGE,
+        GENERATE_IMAGE,
         GET_IMAGE_STATUS,
         LIST_REFERENCE_IMAGES,
         PREPARE_REFERENCE_IMAGE,
     )
-    from .tools import image, reference
+    from .tools import image, images_api, reference
 
     @mcp.tool(description=LIST_REFERENCE_IMAGES)
     async def list_reference_images(
@@ -111,7 +115,7 @@ if check_image_available():
     @mcp.tool(description=CREATE_IMAGE)
     async def create_image(
         prompt: str,
-        model: str = "gpt-5",
+        model: str = "gpt-5.2",
         tool_config: ImageGeneration | None = None,
         previous_response_id: str | None = None,
         input_images: list[str] | None = None,
@@ -127,7 +131,49 @@ if check_image_available():
     async def download_image(response_id: str, filename: str | None = None):
         return await image.download_image(response_id, filename)
 
-    logger.info("Image tools registered (5 tools)")
+    # Images API tools (direct API, supports gpt-image-1.5)
+    @mcp.tool(description=GENERATE_IMAGE)
+    async def generate_image(
+        prompt: str,
+        model: ImageModel = "gpt-image-1.5",
+        size: Literal["auto", "1024x1024", "1536x1024", "1024x1536"] = "auto",
+        quality: Literal["auto", "low", "medium", "high"] = "auto",
+        background: Literal["auto", "transparent", "opaque"] = "auto",
+        output_format: Literal["png", "jpeg", "webp"] = "png",
+        moderation: Literal["auto", "low"] = "auto",
+        filename: str | None = None,
+    ):
+        return await images_api.generate_image(
+            prompt, model, size, quality, background, output_format, moderation, filename
+        )
+
+    @mcp.tool(description=EDIT_IMAGE)
+    async def edit_image(
+        prompt: str,
+        input_images: list[str],
+        model: ImageModel = "gpt-image-1.5",
+        mask_filename: str | None = None,
+        size: Literal["auto", "1024x1024", "1536x1024", "1024x1536"] = "auto",
+        quality: Literal["auto", "low", "medium", "high"] = "auto",
+        background: Literal["auto", "transparent", "opaque"] = "auto",
+        output_format: Literal["png", "jpeg", "webp"] = "png",
+        input_fidelity: Literal["high", "low"] | None = None,
+        filename: str | None = None,
+    ):
+        return await images_api.edit_image(
+            prompt,
+            input_images,
+            model,
+            mask_filename,
+            size,
+            quality,
+            background,
+            output_format,
+            input_fidelity,
+            filename,
+        )
+
+    logger.info("Image tools registered (7 tools)")
 
 
 # ==================== AUDIO TOOLS (CONDITIONAL) ====================

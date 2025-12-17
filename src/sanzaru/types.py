@@ -71,3 +71,14 @@ class ImageDownloadResult(TypedDict):
     path: str
     size: tuple[int, int]
     format: str
+
+
+class ImageGenerateResult(TypedDict):
+    """Result from generating an image via Images API."""
+
+    filename: str
+    path: str
+    size: tuple[int, int]
+    format: str
+    model: str
+    usage: dict | None  # {input_tokens, output_tokens, total_tokens}

@@ -291,6 +291,7 @@ app = CORSMiddleware(app, allow_origins=["*"], expose_headers=["Mcp-Session-Id"]
 
 ## Model Selection Guidelines
 
+### Video Generation (Sora)
 **sora-2**: Faster, cheaper, good for iteration and testing
 **sora-2-pro**: Slower, higher quality, for final production (supports larger resolutions)
 
@@ -298,9 +299,46 @@ app = CORSMiddleware(app, allow_origins=["*"], expose_headers=["Mcp-Session-Id"]
 - Both models: `720x1280`, `1280x720`
 - Pro only: `1024x1792`, `1792x1024`
 
-**Image generation:**
-- Use GPT-5 for best results
-- Supported sizes: `1024x1024`, `1024x1536`, `1536x1024`, `auto`
+### Image Generation
+
+**Two APIs available:**
+
+| Tool | API | Best For |
+|------|-----|----------|
+| `generate_image` | Images API | New generation with gpt-image-1.5 (RECOMMENDED) |
+| `edit_image` | Images API | Editing existing images with gpt-image-1.5 |
+| `create_image` | Responses API | Iterative refinement with `previous_response_id` |
+
+**Image generation models:**
+- **gpt-image-1.5**: STATE-OF-THE-ART (RECOMMENDED) - best quality, better instruction following, improved text rendering, 20% cheaper
+- **gpt-image-1**: High quality image generation
+- **gpt-image-1-mini**: Fast, cost-effective generation
+- **dall-e-3**: Legacy DALL-E 3
+- **dall-e-2**: Legacy DALL-E 2
+
+**Supported image sizes:** `1024x1024`, `1024x1536`, `1536x1024`, `auto`
+
+**Example with generate_image (recommended):**
+```python
+# Direct Images API - synchronous, returns immediately
+generate_image(
+    prompt="a futuristic cityscape at sunset",
+    model="gpt-image-1.5",
+    size="1536x1024",
+    quality="high"
+)
+```
+
+**Example with create_image (for iterative refinement):**
+```python
+# Responses API - async polling, supports previous_response_id
+resp = create_image(prompt="a cyberpunk character")
+# ... poll and download ...
+resp2 = create_image(
+    prompt="add neon details",
+    previous_response_id=resp.id
+)
+```
 
 ## Type Safety Notes
 
