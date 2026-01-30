@@ -2,6 +2,12 @@
 
 <div align="center">
   <img src="https://raw.githubusercontent.com/TJC-LP/sanzaru/main/assets/logo.png" alt="sanzaru logo" width="400">
+
+  [![PyPI version](https://img.shields.io/pypi/v/sanzaru)](https://pypi.org/project/sanzaru/)
+  [![Python versions](https://img.shields.io/pypi/pyversions/sanzaru)](https://pypi.org/project/sanzaru/)
+  [![License](https://img.shields.io/pypi/l/sanzaru)](https://github.com/TJC-LP/sanzaru/blob/main/LICENSE)
+  [![CI](https://github.com/TJC-LP/sanzaru/actions/workflows/ci-cd.yml/badge.svg)](https://github.com/TJC-LP/sanzaru/actions/workflows/ci-cd.yml)
+  [![PyPI downloads](https://img.shields.io/pypi/dm/sanzaru)](https://pypi.org/project/sanzaru/)
 </div>
 
 A **stateless**, lightweight **MCP** server that wraps **OpenAI's Sora Video API, Whisper, and GPT-4o Audio APIs** via the OpenAI Python SDK.
