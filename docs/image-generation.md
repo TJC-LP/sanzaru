@@ -114,7 +114,7 @@ video = create_video(
 
 Use the Responses API when you need iterative refinement with `previous_response_id`. This creates a conversational workflow where each image builds on the previous.
 
-**Note:** gpt-image-1.5 is not yet available via Responses API. Use `generate_image` for gpt-image-1.5.
+**Tip:** gpt-image-1.5 is supported via `tool_config={"type": "image_generation", "model": "gpt-image-1.5"}` for best quality.
 
 ## Basic Workflow
 

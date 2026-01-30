@@ -172,11 +172,6 @@ CREATE_IMAGE = """Generate or edit images using OpenAI's Responses API.
 Creates images from text prompts OR edits existing images by providing reference images.
 Returns immediately with a response_id - use get_image_status() to poll for completion.
 
-**Forward-compatibility note:** gpt-image-1.5 can be specified via tool_config.model for
-future compatibility, but as of 2025-12-17, OpenAI's Responses API does not yet support it.
-If you get errors with gpt-image-1.5 via tool_config, use `generate_image` instead which
-uses the direct Images API and fully supports gpt-image-1.5.
-
 **Text-only generation (no input_images):**
 - Generates image from scratch based on prompt
 
