@@ -19,3 +19,4 @@ build/
 /videos/
 /images/
 .coverage
+config/

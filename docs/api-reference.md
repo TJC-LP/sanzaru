@@ -128,7 +128,7 @@ Two APIs are available for image generation:
 | `create_image` | Responses API | Iterative refinement with `previous_response_id` |
 
 **Images API** (gpt-image-1.5): Synchronous, returns immediately, no polling required, 20% cheaper
-**Responses API** (GPT-5.2): Async polling pattern, supports iterative refinement chains (gpt-image-1.5 not yet available)
+**Responses API** (GPT-5.2): Async polling pattern, supports iterative refinement chains, gpt-image-1.5 via tool_config
 
 ---
 
@@ -246,7 +246,7 @@ result = edit_image(
 ### `create_image`
 Generate images using OpenAI's Responses API. Use for iterative refinement with `previous_response_id`.
 
-**Note:** gpt-image-1.5 is not yet available via the Responses API. Use `generate_image` for gpt-image-1.5.
+**Tip:** Use `tool_config={"type": "image_generation", "model": "gpt-image-1.5"}` for best quality.
 
 **Parameters:**
 - `prompt` (string, required): Text description of image to generate

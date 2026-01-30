@@ -127,7 +127,7 @@ async def create_image(
     Example tool_config:
         {
             "type": "image_generation",
-            "model": "gpt-image-1-mini",  # or "gpt-image-1"
+            "model": "gpt-image-1.5",  # recommended (or "gpt-image-1", "gpt-image-1-mini")
             "size": "1024x1024",
             "quality": "high",
             "moderation": "low",  # or "auto"
