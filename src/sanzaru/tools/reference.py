@@ -6,7 +6,6 @@ This module handles reference image operations:
 - Preparing/resizing images for video generation
 """
 
-import os
 import pathlib
 from typing import Literal
 
@@ -14,8 +13,8 @@ import anyio
 from openai.types import VideoSize
 from PIL import Image
 
-from ..config import get_path, logger
-from ..security import validate_safe_path
+from ..config import logger
+from ..storage import get_storage
 from ..types import PrepareResult, ReferenceImage
 
 # ==================== Helper Functions for Image Processing ====================
@@ -190,7 +189,7 @@ async def list_reference_images(
     Raises:
         RuntimeError: If IMAGE_PATH not configured
     """
-    reference_image_path = get_path("reference")
+    storage = get_storage()
 
     # Map file_type to extensions
     type_to_extensions = {
@@ -201,32 +200,23 @@ async def list_reference_images(
     }
     allowed_extensions = type_to_extensions[file_type]
 
-    # Collect matching files
+    # Collect matching files via storage backend
     glob_pattern = pattern if pattern else "*"
-    files: list[tuple[pathlib.Path, os.stat_result]] = []
-
-    for file_path in reference_image_path.glob(glob_pattern):
-        if file_path.is_file() and file_path.suffix.lower() in allowed_extensions:
-            # Security: ensure file is within reference_image_path
-            try:
-                file_path.resolve().relative_to(reference_image_path)
-            except ValueError:
-                continue  # Skip files outside reference path
-            files.append((file_path, file_path.stat()))
+    file_infos = await storage.list_files("reference", pattern=glob_pattern, extensions=allowed_extensions)
 
     # Sort files
     if sort_by == "name":
-        files.sort(key=lambda x: x[0].name, reverse=(order == "desc"))
+        file_infos.sort(key=lambda x: x.name, reverse=(order == "desc"))
     elif sort_by == "size":
-        files.sort(key=lambda x: x[1].st_size, reverse=(order == "desc"))
+        file_infos.sort(key=lambda x: x.size_bytes, reverse=(order == "desc"))
     elif sort_by == "modified":
-        files.sort(key=lambda x: x[1].st_mtime, reverse=(order == "desc"))
+        file_infos.sort(key=lambda x: x.modified_timestamp, reverse=(order == "desc"))
 
     # Build result list
     results: list[ReferenceImage] = []
-    for file_path, stat in files[:limit]:
-        # Determine file type
-        ext = file_path.suffix.lower()
+    for info in file_infos[:limit]:
+        # Determine file type from extension
+        ext = ("." + info.name.rsplit(".", 1)[-1].lower()) if "." in info.name else ""
         if ext in {".jpg", ".jpeg"}:
             img_type = "jpeg"
         elif ext == ".png":
@@ -236,9 +226,9 @@ async def list_reference_images(
 
         results.append(
             {
-                "filename": file_path.name,
-                "size_bytes": stat.st_size,
-                "modified_timestamp": int(stat.st_mtime),
+                "filename": info.name,
+                "size_bytes": info.size_bytes,
+                "modified_timestamp": int(info.modified_timestamp),
                 "file_type": img_type,
             }
         )
@@ -268,36 +258,39 @@ async def prepare_reference_image(
         RuntimeError: If IMAGE_PATH not configured
         ValueError: If input file invalid or path traversal detected
     """
-    reference_image_path = get_path("reference")
-
-    # Validate paths (fast, stays synchronous)
-    input_path = validate_safe_path(reference_image_path, input_filename)
+    storage = get_storage()
     target_width, target_height = parse_video_dimensions(target_size)
 
-    # Generate output filename if needed
+    # Generate output filename from the input filename string (before entering context managers)
     if output_filename is None:
-        output_filename = f"{input_path.stem}_{target_size}.png"
+        stem = input_filename.rsplit(".", 1)[0] if "." in input_filename else input_filename
+        output_filename = f"{stem}_{target_size}.png"
 
-    output_path = validate_safe_path(reference_image_path, output_filename, allow_create=True)
+    # Use storage backend context managers for local path access
+    async with (
+        storage.local_path("reference", input_filename) as input_path,
+        storage.local_tempfile("reference", output_filename) as output_path,
+    ):
+        # Wrap entire PIL workflow in thread pool (CPU-intensive operations)
+        def _process_image() -> tuple[tuple[int, int], str]:
+            """Synchronous image processing in worker thread."""
+            # Load and convert image
+            img = load_and_convert_image(input_path, input_filename)
+            original_size = img.size
 
-    # Wrap entire PIL workflow in thread pool (CPU-intensive operations)
-    def _process_image() -> tuple[tuple[int, int], str]:
-        """Synchronous image processing in worker thread."""
-        # Load and convert image
-        img = load_and_convert_image(input_path, input_filename)
-        original_size = img.size
+            # Apply resize strategy
+            resize_fn = RESIZE_STRATEGIES[resize_mode]
+            img = resize_fn(img, target_width, target_height)
 
-        # Apply resize strategy
-        resize_fn = RESIZE_STRATEGIES[resize_mode]
-        img = resize_fn(img, target_width, target_height)
+            # Save result
+            save_image(img, output_path, output_filename)
 
-        # Save result
-        save_image(img, output_path, output_filename)
+            return original_size, output_filename
 
-        return original_size, output_filename
+        # Run in thread pool - multiple image preps can now run concurrently
+        original_size, final_filename = await anyio.to_thread.run_sync(_process_image)
 
-    # Run in thread pool - multiple image preps can now run concurrently
-    original_size, final_filename = await anyio.to_thread.run_sync(_process_image)
+    display_path = storage.resolve_display_path("reference", output_filename)
 
     logger.info(
         "Prepared reference: %s -> %s (%s, %dx%d -> %dx%d)",
@@ -315,5 +308,5 @@ async def prepare_reference_image(
         "original_size": original_size,
         "target_size": (target_width, target_height),
         "resize_mode": resize_mode,
-        "path": str(output_path),
+        "path": display_path,
     }

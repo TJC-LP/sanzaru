@@ -4,13 +4,17 @@
 import pytest
 from PIL import Image
 
+from sanzaru.storage.local import LocalStorageBackend
 from sanzaru.tools.reference import list_reference_images, prepare_reference_image
 
 
 @pytest.mark.integration
 async def test_sora_list_references_with_multiple_files(mocker, tmp_reference_path):
     """Test listing reference images with real files."""
-    mocker.patch("sanzaru.tools.reference.get_path", return_value=tmp_reference_path)
+    mocker.patch(
+        "sanzaru.tools.reference.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
 
     # Create test image files
     Image.new("RGB", (100, 100)).save(tmp_reference_path / "cat.png")
@@ -39,7 +43,10 @@ async def test_sora_list_references_with_multiple_files(mocker, tmp_reference_pa
 @pytest.mark.integration
 async def test_sora_prepare_reference_end_to_end(mocker, tmp_reference_path):
     """Test complete image preparation workflow with real files."""
-    mocker.patch("sanzaru.tools.reference.get_path", return_value=tmp_reference_path)
+    mocker.patch(
+        "sanzaru.tools.reference.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
 
     # Create source image (different aspect ratio from target)
     source = tmp_reference_path / "source.png"
@@ -66,7 +73,10 @@ async def test_sora_prepare_reference_end_to_end(mocker, tmp_reference_path):
 @pytest.mark.integration
 async def test_sora_list_references_with_filtering(mocker, tmp_reference_path):
     """Test reference listing with pattern and type filters."""
-    mocker.patch("sanzaru.tools.reference.get_path", return_value=tmp_reference_path)
+    mocker.patch(
+        "sanzaru.tools.reference.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
 
     # Create various image files
     Image.new("RGB", (100, 100)).save(tmp_reference_path / "cat_001.png")

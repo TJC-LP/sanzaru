@@ -3,6 +3,7 @@
 
 import pytest
 
+from sanzaru.storage.local import LocalStorageBackend
 from sanzaru.tools.video import (
     create_video,
     delete_video,
@@ -44,7 +45,8 @@ async def test_sora_get_status(mocker, mock_video_response):
 @pytest.mark.integration
 async def test_sora_download(mocker, tmp_video_path):
     """Test video download writes file correctly."""
-    mocker.patch("sanzaru.tools.video.get_path", return_value=tmp_video_path)
+    storage = LocalStorageBackend(path_overrides={"video": tmp_video_path})
+    mocker.patch("sanzaru.tools.video.get_storage", return_value=storage)
 
     # Mock streaming response with async iteration
     mock_response = mocker.MagicMock()
@@ -164,8 +166,9 @@ async def test_create_video_with_reference_image_mime_types(mocker, mock_video_q
         image_file = reference_path / filename
         image_file.write_bytes(b"fake image data")
 
-        # Mock get_path to return our temp directory
-        mocker.patch("sanzaru.tools.video.get_path", return_value=reference_path)
+        # Mock storage backend with temp directory
+        storage = LocalStorageBackend(path_overrides={"reference": reference_path})
+        mocker.patch("sanzaru.tools.video.get_storage", return_value=storage)
 
         # Mock the OpenAI client
         mock_get_client = mocker.patch("sanzaru.tools.video.get_client")

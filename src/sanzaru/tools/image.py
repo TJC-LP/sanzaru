@@ -8,7 +8,7 @@ This module handles image generation operations:
 """
 
 import base64
-import pathlib
+import io
 
 import anyio
 from openai._types import Omit, omit
@@ -23,48 +23,36 @@ from openai.types.responses.response_output_item import ImageGenerationCall
 from openai.types.responses.tool_param import ImageGeneration
 from PIL import Image
 
-from ..config import get_client, get_path, logger
-from ..security import async_safe_open_file, check_not_symlink, validate_safe_path
+from ..config import get_client, logger
+from ..storage import get_storage
 from ..types import ImageDownloadResult, ImageResponse
 from ..utils import generate_filename
 
 # ==================== HELPER FUNCTIONS ====================
 
 
-def _encode_image_base64(image_path: pathlib.Path) -> str:
-    """Read image file and encode as base64 string.
+def _encode_image_base64(data: bytes) -> str:
+    """Encode image bytes as base64 string.
 
     Args:
-        image_path: Absolute path to validated image file
+        data: Raw image bytes
 
     Returns:
         Base64-encoded string (not data URL, just the base64 part)
-
-    Raises:
-        ValueError: If file cannot be read (with context)
     """
-    try:
-        with open(image_path, "rb") as f:
-            image_bytes = f.read()
-            return base64.b64encode(image_bytes).decode("utf-8")
-    except FileNotFoundError as e:
-        raise ValueError(f"Image file not found: {image_path.name}") from e
-    except PermissionError as e:
-        raise ValueError(f"Permission denied reading image: {image_path.name}") from e
-    except OSError as e:
-        raise ValueError(f"Error reading image file: {e}") from e
+    return base64.b64encode(data).decode("utf-8")
 
 
-def _get_mime_type(image_path: pathlib.Path) -> str:
-    """Get MIME type from file extension.
+def _get_mime_type(filename: str) -> str:
+    """Get MIME type from filename extension.
 
     Args:
-        image_path: Path with validated extension
+        filename: Filename string with extension
 
     Returns:
         MIME type string (e.g., "image/jpeg", "image/png")
     """
-    ext = image_path.suffix.lower()
+    ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
     mime_types = {
         ".jpg": "image/jpeg",
         ".jpeg": "image/jpeg",
@@ -74,11 +62,12 @@ def _get_mime_type(image_path: pathlib.Path) -> str:
     return mime_types.get(ext, "image/jpeg")  # Default to jpeg
 
 
-async def _upload_mask_file(mask_path: pathlib.Path) -> str:
+async def _upload_mask_file(data: bytes, filename: str) -> str:
     """Upload mask image to OpenAI Files API.
 
     Args:
-        mask_path: Absolute path to validated PNG mask with alpha channel
+        data: Raw mask image bytes (PNG with alpha channel)
+        filename: Original filename for the upload
 
     Returns:
         OpenAI file ID string
@@ -89,8 +78,7 @@ async def _upload_mask_file(mask_path: pathlib.Path) -> str:
     client = get_client()
 
     try:
-        with open(mask_path, "rb") as f:
-            file_obj = await client.files.create(file=f, purpose="vision")
+        file_obj = await client.files.create(file=(filename, data), purpose="vision")
         return file_obj.id
     except Exception as e:
         raise ValueError(f"Failed to upload mask file: {e}") from e
@@ -137,7 +125,7 @@ async def create_image(
         }
     """
     client = get_client()
-    reference_path = get_path("reference")
+    storage = get_storage()
 
     # Validate mask requires input images
     if mask_filename and not input_images:
@@ -148,19 +136,16 @@ async def create_image(
 
     # Handle mask upload if provided
     if mask_filename:
-        # Check for symlink BEFORE resolution
-        original_mask_path = reference_path / mask_filename
-        check_not_symlink(original_mask_path, "mask image")
-
-        # Validate filename and construct safe path
-        mask_path = validate_safe_path(reference_path, mask_filename)
-
-        # Validate PNG format
-        if mask_path.suffix.lower() != ".png":
+        # Validate PNG format from filename
+        mask_ext = ("." + mask_filename.rsplit(".", 1)[-1].lower()) if "." in mask_filename else ""
+        if mask_ext != ".png":
             raise ValueError("Mask must be PNG format with alpha channel")
 
+        # Read mask via storage backend (handles path validation + security)
+        mask_bytes = await storage.read("reference", mask_filename)
+
         # Upload to Files API
-        mask_file_id = await _upload_mask_file(mask_path)
+        mask_file_id = await _upload_mask_file(mask_bytes, mask_filename)
         config["input_image_mask"] = {"file_id": mask_file_id}
 
         logger.info("Uploaded mask %s as file_id %s", mask_filename, mask_file_id)
@@ -173,21 +158,17 @@ async def create_image(
         content_items: ResponseInputMessageContentListParam = [ResponseInputTextParam(type="input_text", text=prompt)]
 
         for filename in input_images:
-            # Check for symlink BEFORE resolution (validate_safe_path resolves symlinks)
-            original_path = reference_path / filename
-            check_not_symlink(original_path, "reference image")
-
-            # Validate filename and construct safe path
-            img_path = validate_safe_path(reference_path, filename)
-
             # Validate file extension
-            ext = img_path.suffix.lower()
-            if ext not in [".jpg", ".jpeg", ".png", ".webp"]:
+            ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
+            if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
                 raise ValueError(f"Unsupported image format: {filename} (use JPEG, PNG, WEBP)")
 
+            # Read image via storage backend (handles path validation + security)
+            img_bytes = await storage.read("reference", filename)
+
             # Encode to base64
-            base64_data = _encode_image_base64(img_path)
-            mime_type = _get_mime_type(img_path)
+            base64_data = _encode_image_base64(img_bytes)
+            mime_type = _get_mime_type(filename)
 
             # Add to content items
             image_item: ResponseInputImageParam = {
@@ -274,7 +255,7 @@ async def download_image(
         RuntimeError: If IMAGE_PATH not configured or OPENAI_API_KEY not set
         ValueError: If image generation not found or invalid filename
     """
-    reference_image_path = get_path("reference")
+    storage = get_storage()
 
     client = get_client()
     response = await client.responses.retrieve(response_id)
@@ -314,16 +295,12 @@ async def download_image(
         output_format = "png"
         filename = generate_filename("img", output_format, use_timestamp=True)
 
-    # Security: validate filename and construct safe path
-    output_path = validate_safe_path(reference_image_path, filename, allow_create=True)
+    # Write image via storage backend (handles path validation + security)
+    display_path = await storage.write("reference", filename, image_bytes)
 
-    # Write image to disk asynchronously
-    async with async_safe_open_file(output_path, "wb", "image file", check_symlink=False) as f:
-        await f.write(image_bytes)
-
-    # Get dimensions in thread pool (PIL operations)
+    # Get dimensions in thread pool (PIL operations) - use in-memory bytes
     def _get_dimensions() -> tuple[tuple[int, int], str]:
-        img = Image.open(output_path)
+        img = Image.open(io.BytesIO(image_bytes))
         return img.size, img.format.lower() if img.format else "unknown"
 
     size, output_format = await anyio.to_thread.run_sync(_get_dimensions)
@@ -332,7 +309,7 @@ async def download_image(
 
     return {
         "filename": filename,
-        "path": str(output_path),
+        "path": display_path,
         "size": size,
         "format": output_format,
     }

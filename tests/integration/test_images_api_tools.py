@@ -10,6 +10,7 @@ import base64
 import pytest
 from PIL import Image
 
+from sanzaru.storage.local import LocalStorageBackend
 from sanzaru.tools.images_api import edit_image, generate_image
 
 # =============================================================================
@@ -28,7 +29,10 @@ async def test_generate_image_basic(mocker, tmp_reference_path):
     mock_response.usage = None  # Pydantic requires None or real Usage type
 
     # Patch dependencies
-    mocker.patch("sanzaru.tools.images_api.get_path", return_value=tmp_reference_path)
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
     mock_get_client = mocker.patch("sanzaru.tools.images_api.get_client")
     mock_get_client.return_value.images.generate = mocker.AsyncMock(return_value=mock_response)
 
@@ -61,7 +65,10 @@ async def test_generate_image_with_custom_filename(mocker, tmp_reference_path):
     mock_response.data = [mock_data]
     mock_response.usage = None
 
-    mocker.patch("sanzaru.tools.images_api.get_path", return_value=tmp_reference_path)
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
     mock_get_client = mocker.patch("sanzaru.tools.images_api.get_client")
     mock_get_client.return_value.images.generate = mocker.AsyncMock(return_value=mock_response)
 
@@ -83,7 +90,10 @@ async def test_generate_image_all_params(mocker, tmp_reference_path):
     mock_response.data = [mock_data]
     mock_response.usage = None
 
-    mocker.patch("sanzaru.tools.images_api.get_path", return_value=tmp_reference_path)
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
     mock_get_client = mocker.patch("sanzaru.tools.images_api.get_client")
     mock_get_client.return_value.images.generate = mocker.AsyncMock(return_value=mock_response)
 
@@ -134,7 +144,10 @@ async def test_generate_image_usage_tracking(mocker, tmp_reference_path):
         output_tokens_details=None,
     )
 
-    mocker.patch("sanzaru.tools.images_api.get_path", return_value=tmp_reference_path)
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
     mock_get_client = mocker.patch("sanzaru.tools.images_api.get_client")
     mock_get_client.return_value.images.generate = mocker.AsyncMock(return_value=mock_response)
 
@@ -155,7 +168,10 @@ async def test_generate_image_no_data_error(mocker, tmp_reference_path):
     mock_response = mocker.MagicMock()
     mock_response.data = []  # Empty data
 
-    mocker.patch("sanzaru.tools.images_api.get_path", return_value=tmp_reference_path)
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
     mock_get_client = mocker.patch("sanzaru.tools.images_api.get_client")
     mock_get_client.return_value.images.generate = mocker.AsyncMock(return_value=mock_response)
 
@@ -171,7 +187,10 @@ async def test_generate_image_no_b64_error(mocker, tmp_reference_path):
     mock_data.b64_json = None  # Missing b64_json
     mock_response.data = [mock_data]
 
-    mocker.patch("sanzaru.tools.images_api.get_path", return_value=tmp_reference_path)
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
     mock_get_client = mocker.patch("sanzaru.tools.images_api.get_client")
     mock_get_client.return_value.images.generate = mocker.AsyncMock(return_value=mock_response)
 
@@ -198,7 +217,10 @@ async def test_edit_image_single_input(mocker, tmp_reference_path):
     mock_response.data = [mock_data]
     mock_response.usage = None
 
-    mocker.patch("sanzaru.tools.images_api.get_path", return_value=tmp_reference_path)
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
     mock_get_client = mocker.patch("sanzaru.tools.images_api.get_client")
     mock_get_client.return_value.images.edit = mocker.AsyncMock(return_value=mock_response)
 
@@ -232,7 +254,10 @@ async def test_edit_image_multiple_inputs(mocker, tmp_reference_path):
     mock_response.data = [mock_data]
     mock_response.usage = None
 
-    mocker.patch("sanzaru.tools.images_api.get_path", return_value=tmp_reference_path)
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
     mock_get_client = mocker.patch("sanzaru.tools.images_api.get_client")
     mock_get_client.return_value.images.edit = mocker.AsyncMock(return_value=mock_response)
 
@@ -271,7 +296,10 @@ async def test_edit_image_with_mask(mocker, tmp_reference_path):
     mock_response.data = [mock_data]
     mock_response.usage = None
 
-    mocker.patch("sanzaru.tools.images_api.get_path", return_value=tmp_reference_path)
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
     mock_get_client = mocker.patch("sanzaru.tools.images_api.get_client")
     mock_get_client.return_value.images.edit = mocker.AsyncMock(return_value=mock_response)
 
@@ -306,7 +334,10 @@ async def test_edit_image_with_input_fidelity(mocker, tmp_reference_path):
     mock_response.data = [mock_data]
     mock_response.usage = None
 
-    mocker.patch("sanzaru.tools.images_api.get_path", return_value=tmp_reference_path)
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
     mock_get_client = mocker.patch("sanzaru.tools.images_api.get_client")
     mock_get_client.return_value.images.edit = mocker.AsyncMock(return_value=mock_response)
 
@@ -344,7 +375,10 @@ async def test_edit_image_mime_types(mocker, tmp_reference_path):
         mock_response.data = [mock_data]
         mock_response.usage = None
 
-        mocker.patch("sanzaru.tools.images_api.get_path", return_value=tmp_reference_path)
+        mocker.patch(
+            "sanzaru.tools.images_api.get_storage",
+            return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+        )
         mock_get_client = mocker.patch("sanzaru.tools.images_api.get_client")
         mock_get_client.return_value.images.edit = mocker.AsyncMock(return_value=mock_response)
 
@@ -366,7 +400,10 @@ async def test_edit_image_mime_types(mocker, tmp_reference_path):
 @pytest.mark.integration
 async def test_edit_image_empty_list_error(mocker, tmp_reference_path):
     """Test error on empty input_images list."""
-    mocker.patch("sanzaru.tools.images_api.get_path", return_value=tmp_reference_path)
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
     mocker.patch("sanzaru.tools.images_api.get_client")
 
     with pytest.raises(ValueError, match="At least one input image is required"):
@@ -376,7 +413,10 @@ async def test_edit_image_empty_list_error(mocker, tmp_reference_path):
 @pytest.mark.integration
 async def test_edit_image_exceeds_max_images(mocker, tmp_reference_path):
     """Test error when more than 16 images provided."""
-    mocker.patch("sanzaru.tools.images_api.get_path", return_value=tmp_reference_path)
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
     mocker.patch("sanzaru.tools.images_api.get_client")
 
     too_many_images = [f"img{i}.png" for i in range(17)]
@@ -392,7 +432,10 @@ async def test_edit_image_unsupported_format(mocker, tmp_reference_path):
     bad_file = tmp_reference_path / "image.gif"
     bad_file.write_bytes(b"fake gif data")
 
-    mocker.patch("sanzaru.tools.images_api.get_path", return_value=tmp_reference_path)
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
     mocker.patch("sanzaru.tools.images_api.get_client")
 
     with pytest.raises(ValueError, match="Unsupported image format.*use JPEG, PNG, WEBP"):
@@ -408,7 +451,10 @@ async def test_edit_image_mask_non_png_error(mocker, tmp_reference_path):
     mask_file = tmp_reference_path / "mask.jpg"
     mask_file.write_bytes(b"fake jpg mask")
 
-    mocker.patch("sanzaru.tools.images_api.get_path", return_value=tmp_reference_path)
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
     mocker.patch("sanzaru.tools.images_api.get_client")
 
     with pytest.raises(ValueError, match="Mask must be PNG format"):
@@ -418,7 +464,10 @@ async def test_edit_image_mask_non_png_error(mocker, tmp_reference_path):
 @pytest.mark.integration
 async def test_edit_image_file_not_found(mocker, tmp_reference_path):
     """Test error when input image doesn't exist."""
-    mocker.patch("sanzaru.tools.images_api.get_path", return_value=tmp_reference_path)
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
     mocker.patch("sanzaru.tools.images_api.get_client")
 
     with pytest.raises(ValueError, match="File not found"):
@@ -434,7 +483,10 @@ async def test_edit_image_no_data_error(mocker, tmp_reference_path):
     mock_response = mocker.MagicMock()
     mock_response.data = []  # Empty
 
-    mocker.patch("sanzaru.tools.images_api.get_path", return_value=tmp_reference_path)
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
     mock_get_client = mocker.patch("sanzaru.tools.images_api.get_client")
     mock_get_client.return_value.images.edit = mocker.AsyncMock(return_value=mock_response)
 
@@ -450,11 +502,14 @@ async def test_edit_image_no_data_error(mocker, tmp_reference_path):
 @pytest.mark.integration
 async def test_edit_image_path_traversal(mocker, tmp_reference_path):
     """Test path traversal is rejected."""
-    mocker.patch("sanzaru.tools.images_api.get_path", return_value=tmp_reference_path)
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
     mocker.patch("sanzaru.tools.images_api.get_client")
 
     with pytest.raises(ValueError, match="path traversal detected"):
-        await edit_image(prompt="test", input_images=["../../../etc/passwd"])
+        await edit_image(prompt="test", input_images=["../../../etc/passwd.png"])
 
 
 @pytest.mark.integration
@@ -467,7 +522,10 @@ async def test_edit_image_symlink_rejected(mocker, tmp_reference_path):
     link = tmp_reference_path / "link.png"
     link.symlink_to(real_file)
 
-    mocker.patch("sanzaru.tools.images_api.get_path", return_value=tmp_reference_path)
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
     mocker.patch("sanzaru.tools.images_api.get_client")
 
     with pytest.raises(ValueError, match="cannot be a symbolic link"):
@@ -486,7 +544,10 @@ async def test_edit_image_mask_symlink_rejected(mocker, tmp_reference_path):
     link_mask = tmp_reference_path / "link_mask.png"
     link_mask.symlink_to(real_mask)
 
-    mocker.patch("sanzaru.tools.images_api.get_path", return_value=tmp_reference_path)
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
     mocker.patch("sanzaru.tools.images_api.get_client")
 
     with pytest.raises(ValueError, match="cannot be a symbolic link"):
