@@ -46,6 +46,17 @@ class DatabricksVolumesBackend:
     """
 
     def __init__(self) -> None:
+        required = {
+            "DATABRICKS_HOST": "Workspace URL (e.g. https://adb-123.azuredatabricks.net)",
+            "DATABRICKS_CLIENT_ID": "OAuth service principal client ID",
+            "DATABRICKS_CLIENT_SECRET": "OAuth service principal client secret",
+            "DATABRICKS_VOLUME_PATH": "Unity Catalog volume path (catalog/schema/volume)",
+        }
+        missing = [name for name in required if name not in os.environ or not os.environ[name].strip()]
+        if missing:
+            details = "\n".join(f"  - {name}: {required[name]}" for name in missing)
+            raise RuntimeError(f"Missing required Databricks environment variable(s):\n{details}")
+
         self._host = os.environ["DATABRICKS_HOST"].rstrip("/")
         self._client_id = os.environ["DATABRICKS_CLIENT_ID"]
         self._client_secret = os.environ["DATABRICKS_CLIENT_SECRET"]
@@ -60,6 +71,24 @@ class DatabricksVolumesBackend:
         self._client = httpx.AsyncClient(timeout=300.0)
         self._token: str | None = None
         self._token_expires_at: float = 0.0
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def aclose(self) -> None:
+        """Close the underlying httpx client and release resources.
+
+        Should be called during application shutdown.  The backend is
+        typically a singleton, so this is called once at process exit.
+        """
+        await self._client.aclose()
+
+    async def __aenter__(self) -> DatabricksVolumesBackend:
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        await self.aclose()
 
     # ------------------------------------------------------------------
     # Auth
@@ -137,8 +166,15 @@ class DatabricksVolumesBackend:
         return self.resolve_display_path(path_type, filename)
 
     async def write_stream(self, path_type: PathType, filename: str, chunks: AsyncIterator[bytes]) -> str:
-        # Databricks Files API doesn't support chunked/streaming uploads,
-        # so accumulate into a buffer and upload as a single PUT.
+        """Write file from an async byte-chunk stream.
+
+        .. warning::
+
+            The Databricks Files API requires a complete PUT request body,
+            so this method buffers the entire stream in memory before
+            uploading.  For very large files (e.g. long videos) this may
+            cause high memory usage proportional to the file size.
+        """
         buf = bytearray()
         async for chunk in chunks:
             buf.extend(chunk)

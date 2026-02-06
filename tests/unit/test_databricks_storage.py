@@ -51,6 +51,55 @@ def test_databricks_is_storage_backend(backend):
 
 
 # ------------------------------------------------------------------
+# Lifecycle / resource cleanup
+# ------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_aclose_closes_httpx_client(backend, mocker):
+    mock_aclose = mocker.patch.object(backend._client, "aclose")
+    await backend.aclose()
+    mock_aclose.assert_awaited_once()
+
+
+@pytest.mark.unit
+async def test_context_manager_calls_aclose(backend, mocker):
+    mock_aclose = mocker.patch.object(backend._client, "aclose")
+    async with backend:
+        pass
+    mock_aclose.assert_awaited_once()
+
+
+# ------------------------------------------------------------------
+# Environment variable validation
+# ------------------------------------------------------------------
+
+
+@pytest.mark.unit
+def test_missing_single_env_var_raises(monkeypatch):
+    monkeypatch.delenv("DATABRICKS_HOST")
+    with pytest.raises(RuntimeError, match="DATABRICKS_HOST"):
+        DatabricksVolumesBackend()
+
+
+@pytest.mark.unit
+def test_missing_multiple_env_vars_lists_all(monkeypatch):
+    monkeypatch.delenv("DATABRICKS_HOST")
+    monkeypatch.delenv("DATABRICKS_CLIENT_SECRET")
+    with pytest.raises(RuntimeError, match="DATABRICKS_HOST") as exc_info:
+        DatabricksVolumesBackend()
+    # Both missing vars are mentioned in one error
+    assert "DATABRICKS_CLIENT_SECRET" in str(exc_info.value)
+
+
+@pytest.mark.unit
+def test_empty_env_var_raises(monkeypatch):
+    monkeypatch.setenv("DATABRICKS_HOST", "   ")
+    with pytest.raises(RuntimeError, match="DATABRICKS_HOST"):
+        DatabricksVolumesBackend()
+
+
+# ------------------------------------------------------------------
 # OAuth
 # ------------------------------------------------------------------
 
