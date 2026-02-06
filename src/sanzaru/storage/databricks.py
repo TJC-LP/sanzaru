@@ -108,12 +108,12 @@ class DatabricksVolumesBackend:
     def _file_url(self, path_type: PathType, filename: str) -> str:
         safe = self._validate_filename(filename)
         subdir = self._subdirs[path_type]
-        path = f"/{self._volume_path}/{subdir}/{safe}"
+        path = f"/Volumes/{self._volume_path}/{subdir}/{safe}"
         return f"{self._host}/api/2.0/fs/files{quote(path)}"
 
     def _dir_url(self, path_type: PathType) -> str:
         subdir = self._subdirs[path_type]
-        path = f"/{self._volume_path}/{subdir}"
+        path = f"/Volumes/{self._volume_path}/{subdir}"
         return f"{self._host}/api/2.0/fs/directories{quote(path)}"
 
     # ------------------------------------------------------------------
