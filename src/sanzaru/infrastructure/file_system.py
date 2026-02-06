@@ -7,7 +7,6 @@ Migrated from mcp-server-whisper v1.1.0 by Richie Caputo (MIT license).
 import re
 from pathlib import Path
 
-import aiofiles
 import anyio
 from openai.types import AudioModel
 from pydub import AudioSegment  # type: ignore
@@ -21,10 +20,16 @@ from ..audio.constants import (
 )
 from ..audio.models import FilePathSupportParams
 from ..exceptions import AudioFileError, AudioFileNotFoundError
+from ..storage.local import LocalStorageBackend
 
 
 class FileSystemRepository:
-    """Repository for file system operations related to audio files."""
+    """Repository for file system operations related to audio files.
+
+    Delegates I/O to a :class:`LocalStorageBackend` wired to the provided
+    audio path, keeping the existing ``Path``-based API for backward
+    compatibility with the audio service layer.
+    """
 
     def __init__(self, audio_files_path: Path):
         """Initialize the file system repository.
@@ -33,6 +38,7 @@ class FileSystemRepository:
             audio_files_path: Path to the directory containing audio files.
         """
         self.audio_files_path = audio_files_path
+        self._storage = LocalStorageBackend(path_overrides={"audio": audio_files_path})
 
     async def get_audio_file_support(self, file_path: Path) -> FilePathSupportParams:
         """Determine audio transcription file format support and metadata.
@@ -94,21 +100,15 @@ class FileSystemRepository:
             AudioFileNotFoundError: If no supported audio files are found.
             AudioFileError: If there's an error accessing audio files.
         """
+        audio_extensions = TRANSCRIBE_AUDIO_FORMATS | CHAT_WITH_AUDIO_FORMATS
         try:
-            files = []
-            for file_path in self.audio_files_path.iterdir():
-                if not file_path.is_file():
-                    continue
+            file_infos = await self._storage.list_files("audio", extensions=audio_extensions)
 
-                file_ext = file_path.suffix.lower()
-                if file_ext in TRANSCRIBE_AUDIO_FORMATS or file_ext in CHAT_WITH_AUDIO_FORMATS:
-                    files.append((file_path, file_path.stat().st_mtime))
-
-            if not files:
+            if not file_infos:
                 raise AudioFileNotFoundError("No supported audio files found")
 
-            latest_file = max(files, key=lambda x: x[1])[0]
-            return await self.get_audio_file_support(latest_file)
+            latest = max(file_infos, key=lambda x: x.modified_timestamp)
+            return await self.get_audio_file_support(self.audio_files_path / latest.name)
 
         except AudioFileNotFoundError:
             raise
@@ -133,31 +133,29 @@ class FileSystemRepository:
         Returns:
             list[Path]: List of file paths matching the criteria.
         """
-        file_paths = []
+        audio_extensions = TRANSCRIBE_AUDIO_FORMATS | CHAT_WITH_AUDIO_FORMATS
+        file_infos = await self._storage.list_files("audio", extensions=audio_extensions)
 
-        for file_path in self.audio_files_path.iterdir():
-            if not file_path.is_file():
+        file_paths = []
+        for info in file_infos:
+            file_path = self.audio_files_path / info.name
+            file_ext = ("." + info.name.rsplit(".", 1)[-1].lower()) if "." in info.name else ""
+
+            # Apply regex pattern filtering if provided
+            if pattern and not re.search(pattern, str(file_path)):
                 continue
 
-            file_ext = file_path.suffix.lower()
-            if file_ext in TRANSCRIBE_AUDIO_FORMATS or file_ext in CHAT_WITH_AUDIO_FORMATS:
-                # Apply regex pattern filtering if provided
-                if pattern and not re.search(pattern, str(file_path)):
-                    continue
+            # Apply format filtering if provided
+            if format_filter and file_ext[1:].lower() != format_filter.lower():
+                continue
 
-                # Apply format filtering if provided
-                if format_filter and file_ext[1:].lower() != format_filter.lower():
-                    continue
+            # Apply size filtering if provided
+            if min_size_bytes is not None and info.size_bytes < min_size_bytes:
+                continue
+            if max_size_bytes is not None and info.size_bytes > max_size_bytes:
+                continue
 
-                # Apply size filtering if provided
-                if min_size_bytes is not None or max_size_bytes is not None:
-                    file_size = file_path.stat().st_size
-                    if min_size_bytes is not None and file_size < min_size_bytes:
-                        continue
-                    if max_size_bytes is not None and file_size > max_size_bytes:
-                        continue
-
-                file_paths.append(file_path)
+            file_paths.append(file_path)
 
         return file_paths
 
@@ -171,15 +169,15 @@ class FileSystemRepository:
             bytes: The file content as bytes.
 
         Raises:
-            AudioFileNotFoundError: If the file doesn't exist.
+            AudioFileNotFoundError: If the file doesn't exist or is a directory.
             AudioFileError: If there's an error reading the file.
         """
         if not file_path.exists() or not file_path.is_file():
             raise AudioFileNotFoundError(f"File not found: {file_path}")
-
         try:
-            async with aiofiles.open(file_path, "rb") as f:
-                return await f.read()
+            return await self._storage.read("audio", file_path.name)
+        except (FileNotFoundError, ValueError) as e:
+            raise AudioFileNotFoundError(f"File not found: {file_path}") from e
         except Exception as e:
             raise AudioFileError(f"Failed to read audio file '{file_path}': {e}") from e
 
@@ -194,11 +192,10 @@ class FileSystemRepository:
             AudioFileError: If there's an error writing the file.
         """
         try:
-            # Ensure parent directory exists
+            # Ensure parent directory exists (supports nested output paths)
             file_path.parent.mkdir(parents=True, exist_ok=True)
-
-            async with aiofiles.open(file_path, "wb") as f:
-                await f.write(content)
+            relative = str(file_path.relative_to(self.audio_files_path))
+            await self._storage.write("audio", relative, content)
         except Exception as e:
             raise AudioFileError(f"Failed to write audio file '{file_path}': {e}") from e
 
@@ -214,7 +211,8 @@ class FileSystemRepository:
         Raises:
             AudioFileNotFoundError: If the file doesn't exist.
         """
-        if not file_path.exists():
-            raise AudioFileNotFoundError(f"File not found: {file_path}")
-
-        return file_path.stat().st_size
+        try:
+            info = await self._storage.stat("audio", file_path.name)
+            return info.size_bytes
+        except (FileNotFoundError, ValueError) as e:
+            raise AudioFileNotFoundError(f"File not found: {file_path}") from e
