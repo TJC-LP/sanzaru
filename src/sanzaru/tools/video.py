@@ -14,8 +14,8 @@ from typing import Literal
 from openai._types import Omit, omit
 from openai.types import Video, VideoDeleteResponse, VideoModel, VideoSeconds, VideoSize
 
-from ..config import get_client, get_path, logger
-from ..security import async_safe_open_file, validate_safe_path
+from ..config import get_client, logger
+from ..storage import get_storage
 from ..types import DownloadResult, ListResult, VideoSummary
 from ..utils import generate_filename, suffix_for_variant
 
@@ -50,39 +50,34 @@ async def create_video(
     size_param = omit if size is None else size
 
     if input_reference_filename:
-        # Get reference image path at runtime
-        reference_image_path = get_path("reference")
-
-        # Security: validate filename and construct safe path
-        reference_file = validate_safe_path(reference_image_path, input_reference_filename)
+        storage = get_storage()
 
         # Validate file extension (Sora supports JPEG, PNG, WEBP)
         allowed_extensions = {".jpg", ".jpeg", ".png", ".webp"}
-        if reference_file.suffix.lower() not in allowed_extensions:
-            raise ValueError(f"Unsupported file type: {reference_file.suffix}. Use: JPEG, PNG, or WEBP")
+        ext = "." + input_reference_filename.rsplit(".", 1)[-1].lower() if "." in input_reference_filename else ""
+        if ext not in allowed_extensions:
+            raise ValueError(f"Unsupported file type: {ext}. Use: JPEG, PNG, or WEBP")
 
-        # Open and read reference image asynchronously with security checks
-        async with async_safe_open_file(reference_file, "rb", "reference image") as f:
-            file_content = await f.read()
+        # Read reference image via storage backend (handles path validation + security)
+        file_content = await storage.read("reference", input_reference_filename)
 
-            # Determine MIME type from file extension
-            mime_type_map = {
-                ".jpg": "image/jpeg",
-                ".jpeg": "image/jpeg",
-                ".png": "image/png",
-                ".webp": "image/webp",
-            }
-            # Defensive fallback - should be unreachable due to extension validation above (line 60-62)
-            mime_type = mime_type_map.get(reference_file.suffix.lower(), "application/octet-stream")
+        # Determine MIME type from file extension
+        mime_type_map = {
+            ".jpg": "image/jpeg",
+            ".jpeg": "image/jpeg",
+            ".png": "image/png",
+            ".webp": "image/webp",
+        }
+        mime_type = mime_type_map.get(ext, "application/octet-stream")
 
-            # Pass as tuple (filename, bytes, content_type) so SDK can detect MIME type
-            video = await client.videos.create(
-                model=model,
-                prompt=prompt,
-                seconds=seconds_param,
-                size=size_param,
-                input_reference=(input_reference_filename, file_content, mime_type),
-            )
+        # Pass as tuple (filename, bytes, content_type) so SDK can detect MIME type
+        video = await client.videos.create(
+            model=model,
+            prompt=prompt,
+            seconds=seconds_param,
+            size=size_param,
+            input_reference=(input_reference_filename, file_content, mime_type),
+        )
         logger.info("Started job %s (%s) with reference: %s", video.id, video.status, input_reference_filename)
     else:
         video = await client.videos.create(
@@ -132,7 +127,7 @@ async def download_video(
         RuntimeError: If VIDEO_PATH not configured or OPENAI_API_KEY not set
         ValueError: If invalid filename or path traversal detected
     """
-    video_download_path = get_path("video")
+    storage = get_storage()
     client = get_client()
     suffix = suffix_for_variant(variant)
 
@@ -140,19 +135,12 @@ async def download_video(
     if filename is None:
         filename = generate_filename(video_id, suffix)
 
-    # Security: validate filename and construct safe path
-    out_path = validate_safe_path(video_download_path, filename, allow_create=True)
+    # Stream video to storage backend
+    async with client.with_streaming_response.videos.download_content(video_id, variant=variant) as response:
+        display_path = await storage.write_stream("video", filename, response.iter_bytes())
 
-    # Stream video to disk asynchronously
-    async with (
-        client.with_streaming_response.videos.download_content(video_id, variant=variant) as response,
-        async_safe_open_file(out_path, "wb", "video file", check_symlink=False) as f,
-    ):
-        async for chunk in response.iter_bytes():
-            await f.write(chunk)
-
-    logger.info("Wrote %s (%s)", out_path, variant)
-    return {"filename": filename, "path": str(out_path), "variant": variant}
+    logger.info("Wrote %s (%s)", display_path, variant)
+    return {"filename": filename, "path": display_path, "variant": variant}
 
 
 async def list_videos(limit: int = 20, after: str | None = None, order: Literal["asc", "desc"] = "desc") -> ListResult:
