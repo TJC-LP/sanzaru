@@ -9,14 +9,15 @@ rather than the Responses API with tools. Key differences:
 """
 
 import base64
+import io
 from typing import Literal
 
 import anyio
 from openai.types import ImageModel
 from PIL import Image
 
-from ..config import get_client, get_path, logger
-from ..security import async_safe_open_file, check_not_symlink, validate_safe_path
+from ..config import get_client, logger
+from ..storage import get_storage
 from ..types import ImageGenerateResult
 from ..utils import generate_filename
 
@@ -60,7 +61,7 @@ async def generate_image(
         ValueError: If API returns error or invalid filename
     """
     client = get_client()
-    reference_path = get_path("reference")
+    storage = get_storage()
 
     logger.info("Generating image with %s (size=%s, quality=%s)", model, size, quality)
 
@@ -91,16 +92,12 @@ async def generate_image(
     if filename is None:
         filename = generate_filename("gen", output_format, use_timestamp=True)
 
-    # Security: validate filename and construct safe path
-    output_path = validate_safe_path(reference_path, filename, allow_create=True)
-
-    # Write image to disk asynchronously
-    async with async_safe_open_file(output_path, "wb", "image file", check_symlink=False) as f:
-        await f.write(image_bytes)
+    # Write image via storage backend
+    display_path = await storage.write("reference", filename, image_bytes)
 
     # Get dimensions in thread pool (PIL operations)
     def _get_dimensions() -> tuple[tuple[int, int], str]:
-        img = Image.open(output_path)
+        img = Image.open(io.BytesIO(image_bytes))
         return img.size, img.format.lower() if img.format else "unknown"
 
     dimensions, detected_format = await anyio.to_thread.run_sync(_get_dimensions)
@@ -116,7 +113,7 @@ async def generate_image(
 
     return ImageGenerateResult(
         filename=filename,
-        path=str(output_path),
+        path=display_path,
         size=dimensions,
         format=detected_format,
         model=str(model),
@@ -161,7 +158,7 @@ async def edit_image(
         ValueError: If API returns error, invalid filename, or image not found
     """
     client = get_client()
-    reference_path = get_path("reference")
+    storage = get_storage()
 
     if not input_images:
         raise ValueError("At least one input image is required")
@@ -180,36 +177,25 @@ async def edit_image(
     # Load and validate input images as tuples (filename, bytes, content_type)
     image_files: list[tuple[str, bytes, str]] = []
     for img_filename in input_images:
-        # Check for symlink BEFORE resolution
-        original_path = reference_path / img_filename
-        check_not_symlink(original_path, "reference image")
-
-        # Validate filename and construct safe path
-        img_path = validate_safe_path(reference_path, img_filename)
-
-        # Validate file extension
-        ext = img_path.suffix.lower()
+        # Validate extension from filename string
+        ext = "." + img_filename.rsplit(".", 1)[-1].lower() if "." in img_filename else ""
         if ext not in mime_types:
             raise ValueError(f"Unsupported image format: {img_filename} (use JPEG, PNG, WEBP)")
 
-        # Read image file with mime type
-        async with async_safe_open_file(img_path, "rb", "reference image") as f:
-            image_bytes = await f.read()
-            image_files.append((img_filename, image_bytes, mime_types[ext]))
+        # Read image file via storage backend (handles path validation + security)
+        image_bytes = await storage.read("reference", img_filename)
+        image_files.append((img_filename, image_bytes, mime_types[ext]))
 
     # Load mask if provided (as tuple with mime type)
     mask_file: tuple[str, bytes, str] | None = None
     if mask_filename:
-        original_mask_path = reference_path / mask_filename
-        check_not_symlink(original_mask_path, "mask image")
-        mask_path = validate_safe_path(reference_path, mask_filename)
-
-        if mask_path.suffix.lower() != ".png":
+        # Validate extension
+        mask_ext = "." + mask_filename.rsplit(".", 1)[-1].lower() if "." in mask_filename else ""
+        if mask_ext != ".png":
             raise ValueError("Mask must be PNG format with alpha channel")
 
-        async with async_safe_open_file(mask_path, "rb", "mask image") as f:
-            mask_bytes = await f.read()
-            mask_file = (mask_filename, mask_bytes, "image/png")
+        mask_bytes = await storage.read("reference", mask_filename)
+        mask_file = (mask_filename, mask_bytes, "image/png")
 
     logger.info(
         "Editing %d image(s) with %s%s",
@@ -256,16 +242,12 @@ async def edit_image(
     if filename is None:
         filename = generate_filename("edit", output_format, use_timestamp=True)
 
-    # Security: validate filename and construct safe path
-    output_path = validate_safe_path(reference_path, filename, allow_create=True)
-
-    # Write image to disk asynchronously
-    async with async_safe_open_file(output_path, "wb", "image file", check_symlink=False) as f:
-        await f.write(image_bytes)
+    # Write image via storage backend
+    display_path = await storage.write("reference", filename, image_bytes)
 
     # Get dimensions in thread pool
     def _get_dimensions() -> tuple[tuple[int, int], str]:
-        img = Image.open(output_path)
+        img = Image.open(io.BytesIO(image_bytes))
         return img.size, img.format.lower() if img.format else "unknown"
 
     dimensions, detected_format = await anyio.to_thread.run_sync(_get_dimensions)
@@ -281,7 +263,7 @@ async def edit_image(
 
     return ImageGenerateResult(
         filename=filename,
-        path=str(output_path),
+        path=display_path,
         size=dimensions,
         format=detected_format,
         model=str(model),

@@ -3,6 +3,7 @@
 
 import pytest
 
+from sanzaru.storage.local import LocalStorageBackend
 from sanzaru.tools.image import create_image
 
 
@@ -21,7 +22,8 @@ class TestImageInput:
 
         mock_client.responses.create = mocker.AsyncMock(return_value=mock_response)
         mocker.patch("sanzaru.tools.image.get_client", return_value=mock_client)
-        mocker.patch("sanzaru.tools.image.get_path", return_value=tmp_reference_path)
+        storage = LocalStorageBackend(path_overrides={"reference": tmp_reference_path})
+        mocker.patch("sanzaru.tools.image.get_storage", return_value=storage)
 
         # Create test image
         test_img = tmp_reference_path / "test.png"
@@ -50,7 +52,8 @@ class TestImageInput:
 
         mock_client.responses.create = mocker.AsyncMock(return_value=mock_response)
         mocker.patch("sanzaru.tools.image.get_client", return_value=mock_client)
-        mocker.patch("sanzaru.tools.image.get_path", return_value=tmp_reference_path)
+        storage = LocalStorageBackend(path_overrides={"reference": tmp_reference_path})
+        mocker.patch("sanzaru.tools.image.get_storage", return_value=storage)
 
         # Create test images
         for i in range(3):
@@ -81,7 +84,8 @@ class TestImageInput:
 
         mock_client.responses.create = mocker.AsyncMock(return_value=mock_response)
         mocker.patch("sanzaru.tools.image.get_client", return_value=mock_client)
-        mocker.patch("sanzaru.tools.image.get_path", return_value=tmp_reference_path)
+        storage = LocalStorageBackend(path_overrides={"reference": tmp_reference_path})
+        mocker.patch("sanzaru.tools.image.get_storage", return_value=storage)
 
         test_img = tmp_reference_path / "face.png"
         test_img.write_bytes(b"fake data")
@@ -120,7 +124,8 @@ class TestImageInput:
         mock_client.responses.create = mocker.AsyncMock(return_value=mock_response)
         mock_client.files.create = mocker.AsyncMock(return_value=mock_file_obj)
         mocker.patch("sanzaru.tools.image.get_client", return_value=mock_client)
-        mocker.patch("sanzaru.tools.image.get_path", return_value=tmp_reference_path)
+        storage = LocalStorageBackend(path_overrides={"reference": tmp_reference_path})
+        mocker.patch("sanzaru.tools.image.get_storage", return_value=storage)
 
         # Create test files
         test_img = tmp_reference_path / "pool.png"
@@ -144,23 +149,36 @@ class TestImageInput:
         """Test error when mask provided without input_images."""
         # Mock to prevent OPENAI_API_KEY check
         mocker.patch("sanzaru.tools.image.get_client")
-        mocker.patch("sanzaru.tools.image.get_path", return_value=tmp_reference_path)
+        storage = LocalStorageBackend(path_overrides={"reference": tmp_reference_path})
+        mocker.patch("sanzaru.tools.image.get_storage", return_value=storage)
 
         with pytest.raises(ValueError, match="mask_filename requires input_images parameter"):
             await create_image(prompt="test", mask_filename="mask.png")
 
     async def test_create_image_invalid_filename_path_traversal(self, mocker, tmp_reference_path):
-        """Test path traversal protection for input images."""
-        mocker.patch("sanzaru.tools.image.get_client")
-        mocker.patch("sanzaru.tools.image.get_path", return_value=tmp_reference_path)
+        """Test path traversal protection for input images.
 
-        with pytest.raises(ValueError, match="path traversal detected"):
+        Path traversal filenames without valid extensions are caught by the
+        extension validation first. Files with valid extensions but traversal
+        paths are caught by the storage backend's path validation.
+        """
+        mocker.patch("sanzaru.tools.image.get_client")
+        storage = LocalStorageBackend(path_overrides={"reference": tmp_reference_path})
+        mocker.patch("sanzaru.tools.image.get_storage", return_value=storage)
+
+        # Without a valid extension, the extension check fires first
+        with pytest.raises(ValueError, match="Unsupported image format"):
             await create_image(prompt="test", input_images=["../../../etc/passwd"])
+
+        # With a valid extension, path traversal detection fires via storage backend
+        with pytest.raises(ValueError, match="path traversal detected"):
+            await create_image(prompt="test", input_images=["../../../etc/evil.png"])
 
     async def test_create_image_unsupported_format(self, mocker, tmp_reference_path):
         """Test error for unsupported image format (e.g., .gif)."""
         mocker.patch("sanzaru.tools.image.get_client")
-        mocker.patch("sanzaru.tools.image.get_path", return_value=tmp_reference_path)
+        storage = LocalStorageBackend(path_overrides={"reference": tmp_reference_path})
+        mocker.patch("sanzaru.tools.image.get_storage", return_value=storage)
 
         # Create a .gif file
         gif_file = tmp_reference_path / "test.gif"
@@ -175,7 +193,8 @@ class TestImageInput:
         mock_client.responses.create = mocker.AsyncMock()
 
         mocker.patch("sanzaru.tools.image.get_client", return_value=mock_client)
-        mocker.patch("sanzaru.tools.image.get_path", return_value=tmp_reference_path)
+        storage = LocalStorageBackend(path_overrides={"reference": tmp_reference_path})
+        mocker.patch("sanzaru.tools.image.get_storage", return_value=storage)
 
         # Create a real file INSIDE reference path and symlink to it
         real_file = tmp_reference_path / "real.png"
@@ -190,7 +209,8 @@ class TestImageInput:
     async def test_create_image_mask_non_png_rejected(self, mocker, tmp_reference_path):
         """Test that non-PNG masks are rejected."""
         mocker.patch("sanzaru.tools.image.get_client")
-        mocker.patch("sanzaru.tools.image.get_path", return_value=tmp_reference_path)
+        storage = LocalStorageBackend(path_overrides={"reference": tmp_reference_path})
+        mocker.patch("sanzaru.tools.image.get_storage", return_value=storage)
 
         # Create image and non-PNG mask
         img = tmp_reference_path / "img.png"

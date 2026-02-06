@@ -5,6 +5,7 @@ import base64
 
 import pytest
 
+from sanzaru.storage.local import LocalStorageBackend
 from sanzaru.tools.image import create_image, download_image, get_image_status
 
 
@@ -16,7 +17,8 @@ async def test_image_create(mocker, tmp_reference_path):
     mock_response.status = "queued"
     mock_response.created_at = 1234567890.0
 
-    mocker.patch("sanzaru.tools.image.get_path", return_value=tmp_reference_path)
+    storage = LocalStorageBackend(path_overrides={"reference": tmp_reference_path})
+    mocker.patch("sanzaru.tools.image.get_storage", return_value=storage)
     mock_get_client = mocker.patch("sanzaru.tools.image.get_client")
     mock_get_client.return_value.responses.create = mocker.AsyncMock(return_value=mock_response)
 
@@ -72,11 +74,13 @@ async def test_image_download(mocker, tmp_reference_path):
     mock_response.id = "resp_test123"
     mock_response.output = [mock_img_call]
 
-    mocker.patch("sanzaru.tools.image.get_path", return_value=tmp_reference_path)
+    storage = LocalStorageBackend(path_overrides={"reference": tmp_reference_path})
+    mocker.patch("sanzaru.tools.image.get_storage", return_value=storage)
     mock_get_client = mocker.patch("sanzaru.tools.image.get_client")
     mock_get_client.return_value.responses.retrieve = mocker.AsyncMock(return_value=mock_response)
 
     # Mock PIL Image.open to avoid trying to parse fake PNG
+    # Now called with io.BytesIO(image_bytes) instead of a file path
     mock_img = mocker.MagicMock()
     mock_img.size = (1024, 1024)
     mock_img.format = "PNG"
