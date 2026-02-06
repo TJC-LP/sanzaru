@@ -7,8 +7,8 @@ import time
 
 from openai.types.audio.speech_model import SpeechModel
 
-from ...config import get_client, get_path, logger
-from ...infrastructure import FileSystemRepository, SecurePathResolver, split_text_for_tts
+from ...config import get_client, logger
+from ...infrastructure import FileSystemRepository, split_text_for_tts
 from .. import AudioProcessor
 from ..constants import TTSVoice
 from ..models import TTSResult
@@ -19,10 +19,8 @@ class TTSService:
 
     def __init__(self):
         """Initialize the TTS service."""
-        audio_path = get_path("audio")
-        self.file_repo = FileSystemRepository(audio_path)
+        self.file_repo = FileSystemRepository()
         self.audio_processor = AudioProcessor()
-        self.path_resolver = SecurePathResolver(audio_path)
 
     async def create_speech(
         self,
@@ -50,10 +48,7 @@ class TTSService:
 
         """
         # Determine output filename
-        default_name = f"speech_{time.time_ns()}.mp3" if output_filename is None else output_filename
-
-        # Resolve to full path
-        output_file_path = self.path_resolver.resolve_output(output_filename, default_name)
+        filename = output_filename or f"speech_{time.time_ns()}.mp3"
 
         # Split text if it exceeds the API limit
         text_chunks = split_text_for_tts(text_prompt)
@@ -72,8 +67,8 @@ class TTSService:
             # Get audio bytes from response
             audio_bytes = response.content
 
-            # Write audio file
-            await self.file_repo.write_audio_file(output_file_path, audio_bytes)
+            # Write audio file via storage backend
+            await self.file_repo.write_audio_file(filename, audio_bytes)
 
         else:
             # Multiple chunks - process in parallel and concatenate
@@ -104,7 +99,7 @@ class TTSService:
                 format="mp3",
             )
 
-            # Write combined audio file
-            await self.file_repo.write_audio_file(output_file_path, combined_audio)
+            # Write combined audio file via storage backend
+            await self.file_repo.write_audio_file(filename, combined_audio)
 
-        return TTSResult(output_file=output_file_path.name)
+        return TTSResult(output_file=filename)

@@ -5,13 +5,14 @@ Migrated from mcp-server-whisper v1.1.0 by Richie Caputo (MIT license).
 
 import base64
 from io import BytesIO
+from pathlib import Path
 from typing import Any, Literal
 
 from openai._types import omit
 from openai.types import AudioModel, AudioResponseFormat
 
-from ...config import get_client, get_path
-from ...infrastructure import FileSystemRepository, SecurePathResolver
+from ...config import get_client
+from ...infrastructure import FileSystemRepository
 from ..constants import ENHANCEMENT_PROMPTS, AudioChatModel, EnhancementType
 from ..models import ChatResult, TranscriptionResult
 
@@ -21,9 +22,7 @@ class TranscriptionService:
 
     def __init__(self):
         """Initialize the transcription service."""
-        audio_path = get_path("audio")
-        self.file_repo = FileSystemRepository(audio_path)
-        self.path_resolver = SecurePathResolver(audio_path)
+        self.file_repo = FileSystemRepository()
 
     async def transcribe_audio(
         self,
@@ -50,11 +49,8 @@ class TranscriptionService:
         """
         client = get_client()
 
-        # Resolve filename to path
-        file_path = self.path_resolver.resolve_input(filename)
-
-        # Read audio file
-        audio_bytes = await self.file_repo.read_audio_file(file_path)
+        # Read audio file via storage backend
+        audio_bytes = await self.file_repo.read_audio_file(filename)
 
         # Transcribe using OpenAI
         transcription = await client.audio.transcriptions.create(
@@ -94,16 +90,13 @@ class TranscriptionService:
         """
         client = get_client()
 
-        # Resolve filename to path
-        file_path = self.path_resolver.resolve_input(filename)
-
-        # Validate format
-        ext = file_path.suffix.lower().replace(".", "")
+        # Validate format from filename extension
+        ext = Path(filename).suffix.lower().replace(".", "")
         if ext not in ["mp3", "wav"]:
             raise ValueError(f"Expected mp3 or wav extension, but got {ext}")
 
-        # Read audio file
-        audio_bytes = await self.file_repo.read_audio_file(file_path)
+        # Read audio file via storage backend
+        audio_bytes = await self.file_repo.read_audio_file(filename)
 
         # Encode audio to base64
         audio_base64 = base64.b64encode(audio_bytes).decode("utf-8")
