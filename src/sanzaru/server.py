@@ -8,14 +8,20 @@ Business logic is organized into submodules under tools/.
 """
 
 import argparse
+import importlib.resources
+import mimetypes
 from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
 from openai.types import VideoModel, VideoSeconds, VideoSize
 from openai.types.responses.tool_param import ImageGeneration
+from starlette.requests import Request
+from starlette.responses import Response
 
 from .config import logger
 from .features import check_audio_available, check_image_available, check_video_available
+from .storage.factory import get_storage
+from .tools.media_viewer import MEDIA_TYPE_TO_PATH_TYPE
 
 # Optional dotenv support for local development
 try:
@@ -271,6 +277,68 @@ if check_audio_available():
         return await audio.create_audio(text_prompt, model, voice, instructions, speed, output_filename)
 
     logger.info("Audio tools registered (8 tools)")
+
+
+# ==================== MEDIA VIEWER (CONDITIONAL) ====================
+# Resource is always registered (HTML is bundled); tools require at least one media path.
+@mcp.resource(
+    "ui://sanzaru/media-viewer.html",
+    mime_type="text/html;profile=mcp-app",
+)
+def media_viewer_html() -> str:
+    """Serve the bundled media viewer MCP App HTML."""
+    return (
+        importlib.resources.files("sanzaru").joinpath("app/media-viewer/dist/mcp-app.html").read_text(encoding="utf-8")
+    )
+
+
+if check_video_available() or check_audio_available() or check_image_available():
+    from .descriptions import GET_MEDIA_DATA, VIEW_MEDIA
+    from .tools import media_viewer
+
+    @mcp.tool(
+        description=VIEW_MEDIA,
+        meta={"ui": {"resourceUri": "ui://sanzaru/media-viewer.html"}},
+    )
+    async def view_media(
+        media_type: Literal["video", "audio", "image"],
+        filename: str,
+    ):
+        return await media_viewer.view_media(media_type, filename)
+
+    @mcp.tool(description=GET_MEDIA_DATA)
+    async def _get_media_data(
+        media_type: Literal["video", "audio", "image"],
+        filename: str,
+        offset: int = 0,
+        chunk_size: int = 2097152,
+    ):
+        return await media_viewer.get_media_data(media_type, filename, offset, chunk_size)
+
+    logger.info("Media viewer tools registered (2 tools)")
+
+
+# Custom HTTP route for direct media serving (functional in HTTP mode)
+@mcp.custom_route("/media/{media_type}/{filename:path}", methods=["GET"])
+async def serve_media(request: Request) -> Response:
+    """Serve media files directly over HTTP — no base64 overhead."""
+    media_type = request.path_params["media_type"]
+    filename = request.path_params["filename"]
+
+    path_type = MEDIA_TYPE_TO_PATH_TYPE.get(media_type)
+    if path_type is None:
+        return Response(content="Invalid media type", status_code=400)
+
+    storage = get_storage()
+    try:
+        data = await storage.read(path_type, filename)
+    except (FileNotFoundError, ValueError):
+        return Response(content="Not found", status_code=404)
+
+    mime, _ = mimetypes.guess_type(filename)
+    content_type = mime or "application/octet-stream"
+
+    return Response(content=data, media_type=content_type)
 
 
 # ==================== SERVER ENTRYPOINT ====================

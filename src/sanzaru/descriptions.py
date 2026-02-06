@@ -628,3 +628,34 @@ Example workflows:
 
 5. Custom filename:
    create_audio("Welcome message", voice="shimmer", output_file_name="welcome.mp3")"""
+
+
+# ==================== MEDIA VIEWER TOOL DESCRIPTIONS ====================
+
+VIEW_MEDIA = """Open a media file in the interactive media viewer.
+
+Opens a rich media player UI for viewing videos, listening to audio, or displaying images.
+The viewer loads the file and renders it with native playback controls.
+
+Parameters:
+- media_type: Type of media to view — "video", "audio", or "image" (required)
+- filename: Name of the file to open (required)
+  * video files are in VIDEO_PATH
+  * image files are in IMAGE_PATH
+  * audio files are in AUDIO_PATH
+
+Use list_videos, list_reference_images, or list_audio_files to discover available files.
+
+Returns metadata: filename, media_type, size_bytes, mime_type"""
+
+GET_MEDIA_DATA = """Internal tool for the media viewer app — reads media file data in chunks.
+
+Called by the media viewer UI via callServerTool. Not intended to be called directly by the LLM.
+
+Parameters:
+- media_type: "video", "audio", or "image" (required)
+- filename: Name of the file (required)
+- offset: Byte offset to start reading from (default: 0)
+- chunk_size: Bytes per chunk (default: 2097152 = 2 MB)
+
+Returns: base64-encoded data chunk with offset metadata and completion status."""
