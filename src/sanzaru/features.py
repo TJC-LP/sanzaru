@@ -77,6 +77,29 @@ def check_image_available() -> bool:
         return False
 
 
+def check_databricks_storage() -> bool:
+    """Check if Databricks storage backend is configured.
+
+    Requires:
+    1. STORAGE_BACKEND environment variable set to "databricks"
+    2. All Databricks credentials configured
+
+    Returns:
+        True if all required Databricks env vars are present, False otherwise
+    """
+    if os.getenv("STORAGE_BACKEND", "local").lower() != "databricks":
+        return False
+
+    required = ["DATABRICKS_HOST", "DATABRICKS_CLIENT_ID", "DATABRICKS_CLIENT_SECRET", "DATABRICKS_VOLUME_PATH"]
+    missing = [v for v in required if not os.getenv(v)]
+    if missing:
+        logger.warning("STORAGE_BACKEND=databricks but missing env vars: %s", missing)
+        return False
+
+    logger.info("Databricks storage backend configured")
+    return True
+
+
 def get_available_features() -> dict[str, bool]:
     """Get a dictionary of available features.
 

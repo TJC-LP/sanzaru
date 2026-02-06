@@ -8,6 +8,7 @@ import pytest
 from sanzaru.audio.constants import TRANSCRIPTION_MODELS
 from sanzaru.exceptions import AudioFileNotFoundError
 from sanzaru.infrastructure.file_system import FileSystemRepository
+from sanzaru.storage.local import LocalStorageBackend
 
 pytestmark = pytest.mark.audio
 
@@ -24,8 +25,9 @@ class TestFileSystemRepository:
 
     @pytest.fixture
     def repo(self, audio_dir: Path) -> FileSystemRepository:
-        """Create FileSystemRepository instance."""
-        return FileSystemRepository(audio_dir)
+        """Create FileSystemRepository instance with local storage."""
+        storage = LocalStorageBackend(path_overrides={"audio": audio_dir})
+        return FileSystemRepository(storage=storage)
 
     @pytest.mark.anyio
     async def test_get_audio_file_support_mp3(self, repo: FileSystemRepository, audio_dir: Path) -> None:
@@ -37,7 +39,7 @@ class TestFileSystemRepository:
         mock_audio.__len__ = MagicMock(return_value=60000)  # 60 seconds in milliseconds
 
         with patch("sanzaru.infrastructure.file_system.AudioSegment.from_file", return_value=mock_audio):
-            result = await repo.get_audio_file_support(test_file)
+            result = await repo.get_audio_file_support("test.mp3")
 
             assert result.file_name == "test.mp3"
             assert result.format == "mp3"
@@ -56,7 +58,7 @@ class TestFileSystemRepository:
         mock_audio.__len__ = MagicMock(return_value=30000)  # 30 seconds
 
         with patch("sanzaru.infrastructure.file_system.AudioSegment.from_file", return_value=mock_audio):
-            result = await repo.get_audio_file_support(test_file)
+            result = await repo.get_audio_file_support("test.wav")
 
             assert result.format == "wav"
             assert result.transcription_support is not None
@@ -70,7 +72,7 @@ class TestFileSystemRepository:
         test_file.write_bytes(b"not audio")
 
         with patch("sanzaru.infrastructure.file_system.AudioSegment.from_file", side_effect=Exception("Invalid")):
-            result = await repo.get_audio_file_support(test_file)
+            result = await repo.get_audio_file_support("test.txt")
 
             assert result.transcription_support is None
             assert result.chat_support is None
@@ -86,7 +88,7 @@ class TestFileSystemRepository:
             "sanzaru.infrastructure.file_system.AudioSegment.from_file",
             side_effect=Exception("Skip duration"),
         ):
-            result = await repo.get_audio_file_support(test_file)
+            result = await repo.get_audio_file_support("video.mp4")
 
             assert result.format == "mp4"
             assert result.transcription_support is not None
@@ -102,7 +104,7 @@ class TestFileSystemRepository:
         test_file.write_bytes(b"data")
 
         with patch("sanzaru.infrastructure.file_system.AudioSegment.from_file", side_effect=Exception("Load failed")):
-            result = await repo.get_audio_file_support(test_file)
+            result = await repo.get_audio_file_support("test.mp3")
 
             # Should still return result, just without duration
             assert result.file_name == "test.mp3"
@@ -168,7 +170,7 @@ class TestFileSystemRepository:
         result = await repo.list_audio_files()
 
         assert len(result) == 3
-        filenames = {p.name for p in result}
+        filenames = {info.name for info in result}
         assert filenames == {"file1.mp3", "file2.wav", "file3.mp4"}
 
     @pytest.mark.anyio
@@ -181,7 +183,7 @@ class TestFileSystemRepository:
         result = await repo.list_audio_files(pattern="interview")
 
         assert len(result) == 2
-        assert all("interview" in p.name for p in result)
+        assert all("interview" in info.name for info in result)
 
     @pytest.mark.anyio
     async def test_list_audio_files_with_format_filter(self, repo: FileSystemRepository, audio_dir: Path) -> None:
@@ -193,7 +195,7 @@ class TestFileSystemRepository:
         result = await repo.list_audio_files(format_filter="mp3")
 
         assert len(result) == 2
-        assert all(p.suffix == ".mp3" for p in result)
+        assert all(info.name.endswith(".mp3") for info in result)
 
     @pytest.mark.anyio
     async def test_list_audio_files_with_min_size(self, repo: FileSystemRepository, audio_dir: Path) -> None:
@@ -253,50 +255,26 @@ class TestFileSystemRepository:
         test_content = b"audio content here"
         test_file.write_bytes(test_content)
 
-        result = await repo.read_audio_file(test_file)
+        result = await repo.read_audio_file("test.mp3")
 
         assert result == test_content
 
     @pytest.mark.anyio
-    async def test_read_audio_file_not_found(self, repo: FileSystemRepository, audio_dir: Path) -> None:
+    async def test_read_audio_file_not_found(self, repo: FileSystemRepository) -> None:
         """Test error when reading non-existent file."""
-        missing_file = audio_dir / "missing.mp3"
-
         with pytest.raises(AudioFileNotFoundError, match="File not found"):
-            await repo.read_audio_file(missing_file)
-
-    @pytest.mark.anyio
-    async def test_read_audio_file_is_directory(self, repo: FileSystemRepository, audio_dir: Path) -> None:
-        """Test error when trying to read a directory."""
-        directory = audio_dir / "subdir"
-        directory.mkdir()
-
-        with pytest.raises(AudioFileNotFoundError, match="File not found"):
-            await repo.read_audio_file(directory)
+            await repo.read_audio_file("missing.mp3")
 
     @pytest.mark.anyio
     async def test_write_audio_file_success(self, repo: FileSystemRepository, audio_dir: Path) -> None:
         """Test successfully writing audio file."""
-        output_file = audio_dir / "output.mp3"
         test_content = b"generated audio"
 
-        await repo.write_audio_file(output_file, test_content)
+        await repo.write_audio_file("output.mp3", test_content)
 
+        output_file = audio_dir / "output.mp3"
         assert output_file.exists()
         assert output_file.read_bytes() == test_content
-
-    @pytest.mark.anyio
-    async def test_write_audio_file_creates_parent_directory(self, repo: FileSystemRepository, audio_dir: Path) -> None:
-        """Test that write creates parent directories if needed."""
-        nested_dir = audio_dir / "subdir" / "nested"
-        output_file = nested_dir / "output.mp3"
-        test_content = b"audio"
-
-        await repo.write_audio_file(output_file, test_content)
-
-        assert output_file.exists()
-        assert output_file.read_bytes() == test_content
-        assert nested_dir.exists()
 
     @pytest.mark.anyio
     async def test_get_file_size_success(self, repo: FileSystemRepository, audio_dir: Path) -> None:
@@ -305,17 +283,15 @@ class TestFileSystemRepository:
         test_content = b"a" * 1234
         test_file.write_bytes(test_content)
 
-        result = await repo.get_file_size(test_file)
+        result = await repo.get_file_size("test.mp3")
 
         assert result == 1234
 
     @pytest.mark.anyio
-    async def test_get_file_size_not_found(self, repo: FileSystemRepository, audio_dir: Path) -> None:
+    async def test_get_file_size_not_found(self, repo: FileSystemRepository) -> None:
         """Test error when file doesn't exist."""
-        missing_file = audio_dir / "missing.mp3"
-
         with pytest.raises(AudioFileNotFoundError, match="File not found"):
-            await repo.get_file_size(missing_file)
+            await repo.get_file_size("missing.mp3")
 
     @pytest.mark.anyio
     async def test_list_audio_files_combined_filters(self, repo: FileSystemRepository, audio_dir: Path) -> None:
@@ -342,8 +318,7 @@ class TestFileSystemRepository:
         result = await repo.list_audio_files(format_filter="MP3")
 
         assert len(result) == 1
-        # File extension is lowercase .mp3, but filter is case insensitive
-        assert result[0].suffix.lower() == ".mp3"
+        assert result[0].name.lower().endswith(".mp3")
 
     @pytest.mark.anyio
     async def test_get_audio_file_support_flac_format(self, repo: FileSystemRepository, audio_dir: Path) -> None:
@@ -352,7 +327,7 @@ class TestFileSystemRepository:
         test_file.write_bytes(b"flac data")
 
         with patch("sanzaru.infrastructure.file_system.AudioSegment.from_file", side_effect=Exception("Skip")):
-            result = await repo.get_audio_file_support(test_file)
+            result = await repo.get_audio_file_support("audio.flac")
 
             assert result.format == "flac"
             assert result.transcription_support is not None
@@ -368,18 +343,20 @@ class TestFileSystemRepository:
         expected_mtime = test_file.stat().st_mtime
 
         with patch("sanzaru.infrastructure.file_system.AudioSegment.from_file", side_effect=Exception("Skip")):
-            result = await repo.get_audio_file_support(test_file)
+            result = await repo.get_audio_file_support("test.mp3")
 
             assert result.modified_time == expected_mtime
 
     @pytest.mark.anyio
-    async def test_list_audio_files_regex_pattern_full_path(self, repo: FileSystemRepository, audio_dir: Path) -> None:
-        """Test that regex pattern matches against full path."""
+    async def test_list_audio_files_regex_pattern_matches_filename(
+        self, repo: FileSystemRepository, audio_dir: Path
+    ) -> None:
+        """Test that regex pattern matches against filename."""
         (audio_dir / "test.mp3").write_bytes(b"data")
         (audio_dir / "audio.mp3").write_bytes(b"data")
 
-        # Pattern should match full path string
-        result = await repo.list_audio_files(pattern=r".*test\.mp3$")
+        # Pattern should match filename
+        result = await repo.list_audio_files(pattern=r"test\.mp3$")
 
         assert len(result) == 1
         assert result[0].name == "test.mp3"

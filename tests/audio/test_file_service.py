@@ -9,6 +9,7 @@ from sanzaru.audio.constants import SortBy
 from sanzaru.audio.models import FilePathSupportParams
 from sanzaru.audio.services.file_service import FileService
 from sanzaru.infrastructure.file_system import FileSystemRepository
+from sanzaru.storage.protocol import FileInfo
 
 pytestmark = pytest.mark.audio
 
@@ -25,11 +26,9 @@ class TestFileService:
         return audio_path
 
     @pytest.fixture
-    def mock_repo(self, audio_dir: Path) -> MagicMock:
+    def mock_repo(self) -> MagicMock:
         """Create mock FileSystemRepository."""
-        repo = MagicMock(spec=FileSystemRepository)
-        repo.audio_files_path = audio_dir
-        return repo
+        return MagicMock(spec=FileSystemRepository)
 
     @pytest.fixture
     def service(self, audio_dir: Path, mock_repo: MagicMock) -> FileService:
@@ -66,17 +65,14 @@ class TestFileService:
 
     @pytest.mark.anyio
     async def test_list_audio_files_with_no_filters(
-        self, service: FileService, mock_repo: MagicMock, audio_dir: Path, sample_file_info: FilePathSupportParams
+        self, service: FileService, mock_repo: MagicMock, sample_file_info: FilePathSupportParams
     ) -> None:
         """Test listing files with no filters applied."""
-        # Create real files for stat() calls
-        file1 = audio_dir / "file1.mp3"
-        file2 = audio_dir / "file2.mp3"
-        file1.write_bytes(b"data1")
-        file2.write_bytes(b"data2")
-
-        mock_paths = [file1, file2]
-        mock_repo.list_audio_files = AsyncMock(return_value=mock_paths)
+        mock_file_infos = [
+            FileInfo(name="file1.mp3", size_bytes=100, modified_timestamp=100.0),
+            FileInfo(name="file2.mp3", size_bytes=200, modified_timestamp=200.0),
+        ]
+        mock_repo.list_audio_files = AsyncMock(return_value=mock_file_infos)
 
         # Mock get_audio_file_support to be called for each file
         mock_repo.get_audio_file_support = AsyncMock(return_value=sample_file_info)
@@ -93,15 +89,11 @@ class TestFileService:
         )
 
     @pytest.mark.anyio
-    async def test_list_audio_files_with_all_filters(
-        self, service: FileService, mock_repo: MagicMock, audio_dir: Path
-    ) -> None:
+    async def test_list_audio_files_with_all_filters(self, service: FileService, mock_repo: MagicMock) -> None:
         """Test listing files with all filters applied."""
-        # Create real file
-        filtered_file = audio_dir / "filtered.mp3"
-        filtered_file.write_bytes(b"data")
-
-        mock_paths = [filtered_file]
+        mock_file_infos = [
+            FileInfo(name="filtered.mp3", size_bytes=1500, modified_timestamp=150.0),
+        ]
 
         file_info = FilePathSupportParams(
             file_name="filtered.mp3",
@@ -113,7 +105,7 @@ class TestFileService:
             duration_seconds=90.0,
         )
 
-        mock_repo.list_audio_files = AsyncMock(return_value=mock_paths)
+        mock_repo.list_audio_files = AsyncMock(return_value=mock_file_infos)
         mock_repo.get_audio_file_support = AsyncMock(return_value=file_info)
 
         result = await service.list_audio_files(
@@ -141,17 +133,12 @@ class TestFileService:
         )
 
     @pytest.mark.anyio
-    async def test_list_audio_files_applies_domain_filters(
-        self, service: FileService, mock_repo: MagicMock, audio_dir: Path
-    ) -> None:
+    async def test_list_audio_files_applies_domain_filters(self, service: FileService, mock_repo: MagicMock) -> None:
         """Test that domain-level filters (duration, mtime) are applied after fetching."""
-        # Create real files
-        file1_path = audio_dir / "file1.mp3"
-        file2_path = audio_dir / "file2.mp3"
-        file1_path.write_bytes(b"data1")
-        file2_path.write_bytes(b"data2")
-
-        mock_paths = [file1_path, file2_path]
+        mock_file_infos = [
+            FileInfo(name="file1.mp3", size_bytes=1000, modified_timestamp=100.0),
+            FileInfo(name="file2.mp3", size_bytes=2000, modified_timestamp=200.0),
+        ]
 
         # Create files with different durations
         file1 = FilePathSupportParams(
@@ -174,7 +161,7 @@ class TestFileService:
             duration_seconds=90.0,  # In range
         )
 
-        mock_repo.list_audio_files = AsyncMock(return_value=mock_paths)
+        mock_repo.list_audio_files = AsyncMock(return_value=mock_file_infos)
         mock_repo.get_audio_file_support = AsyncMock(side_effect=[file1, file2])
 
         result = await service.list_audio_files(
@@ -187,17 +174,12 @@ class TestFileService:
         assert result[0].file_name == "file2.mp3"
 
     @pytest.mark.anyio
-    async def test_list_audio_files_sorting_by_name(
-        self, service: FileService, mock_repo: MagicMock, audio_dir: Path
-    ) -> None:
+    async def test_list_audio_files_sorting_by_name(self, service: FileService, mock_repo: MagicMock) -> None:
         """Test sorting files by name."""
-        # Create real files
-        zebra_file = audio_dir / "zebra.mp3"
-        alpha_file = audio_dir / "alpha.mp3"
-        zebra_file.write_bytes(b"data")
-        alpha_file.write_bytes(b"data")
-
-        mock_paths = [zebra_file, alpha_file]
+        mock_file_infos = [
+            FileInfo(name="zebra.mp3", size_bytes=1000, modified_timestamp=100.0),
+            FileInfo(name="alpha.mp3", size_bytes=1000, modified_timestamp=100.0),
+        ]
 
         file_z = FilePathSupportParams(
             file_name="zebra.mp3",
@@ -219,7 +201,7 @@ class TestFileService:
             duration_seconds=60.0,
         )
 
-        mock_repo.list_audio_files = AsyncMock(return_value=mock_paths)
+        mock_repo.list_audio_files = AsyncMock(return_value=mock_file_infos)
         mock_repo.get_audio_file_support = AsyncMock(side_effect=[file_z, file_a])
 
         result = await service.list_audio_files(sort_by=SortBy.NAME, reverse=False)
@@ -230,16 +212,13 @@ class TestFileService:
 
     @pytest.mark.anyio
     async def test_list_audio_files_sorting_by_size_descending(
-        self, service: FileService, mock_repo: MagicMock, audio_dir: Path
+        self, service: FileService, mock_repo: MagicMock
     ) -> None:
         """Test sorting files by size in descending order."""
-        # Create real files
-        small_file = audio_dir / "small.mp3"
-        large_file = audio_dir / "large.mp3"
-        small_file.write_bytes(b"data")
-        large_file.write_bytes(b"data")
-
-        mock_paths = [small_file, large_file]
+        mock_file_infos = [
+            FileInfo(name="small.mp3", size_bytes=500, modified_timestamp=100.0),
+            FileInfo(name="large.mp3", size_bytes=3000, modified_timestamp=100.0),
+        ]
 
         file_small = FilePathSupportParams(
             file_name="small.mp3",
@@ -261,7 +240,7 @@ class TestFileService:
             duration_seconds=90.0,
         )
 
-        mock_repo.list_audio_files = AsyncMock(return_value=mock_paths)
+        mock_repo.list_audio_files = AsyncMock(return_value=mock_file_infos)
         mock_repo.get_audio_file_support = AsyncMock(side_effect=[file_small, file_large])
 
         result = await service.list_audio_files(sort_by=SortBy.SIZE, reverse=True)

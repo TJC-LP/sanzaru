@@ -5,7 +5,6 @@ Migrated from mcp-server-whisper v1.1.0 by Richie Caputo (MIT license).
 """
 
 import re
-from pathlib import Path
 
 import anyio
 from openai.types import AudioModel
@@ -20,68 +19,63 @@ from ..audio.constants import (
 )
 from ..audio.models import FilePathSupportParams
 from ..exceptions import AudioFileError, AudioFileNotFoundError
-from ..storage.local import LocalStorageBackend
+from ..storage import get_storage
+from ..storage.protocol import FileInfo, StorageBackend
 
 
 class FileSystemRepository:
     """Repository for file system operations related to audio files.
 
-    Delegates I/O to a :class:`LocalStorageBackend` wired to the provided
-    audio path, keeping the existing ``Path``-based API for backward
-    compatibility with the audio service layer.
+    Delegates I/O to the configured :class:`StorageBackend` (local or
+    Databricks), keeping the existing API for backward compatibility
+    with the audio service layer.
     """
 
-    def __init__(self, audio_files_path: Path):
+    def __init__(self, storage: StorageBackend | None = None):
         """Initialize the file system repository.
 
         Args:
-            audio_files_path: Path to the directory containing audio files.
+            storage: Storage backend to use.  Defaults to ``get_storage()``.
         """
-        self.audio_files_path = audio_files_path
-        self._storage = LocalStorageBackend(path_overrides={"audio": audio_files_path})
+        self._storage = storage or get_storage()
 
-    async def get_audio_file_support(self, file_path: Path) -> FilePathSupportParams:
+    async def get_audio_file_support(self, filename: str) -> FilePathSupportParams:
         """Determine audio transcription file format support and metadata.
 
         Includes file size, format, and duration information where available.
 
         Args:
-            file_path: Path to the audio file.
+            filename: Name of the audio file.
 
         Returns:
             FilePathSupportParams: File metadata and model support information.
         """
-        file_ext = file_path.suffix.lower()
+        file_ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
+        audio_format = file_ext[1:] if file_ext.startswith(".") else file_ext
 
         transcription_support: list[AudioModel] | None = (
             TRANSCRIPTION_MODELS if file_ext in TRANSCRIBE_AUDIO_FORMATS else None
         )
         chat_support: list[AudioChatModel] | None = AUDIO_CHAT_MODELS if file_ext in CHAT_WITH_AUDIO_FORMATS else None
 
-        # Get file stats (including size - much faster than reading entire file!)
-        file_stats = file_path.stat()
-        size_bytes = file_stats.st_size
+        # Get file stats from storage backend
+        info = await self._storage.stat("audio", filename)
 
-        # Get audio format (remove the dot from extension)
-        audio_format = file_ext[1:] if file_ext.startswith(".") else file_ext
-
-        # Get duration if possible (could be expensive for large files)
+        # Get duration if possible (downloads file for remote backends)
         duration_seconds = None
         try:
-            # Load just the metadata to get duration
-            audio = await anyio.to_thread.run_sync(lambda: AudioSegment.from_file(str(file_path), format=audio_format))
-            # Convert from milliseconds to seconds
-            duration_seconds = len(audio) / 1000.0
+            async with self._storage.local_path("audio", filename) as local:
+                audio = await anyio.to_thread.run_sync(lambda: AudioSegment.from_file(str(local), format=audio_format))
+                duration_seconds = len(audio) / 1000.0
         except Exception:
-            # If we can't get duration, just continue without it
             pass
 
         return FilePathSupportParams(
-            file_name=file_path.name,
+            file_name=filename,
             transcription_support=transcription_support,
             chat_support=chat_support,
-            modified_time=file_stats.st_mtime,
-            size_bytes=size_bytes,
+            modified_time=info.modified_timestamp,
+            size_bytes=info.size_bytes,
             format=audio_format,
             duration_seconds=duration_seconds,
         )
@@ -108,7 +102,7 @@ class FileSystemRepository:
                 raise AudioFileNotFoundError("No supported audio files found")
 
             latest = max(file_infos, key=lambda x: x.modified_timestamp)
-            return await self.get_audio_file_support(self.audio_files_path / latest.name)
+            return await self.get_audio_file_support(latest.name)
 
         except AudioFileNotFoundError:
             raise
@@ -121,7 +115,7 @@ class FileSystemRepository:
         min_size_bytes: int | None = None,
         max_size_bytes: int | None = None,
         format_filter: str | None = None,
-    ) -> list[Path]:
+    ) -> list[FileInfo]:
         """List audio files matching the given criteria.
 
         Args:
@@ -131,18 +125,17 @@ class FileSystemRepository:
             format_filter: Specific audio format to filter by (e.g., 'mp3', 'wav').
 
         Returns:
-            list[Path]: List of file paths matching the criteria.
+            list[FileInfo]: List of file info objects matching the criteria.
         """
         audio_extensions = TRANSCRIBE_AUDIO_FORMATS | CHAT_WITH_AUDIO_FORMATS
         file_infos = await self._storage.list_files("audio", extensions=audio_extensions)
 
-        file_paths = []
+        results: list[FileInfo] = []
         for info in file_infos:
-            file_path = self.audio_files_path / info.name
             file_ext = ("." + info.name.rsplit(".", 1)[-1].lower()) if "." in info.name else ""
 
             # Apply regex pattern filtering if provided
-            if pattern and not re.search(pattern, str(file_path)):
+            if pattern and not re.search(pattern, info.name):
                 continue
 
             # Apply format filtering if provided
@@ -155,55 +148,53 @@ class FileSystemRepository:
             if max_size_bytes is not None and info.size_bytes > max_size_bytes:
                 continue
 
-            file_paths.append(file_path)
+            results.append(info)
 
-        return file_paths
+        return results
 
-    async def read_audio_file(self, file_path: Path) -> bytes:
+    async def read_audio_file(self, filename: str) -> bytes:
         """Read an audio file asynchronously.
 
         Args:
-            file_path: Path to the audio file.
+            filename: Name of the audio file.
 
         Returns:
             bytes: The file content as bytes.
 
         Raises:
-            AudioFileNotFoundError: If the file doesn't exist or is a directory.
+            AudioFileNotFoundError: If the file doesn't exist.
             AudioFileError: If there's an error reading the file.
         """
-        if not file_path.exists() or not file_path.is_file():
-            raise AudioFileNotFoundError(f"File not found: {file_path}")
         try:
-            return await self._storage.read("audio", file_path.name)
+            return await self._storage.read("audio", filename)
         except (FileNotFoundError, ValueError) as e:
-            raise AudioFileNotFoundError(f"File not found: {file_path}") from e
+            raise AudioFileNotFoundError(f"File not found: {filename}") from e
         except Exception as e:
-            raise AudioFileError(f"Failed to read audio file '{file_path}': {e}") from e
+            raise AudioFileError(f"Failed to read audio file '{filename}': {e}") from e
 
-    async def write_audio_file(self, file_path: Path, content: bytes) -> None:
+    async def write_audio_file(self, filename: str, content: bytes) -> str:
         """Write audio content to a file asynchronously.
 
         Args:
-            file_path: Path where the file should be written.
+            filename: Name of the file to write.
             content: Audio content as bytes.
+
+        Returns:
+            str: Display path of the written file.
 
         Raises:
             AudioFileError: If there's an error writing the file.
         """
         try:
-            # Ensure parent directory exists (supports nested output paths)
-            file_path.parent.mkdir(parents=True, exist_ok=True)
-            relative = str(file_path.relative_to(self.audio_files_path))
-            await self._storage.write("audio", relative, content)
+            return await self._storage.write("audio", filename, content)
         except Exception as e:
-            raise AudioFileError(f"Failed to write audio file '{file_path}': {e}") from e
+            raise AudioFileError(f"Failed to write audio file '{filename}': {e}") from e
 
-    async def get_file_size(self, file_path: Path) -> int:
+    async def get_file_size(self, filename: str) -> int:
         """Get the size of a file in bytes.
 
         Args:
-            file_path: Path to the file.
+            filename: Name of the file.
 
         Returns:
             int: File size in bytes.
@@ -212,7 +203,7 @@ class FileSystemRepository:
             AudioFileNotFoundError: If the file doesn't exist.
         """
         try:
-            info = await self._storage.stat("audio", file_path.name)
+            info = await self._storage.stat("audio", filename)
             return info.size_bytes
         except (FileNotFoundError, ValueError) as e:
-            raise AudioFileNotFoundError(f"File not found: {file_path}") from e
+            raise AudioFileNotFoundError(f"File not found: {filename}") from e

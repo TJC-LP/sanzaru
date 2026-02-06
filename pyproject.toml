@@ -71,8 +71,9 @@ audio = [
 image = [
   "pillow>=12.0.0",
 ]
+databricks = []  # httpx already a core dep; extra exists for signaling intent
 all = [
-  "sanzaru[video,audio,image]",
+  "sanzaru[video,audio,image]",  # databricks intentionally excluded from "all"
 ]
 
 [dependency-groups]

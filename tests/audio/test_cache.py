@@ -1,7 +1,6 @@
 """Test caching infrastructure for audio file metadata."""
 
 from collections.abc import Generator
-from pathlib import Path
 from unittest.mock import AsyncMock
 
 import pytest
@@ -45,13 +44,13 @@ class TestGlobalCache:
         mock_func = AsyncMock(return_value=sample_file_info)
 
         result = await get_cached_audio_file_support(
-            file_path="/audio/test.mp3",
+            filename="test.mp3",
             mtime=100.0,
             get_support_func=mock_func,
         )
 
         assert result == sample_file_info
-        mock_func.assert_called_once_with(Path("/audio/test.mp3"))
+        mock_func.assert_called_once_with("test.mp3")
 
     @pytest.mark.anyio
     async def test_cache_hit_reuses_result(self, sample_file_info: FilePathSupportParams) -> None:
@@ -60,14 +59,14 @@ class TestGlobalCache:
 
         # First call - cache miss
         result1 = await get_cached_audio_file_support(
-            file_path="/audio/test.mp3",
+            filename="test.mp3",
             mtime=100.0,
             get_support_func=mock_func,
         )
 
         # Second call with same parameters - cache hit
         result2 = await get_cached_audio_file_support(
-            file_path="/audio/test.mp3",
+            filename="test.mp3",
             mtime=100.0,
             get_support_func=mock_func,
         )
@@ -84,14 +83,14 @@ class TestGlobalCache:
 
         # First call with mtime=100.0
         await get_cached_audio_file_support(
-            file_path="/audio/test.mp3",
+            filename="test.mp3",
             mtime=100.0,
             get_support_func=mock_func,
         )
 
         # Second call with different mtime - should trigger new function call
         await get_cached_audio_file_support(
-            file_path="/audio/test.mp3",
+            filename="test.mp3",
             mtime=200.0,  # Different mtime
             get_support_func=mock_func,
         )
@@ -106,13 +105,13 @@ class TestGlobalCache:
 
         # Cache two different files
         await get_cached_audio_file_support(
-            file_path="/audio/file1.mp3",
+            filename="file1.mp3",
             mtime=100.0,
             get_support_func=mock_func,
         )
 
         await get_cached_audio_file_support(
-            file_path="/audio/file2.mp3",
+            filename="file2.mp3",
             mtime=100.0,
             get_support_func=mock_func,
         )
@@ -128,7 +127,7 @@ class TestGlobalCache:
         # Fill cache beyond maxsize (32) - add 35 entries
         for i in range(35):
             await get_cached_audio_file_support(
-                file_path=f"/audio/file{i}.mp3",
+                filename=f"file{i}.mp3",
                 mtime=float(i),
                 get_support_func=mock_func,
             )
@@ -144,8 +143,8 @@ class TestGlobalCache:
         mock_func2 = AsyncMock(return_value=sample_file_info)
 
         # Same file, same mtime, but different function
-        await get_cached_audio_file_support("/audio/test.mp3", 100.0, mock_func1)
-        await get_cached_audio_file_support("/audio/test.mp3", 100.0, mock_func2)
+        await get_cached_audio_file_support("test.mp3", 100.0, mock_func1)
+        await get_cached_audio_file_support("test.mp3", 100.0, mock_func2)
 
         # Both functions should be called (different cache keys)
         mock_func1.assert_called_once()
@@ -180,14 +179,14 @@ class TestGlobalCache:
         mock_func = AsyncMock(return_value=sample_file_info)
 
         # First access - miss
-        await get_cached_audio_file_support("/audio/test.mp3", 100.0, mock_func)
+        await get_cached_audio_file_support("test.mp3", 100.0, mock_func)
 
         info_after_miss = get_global_cache_info()
         assert info_after_miss.misses == 1
         assert info_after_miss.hits == 0
 
         # Second access - hit
-        await get_cached_audio_file_support("/audio/test.mp3", 100.0, mock_func)
+        await get_cached_audio_file_support("test.mp3", 100.0, mock_func)
 
         info_after_hit = get_global_cache_info()
         assert info_after_hit.misses == 1  # Still 1 miss
@@ -198,7 +197,7 @@ class TestGlobalCache:
         """Test that cache returns the correct data type."""
         mock_func = AsyncMock(return_value=sample_file_info)
 
-        result = await get_cached_audio_file_support("/audio/test.mp3", 100.0, mock_func)
+        result = await get_cached_audio_file_support("test.mp3", 100.0, mock_func)
 
         assert isinstance(result, FilePathSupportParams)
         assert result.file_name == "test.mp3"
@@ -220,8 +219,8 @@ class TestGlobalCache:
 
         mock_func = AsyncMock(return_value=file_info)
 
-        result1 = await get_cached_audio_file_support("/audio/test.mp4", 100.0, mock_func)
-        result2 = await get_cached_audio_file_support("/audio/test.mp4", 100.0, mock_func)
+        result1 = await get_cached_audio_file_support("test.mp4", 100.0, mock_func)
+        result2 = await get_cached_audio_file_support("test.mp4", 100.0, mock_func)
 
         assert result1 == result2
         assert result1.duration_seconds is None
@@ -237,7 +236,7 @@ class TestGlobalCache:
 
         # Make multiple concurrent calls
         async def access_cache():
-            return await get_cached_audio_file_support("/audio/test.mp3", 100.0, mock_func)
+            return await get_cached_audio_file_support("test.mp3", 100.0, mock_func)
 
         async with anyio.create_task_group() as tg:
             for _ in range(5):

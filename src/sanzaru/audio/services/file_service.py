@@ -3,13 +3,11 @@
 Migrated from mcp-server-whisper v1.1.0 by Richie Caputo (MIT license).
 """
 
-from pathlib import Path
-
 import anyio
 from aioresult import ResultCapture
 
-from ...config import get_path
 from ...infrastructure import FileSystemRepository, get_cached_audio_file_support
+from ...storage.protocol import FileInfo
 from .. import FileFilterSorter
 from ..constants import SortBy
 from ..models import FilePathSupportParams
@@ -20,8 +18,7 @@ class FileService:
 
     def __init__(self):
         """Initialize the file service."""
-        audio_path = get_path("audio")
-        self.file_repo = FileSystemRepository(audio_path)
+        self.file_repo = FileSystemRepository()
         self.filter_sorter = FileFilterSorter()
 
     async def get_latest_audio_file(self) -> FilePathSupportParams:
@@ -67,8 +64,8 @@ class FileService:
             list[FilePathSupportParams]: Filtered and sorted list of file metadata.
 
         """
-        # Step 1: List files from filesystem (with basic filtering)
-        file_paths = await self.file_repo.list_audio_files(
+        # Step 1: List files from storage (with basic filtering)
+        file_infos: list[FileInfo] = await self.file_repo.list_audio_files(
             pattern=pattern,
             min_size_bytes=min_size_bytes,
             max_size_bytes=max_size_bytes,
@@ -76,17 +73,15 @@ class FileService:
         )
 
         # Step 2: Get metadata for all files in parallel (with caching)
-        async def get_support(path: Path) -> FilePathSupportParams:
-            path_str = str(path)
-            mtime = path.stat().st_mtime
+        async def get_support(info: FileInfo) -> FilePathSupportParams:
             return await get_cached_audio_file_support(
-                path_str,
-                mtime,
+                info.name,
+                info.modified_timestamp,
                 self.file_repo.get_audio_file_support,
             )
 
         async with anyio.create_task_group() as tg:
-            captures = [ResultCapture.start_soon(tg, get_support, path) for path in file_paths]
+            captures = [ResultCapture.start_soon(tg, get_support, info) for info in file_infos]
         file_support_results = [c.result() for c in captures]
 
         # Step 3: Apply domain-level filters (duration, modified time)
