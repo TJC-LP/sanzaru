@@ -8,6 +8,7 @@ the default ``STORAGE_BACKEND=local`` setting.
 
 from __future__ import annotations
 
+import logging
 import pathlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -17,6 +18,8 @@ import aiofiles
 from ..config import get_path
 from ..security import check_not_symlink, validate_safe_path
 from .protocol import FileInfo, PathType
+
+logger = logging.getLogger("sanzaru")
 
 
 class LocalStorageBackend:
@@ -90,6 +93,7 @@ class LocalStorageBackend:
             try:
                 file_path.resolve().relative_to(base)
             except ValueError:
+                logger.debug("Skipping file outside base path: %s", file_path)
                 continue
             st = file_path.stat()
             results.append(FileInfo(name=file_path.name, size_bytes=st.st_size, modified_timestamp=st.st_mtime))
@@ -97,11 +101,15 @@ class LocalStorageBackend:
 
     async def stat(self, path_type: PathType, filename: str) -> FileInfo:
         file_path = self._safe(path_type, filename)
-        st = file_path.stat()
+        try:
+            st = file_path.stat()
+        except OSError as e:
+            raise FileNotFoundError(f"Cannot stat file: {e}") from e
         return FileInfo(name=file_path.name, size_bytes=st.st_size, modified_timestamp=st.st_mtime)
 
     async def exists(self, path_type: PathType, filename: str) -> bool:
         try:
+            self._check_symlink(path_type, filename)
             base = self._base(path_type)
             file_path = (base / filename).resolve()
             file_path.relative_to(base)

@@ -223,6 +223,19 @@ async def test_exists_false(tmp_path):
 
 
 @pytest.mark.unit
+async def test_exists_symlink_returns_false(tmp_path):
+    ref = tmp_path / "refs"
+    ref.mkdir()
+    real = ref / "real.png"
+    real.write_bytes(b"REAL")
+    link = ref / "link.png"
+    link.symlink_to(real)
+
+    backend = LocalStorageBackend(path_overrides={"reference": ref})
+    assert await backend.exists("reference", "link.png") is False
+
+
+@pytest.mark.unit
 async def test_exists_traversal_returns_false(tmp_path):
     ref = tmp_path / "refs"
     ref.mkdir()
