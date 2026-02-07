@@ -48,16 +48,26 @@ The server is organized into focused modules for maintainability and code reuse:
 
 ```
 src/sanzaru/
-├── server.py           # FastMCP initialization & tool registration (~320 lines)
-├── types.py            # TypedDict definitions (~70 lines)
-├── config.py           # OpenAI client + path configuration (~110 lines)
-├── security.py         # File security utilities (~90 lines)
-├── utils.py            # Shared helpers (~30 lines)
-└── tools/              # Tool implementations
-    ├── __init__.py
-    ├── video.py        # 6 video tools (~200 lines)
-    ├── reference.py    # 2 reference image tools (~230 lines)
-    └── image.py        # 3 image generation tools (~180 lines)
+├── server.py           # FastMCP initialization & tool registration
+├── types.py            # TypedDict definitions
+├── config.py           # OpenAI client + path configuration
+├── security.py         # File security utilities
+├── utils.py            # Shared helpers
+├── features.py         # Feature detection (optional deps + env vars)
+├── descriptions.py     # LLM-facing tool descriptions
+├── storage/            # Pluggable file I/O
+│   ├── protocol.py     # StorageBackend protocol + FileInfo
+│   ├── factory.py      # get_storage() singleton factory
+│   ├── local.py        # Local filesystem backend
+│   └── databricks.py   # Databricks Unity Catalog Volumes backend
+├── tools/              # Tool implementations
+│   ├── video.py        # 6 video tools
+│   ├── reference.py    # 2 reference image tools
+│   ├── image.py        # 3 image generation tools (Responses API)
+│   ├── images_api.py   # 2 image tools (Images API, gpt-image-1.5)
+│   └── media_viewer.py # 2 media viewer tools (MCP App)
+└── app/                # Frontend assets (built, committed)
+    └── media-viewer/   # React MCP App for media playback
 ```
 
 **server.py** registers all tools with FastMCP decorators and delegates to tool implementations
@@ -237,6 +247,76 @@ Set environment variables explicitly in `.mcp.json` using template variables:
 
 This approach makes environment configuration explicit and avoids confusion from implicit `.env` loading.
 
+## Storage Backend
+
+All file I/O goes through a pluggable `StorageBackend` protocol (`src/sanzaru/storage/protocol.py`). Tools call `get_storage()` to get the singleton backend — they never touch the filesystem directly.
+
+### Configuration
+
+```bash
+STORAGE_BACKEND="local"       # Default — uses VIDEO_PATH / IMAGE_PATH / AUDIO_PATH
+STORAGE_BACKEND="databricks"  # Databricks Unity Catalog Volumes via Files API
+```
+
+**Databricks backend** requires:
+```bash
+DATABRICKS_HOST="https://your-workspace.cloud.databricks.com"
+DATABRICKS_CLIENT_ID="..."
+DATABRICKS_CLIENT_SECRET="..."
+DATABRICKS_VOLUME_PATH="/Volumes/catalog/schema/volume"
+```
+
+### Protocol Methods
+
+| Method | Purpose |
+|--------|---------|
+| `read(path_type, filename)` | Read full file → `bytes` |
+| `write(path_type, filename, data)` | Write file → display path |
+| `write_stream(path_type, filename, chunks)` | Stream write (async iterator) |
+| `stat(path_type, filename)` | Get `FileInfo(name, size_bytes, modified_timestamp)` |
+| `exists(path_type, filename)` | Check existence → `bool` |
+| `list_files(path_type, pattern, extensions)` | List with filtering → `list[FileInfo]` |
+| `local_path(path_type, filename)` | Context manager yielding `pathlib.Path` |
+| `local_tempfile(path_type, filename)` | Context manager for writing (uploads on exit) |
+
+### Known Limitations (Databricks)
+
+- **`write_stream()` buffers in memory** — Databricks Files API requires a complete PUT body. For typical Sora videos (20-60 MB) this is acceptable; monitor memory for very large files.
+- **`stat()` returns `modified_timestamp=0.0`** — HEAD response doesn't include mtime.
+- **`local_path()` downloads to temp file** — Libraries needing filesystem access (PIL, pydub) get a temp copy that's cleaned up on context exit.
+
+## Media Viewer (MCP App)
+
+The `view_media` tool opens an interactive media player rendered directly in the conversation via the MCP Apps protocol.
+
+### Architecture
+
+```
+view_media(media_type="audio", filename="track.mp3")
+  → Returns metadata + meta.ui.resourceUri
+  → Host loads ui://sanzaru/media-viewer.html (bundled React app)
+  → React app calls _get_media_data via callServerTool (2MB chunks)
+  → Assembles chunks → Blob URL → <video> / <audio> / <img>
+```
+
+### HTTP Route
+
+In HTTP transport mode, a direct route serves raw bytes with no base64 overhead:
+```
+GET /media/{type}/{name}  →  raw bytes + Content-Type header
+```
+
+This is preferred for large files in HTTP deployments. The `callServerTool` chunking path is the universal fallback that works over both stdio and HTTP.
+
+### Frontend Development
+
+The React app lives in `src/sanzaru/app/media-viewer/`. The built HTML (`dist/mcp-app.html`) is committed to the repo and shipped as Python package data — no Node/Bun needed at install time.
+
+```bash
+cd src/sanzaru/app/media-viewer
+bun install && bun run build   # Only needed when modifying the frontend
+```
+
 ## Transport Modes
 
 Sanzaru supports two transport modes for different deployment scenarios:
@@ -278,16 +358,18 @@ uv run sanzaru --transport http --host 0.0.0.0 --port 3000
 - **CORS support:** Can be configured via Starlette middleware (see Python MCP SDK docs)
 
 **Production deployment:**
-For advanced deployments with CORS, multiple servers, or custom middleware, mount the server in a Starlette app:
+For advanced deployments with CORS, multiple servers, or custom middleware, mount the server in a Starlette app. This also enables CORS for custom routes like `/media/{type}/{name}`:
 ```python
 from starlette.applications import Starlette
 from starlette.routing import Mount
 from starlette.middleware.cors import CORSMiddleware
 from sanzaru.server import mcp
 
-app = Starlette(routes=[Mount("/mcp", mcp.streamable_http_app())])
+app = Starlette(routes=[Mount("/", mcp.streamable_http_app())])
 app = CORSMiddleware(app, allow_origins=["*"], expose_headers=["Mcp-Session-Id"])
 ```
+
+**Note:** The `/media` route does not include CORS headers by default. If you need cross-origin access to media files (e.g., from a browser-based client), wrap with CORSMiddleware as shown above.
 
 ## Model Selection Guidelines
 

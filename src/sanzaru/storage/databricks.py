@@ -170,11 +170,15 @@ class DatabricksVolumesBackend:
 
         .. warning::
 
-            The Databricks Files API requires a complete PUT request body,
-            so this method buffers the entire stream in memory before
-            uploading.  For very large files (e.g. long videos) this may
-            cause high memory usage proportional to the file size.
+            **Full in-memory buffering.** The Databricks Files API requires a
+            complete PUT request body — it does not support chunked transfer
+            encoding or multipart uploads.  This method therefore buffers the
+            entire stream in memory before uploading.
+
+            For Sora videos (8-12 s at 720p ≈ 20-60 MB) this is acceptable.
+            For very large files, monitor memory usage in your deployment.
         """
+        # WARNING: entire stream buffered in memory (Databricks API limitation)
         buf = bytearray()
         async for chunk in chunks:
             buf.extend(chunk)
