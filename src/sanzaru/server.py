@@ -323,7 +323,7 @@ if check_video_available() or check_audio_available() or check_image_available()
 async def serve_media(request: Request) -> Response:
     """Serve media files directly over HTTP — no base64 overhead."""
     media_type = request.path_params["media_type"]
-    filename = request.path_params["filename"]
+    filename = request.path_params["filename"]  # Path traversal protection handled by storage backend
 
     path_type = MEDIA_TYPE_TO_PATH_TYPE.get(media_type)
     if path_type is None:

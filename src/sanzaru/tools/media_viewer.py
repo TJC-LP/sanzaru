@@ -110,6 +110,15 @@ async def get_media_data(
 
     Called by the MCP App via callServerTool to load media content in chunks.
 
+    .. note::
+
+        This reads the full file via ``storage.read()`` and slices in memory.
+        For the local backend the OS page cache makes repeated reads fast.
+        For remote backends (Databricks), prefer using the HTTP route
+        ``/media/{type}/{name}`` which streams bytes directly without base64
+        overhead.  This tool exists as the universal fallback that works over
+        both stdio and HTTP transports.
+
     Args:
         media_type: Type of media — "video", "audio", or "image"
         filename: Name of the file within the configured media directory
