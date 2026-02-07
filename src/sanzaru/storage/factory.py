@@ -28,10 +28,11 @@ def get_storage() -> StorageBackend:
     Configuration
     -------------
     ``STORAGE_BACKEND``
-        ``"local"`` (default) – uses ``VIDEO_PATH`` / ``IMAGE_PATH`` / ``AUDIO_PATH``.
+        ``"local"`` (default) – uses ``SANZARU_MEDIA_PATH`` (or individual path vars).
         ``"databricks"`` – uses Databricks Unity Catalog Volumes via the Files API.
             Requires ``DATABRICKS_HOST``, ``DATABRICKS_CLIENT_ID``,
-            ``DATABRICKS_CLIENT_SECRET``, and ``DATABRICKS_VOLUME_PATH``.
+            ``DATABRICKS_CLIENT_SECRET``, and ``DATABRICKS_VOLUME_PATH``
+            (or ``SANZARU_MEDIA_PATH``).
     """
     backend_type = os.getenv("STORAGE_BACKEND", "local").lower()
 

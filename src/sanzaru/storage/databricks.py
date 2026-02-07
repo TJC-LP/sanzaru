@@ -36,7 +36,7 @@ class DatabricksVolumesBackend:
         DATABRICKS_HOST            https://adb-123.11.azuredatabricks.net
         DATABRICKS_CLIENT_ID       OAuth service principal client ID
         DATABRICKS_CLIENT_SECRET   OAuth service principal client secret
-        DATABRICKS_VOLUME_PATH     /Volumes/catalog/schema/volume
+        DATABRICKS_VOLUME_PATH     Unity Catalog volume path (or SANZARU_MEDIA_PATH fallback)
 
     Optional environment variables::
 
@@ -46,21 +46,28 @@ class DatabricksVolumesBackend:
     """
 
     def __init__(self) -> None:
+        # Volume path: DATABRICKS_VOLUME_PATH > SANZARU_MEDIA_PATH
+        volume_path = os.getenv("DATABRICKS_VOLUME_PATH", "").strip() or os.getenv("SANZARU_MEDIA_PATH", "").strip()
+
         required = {
             "DATABRICKS_HOST": "Workspace URL (e.g. https://adb-123.azuredatabricks.net)",
             "DATABRICKS_CLIENT_ID": "OAuth service principal client ID",
             "DATABRICKS_CLIENT_SECRET": "OAuth service principal client secret",
-            "DATABRICKS_VOLUME_PATH": "Unity Catalog volume path (catalog/schema/volume)",
         }
         missing = [name for name in required if name not in os.environ or not os.environ[name].strip()]
+        if not volume_path:
+            missing.append("DATABRICKS_VOLUME_PATH")
         if missing:
-            details = "\n".join(f"  - {name}: {required[name]}" for name in missing)
+            details = "\n".join(
+                f"  - {name}: {required.get(name, 'Unity Catalog volume path (or set SANZARU_MEDIA_PATH)')}"
+                for name in missing
+            )
             raise RuntimeError(f"Missing required Databricks environment variable(s):\n{details}")
 
         self._host = os.environ["DATABRICKS_HOST"].rstrip("/")
         self._client_id = os.environ["DATABRICKS_CLIENT_ID"]
         self._client_secret = os.environ["DATABRICKS_CLIENT_SECRET"]
-        self._volume_path = os.environ["DATABRICKS_VOLUME_PATH"].strip("/")
+        self._volume_path = volume_path.strip("/")
 
         self._subdirs: dict[str, str] = {
             "video": os.getenv("DATABRICKS_VIDEO_DIR", "videos"),

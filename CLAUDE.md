@@ -9,7 +9,7 @@ A stateless FastMCP server wrapping OpenAI's Sora Video API and Responses API (i
 **Key Architecture Principles:**
 - **Stateless**: No database, no in-memory job tracking. All state lives in OpenAI's cloud.
 - **Async polling pattern**: Create → Poll → Download workflow for both videos and images
-- **Security sandbox**: Reference images restricted to `IMAGE_PATH` with path traversal protection
+- **Security sandbox**: Reference images restricted to configured media paths with path traversal protection
 - **Type-safe**: Extensive use of TypedDict and Literal types from OpenAI SDK
 - **Dual transport**: stdio (default) for Claude Desktop, HTTP for web clients and remote access
 
@@ -79,10 +79,11 @@ src/sanzaru/
 
 ### Runtime Path Configuration
 Paths are validated lazily via the `get_path()` function when tools are called:
-- `get_path("video")`: Returns validated VIDEO_PATH for video downloads
-- `get_path("reference")`: Returns validated IMAGE_PATH for reference images
+- `get_path("video")`: Returns validated path for video downloads
+- `get_path("reference")`: Returns validated path for reference images
+- `get_path("audio")`: Returns validated path for audio files
 
-Both environment variables are required (no defaults). Paths are cached with `@lru_cache` for performance.
+Resolves from `SANZARU_MEDIA_PATH/{subdir}` (with auto-creation) or individual env vars. Paths are cached with `@lru_cache` for performance.
 
 ### Two API Integration Patterns
 
@@ -206,17 +207,30 @@ Three modes available in `prepare_reference_image`:
 
 ## Environment Configuration
 
-Required environment variables:
+Required:
 ```bash
 OPENAI_API_KEY="sk-..."
+```
+
+### Media Storage (choose one)
+
+**Option 1 — Unified path (recommended):**
+```bash
+SANZARU_MEDIA_PATH="/absolute/path/to/media"  # Auto-creates videos/, images/, audio/ subdirs
+```
+
+**Option 2 — Individual paths (legacy, still supported):**
+```bash
 VIDEO_PATH="/absolute/path/to/videos"
 IMAGE_PATH="/absolute/path/to/references"
 AUDIO_PATH="/absolute/path/to/audio"
 ```
 
-Optional environment variables:
+Individual paths take precedence over `SANZARU_MEDIA_PATH` when both are set.
+
+Optional:
 ```bash
-LOG_LEVEL="INFO"  # Optional: DEBUG, INFO, WARNING, ERROR (defaults to INFO)
+LOG_LEVEL="INFO"  # DEBUG, INFO, WARNING, ERROR (defaults to INFO)
 ```
 
 **For MCP servers (Claude Desktop):**
@@ -229,9 +243,7 @@ Set environment variables explicitly in `.mcp.json` using template variables:
       "args": ["run", "sanzaru"],
       "env": {
         "OPENAI_API_KEY": "${OPENAI_API_KEY}",
-        "VIDEO_PATH": "${VIDEO_PATH}",
-        "IMAGE_PATH": "${IMAGE_PATH}",
-        "AUDIO_PATH": "${AUDIO_PATH}"
+        "SANZARU_MEDIA_PATH": "${SANZARU_MEDIA_PATH}"
       }
     }
   }
@@ -254,7 +266,7 @@ All file I/O goes through a pluggable `StorageBackend` protocol (`src/sanzaru/st
 ### Configuration
 
 ```bash
-STORAGE_BACKEND="local"       # Default — uses VIDEO_PATH / IMAGE_PATH / AUDIO_PATH
+STORAGE_BACKEND="local"       # Default — uses SANZARU_MEDIA_PATH (or individual paths)
 STORAGE_BACKEND="databricks"  # Databricks Unity Catalog Volumes via Files API
 ```
 
@@ -383,16 +395,18 @@ app = CORSMiddleware(app, allow_origins=["*"], expose_headers=["Mcp-Session-Id"]
 
 ### Image Generation
 
-**Two APIs available:**
+**Three tools available:**
 
 | Tool | API | Best For |
 |------|-----|----------|
-| `generate_image` | Images API | New generation with gpt-image-1.5 (RECOMMENDED) |
-| `edit_image` | Images API | Editing existing images with gpt-image-1.5 |
-| `create_image` | Responses API | Iterative refinement with `previous_response_id` |
+| `create_image` | Responses API | Non-blocking generation + iterative refinement (RECOMMENDED) |
+| `generate_image` | Images API | Synchronous generation (blocks until done) |
+| `edit_image` | Images API | Editing existing images |
+
+All three support gpt-image-1.5 via model selection.
 
 **Image generation models:**
-- **gpt-image-1.5**: STATE-OF-THE-ART (RECOMMENDED) - best quality, better instruction following, improved text rendering, 20% cheaper
+- **gpt-image-1.5**: STATE-OF-THE-ART (RECOMMENDED) - best quality, better instruction following, improved text rendering
 - **gpt-image-1**: High quality image generation
 - **gpt-image-1-mini**: Fast, cost-effective generation
 - **dall-e-3**: Legacy DALL-E 3
@@ -400,25 +414,24 @@ app = CORSMiddleware(app, allow_origins=["*"], expose_headers=["Mcp-Session-Id"]
 
 **Supported image sizes:** `1024x1024`, `1024x1536`, `1536x1024`, `auto`
 
-**Example with generate_image (recommended):**
+**Example with create_image (recommended — non-blocking):**
 ```python
-# Direct Images API - synchronous, returns immediately
+# Responses API - async, supports iterative refinement
+resp = create_image(
+    prompt="a futuristic cityscape at sunset",
+    tool_config={"type": "image_generation", "model": "gpt-image-1.5", "quality": "high", "size": "1536x1024"}
+)
+# poll with get_image_status(resp.id), then download_image(resp.id)
+```
+
+**Example with generate_image (synchronous):**
+```python
+# Images API - blocks until done, returns token usage
 generate_image(
     prompt="a futuristic cityscape at sunset",
     model="gpt-image-1.5",
     size="1536x1024",
     quality="high"
-)
-```
-
-**Example with create_image (for iterative refinement):**
-```python
-# Responses API - async polling, supports previous_response_id
-resp = create_image(prompt="a cyberpunk character")
-# ... poll and download ...
-resp2 = create_image(
-    prompt="add neon details",
-    previous_response_id=resp.id
 )
 ```
 

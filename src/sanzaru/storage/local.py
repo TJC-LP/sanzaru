@@ -23,7 +23,7 @@ logger = logging.getLogger("sanzaru")
 
 
 class LocalStorageBackend:
-    """Local-disk storage using the paths from ``VIDEO_PATH`` / ``IMAGE_PATH`` / ``AUDIO_PATH``.
+    """Local-disk storage using paths from ``SANZARU_MEDIA_PATH`` (or legacy individual vars).
 
     Args:
         path_overrides: Optional mapping of path_type → Path used in tests to
