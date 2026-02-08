@@ -19,6 +19,7 @@ from urllib.parse import quote
 
 import httpx
 
+from ..user_context import get_user_context, user_slug
 from .protocol import FileInfo, PathType
 
 logger = logging.getLogger("sanzaru")
@@ -132,6 +133,20 @@ class DatabricksVolumesBackend:
     # Path helpers
     # ------------------------------------------------------------------
 
+    def _user_prefix(self) -> str:
+        """Return a per-user path segment derived from the current user context.
+
+        When :func:`~sanzaru.user_context.get_user_context` returns a
+        ``UserContext``, this method returns a sanitised slug (e.g.
+        ``"rcaputo3"``) suitable for inserting between the volume root
+        and the media subdirectory.  When there is no user context
+        (single-tenant mode), returns an empty string.
+        """
+        ctx = get_user_context()
+        if ctx is None:
+            return ""
+        return user_slug(ctx.email)
+
     def _validate_filename(self, filename: str) -> str:
         """Sanitise a user-provided filename, rejecting traversal attempts."""
         name = pathlib.PurePosixPath(filename).name
@@ -141,15 +156,24 @@ class DatabricksVolumesBackend:
             raise ValueError(f"Path traversal detected: {filename}")
         return name
 
+    def _volume_base(self) -> str:
+        """Return the volume base path, optionally including a per-user prefix."""
+        prefix = self._user_prefix()
+        if prefix:
+            return f"{self._volume_path}/{prefix}"
+        return self._volume_path
+
     def _file_url(self, path_type: PathType, filename: str) -> str:
         safe = self._validate_filename(filename)
         subdir = self._subdirs[path_type]
-        path = f"/Volumes/{self._volume_path}/{subdir}/{safe}"
+        base = self._volume_base()
+        path = f"/Volumes/{base}/{subdir}/{safe}"
         return f"{self._host}/api/2.0/fs/files{quote(path)}"
 
     def _dir_url(self, path_type: PathType) -> str:
         subdir = self._subdirs[path_type]
-        path = f"/Volumes/{self._volume_path}/{subdir}"
+        base = self._volume_base()
+        path = f"/Volumes/{base}/{subdir}"
         return f"{self._host}/api/2.0/fs/directories{quote(path)}"
 
     # ------------------------------------------------------------------
@@ -293,4 +317,5 @@ class DatabricksVolumesBackend:
     def resolve_display_path(self, path_type: PathType, filename: str) -> str:
         safe = self._validate_filename(filename)
         subdir = self._subdirs[path_type]
-        return f"/Volumes/{self._volume_path}/{subdir}/{safe}"
+        base = self._volume_base()
+        return f"/Volumes/{base}/{subdir}/{safe}"

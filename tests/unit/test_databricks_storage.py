@@ -9,6 +9,7 @@ import pytest
 
 from sanzaru.storage.databricks import DatabricksVolumesBackend
 from sanzaru.storage.protocol import FileInfo, StorageBackend
+from sanzaru.user_context import UserContext, reset_user_context, set_user_context
 
 # ------------------------------------------------------------------
 # Fixtures
@@ -437,3 +438,85 @@ def test_resolve_display_path(backend):
 def test_resolve_display_path_reference(backend):
     display = backend.resolve_display_path("reference", "hero.png")
     assert display == "/Volumes/catalog/schema/vol/images/hero.png"
+
+
+# ------------------------------------------------------------------
+# Per-user path prefixing (multi-tenant)
+# ------------------------------------------------------------------
+
+
+@pytest.fixture
+def user_ctx():
+    """Set a user context for the duration of the test, then reset."""
+    token = set_user_context(UserContext(email="rcaputo3@tjclp.com"))
+    yield
+    reset_user_context(token)
+
+
+@pytest.mark.unit
+def test_user_prefix_returns_empty_without_context(backend):
+    assert backend._user_prefix() == ""
+
+
+@pytest.mark.unit
+def test_user_prefix_returns_slug_with_context(backend, user_ctx):
+    assert backend._user_prefix() == "rcaputo3"
+
+
+@pytest.mark.unit
+def test_file_url_includes_user_prefix(backend, user_ctx):
+    url = backend._file_url("video", "clip.mp4")
+    assert "/catalog/schema/vol/rcaputo3/videos/clip.mp4" in url
+
+
+@pytest.mark.unit
+def test_file_url_no_user_prefix_without_context(backend):
+    url = backend._file_url("video", "clip.mp4")
+    assert "/catalog/schema/vol/videos/clip.mp4" in url
+    assert "/rcaputo3/" not in url
+
+
+@pytest.mark.unit
+def test_dir_url_includes_user_prefix(backend, user_ctx):
+    url = backend._dir_url("reference")
+    assert "/catalog/schema/vol/rcaputo3/images" in url
+
+
+@pytest.mark.unit
+def test_dir_url_no_user_prefix_without_context(backend):
+    url = backend._dir_url("reference")
+    assert "/catalog/schema/vol/images" in url
+    assert "/rcaputo3/" not in url
+
+
+@pytest.mark.unit
+def test_resolve_display_path_with_user_context(backend, user_ctx):
+    display = backend.resolve_display_path("video", "clip.mp4")
+    assert display == "/Volumes/catalog/schema/vol/rcaputo3/videos/clip.mp4"
+
+
+@pytest.mark.unit
+def test_resolve_display_path_without_user_context(backend):
+    display = backend.resolve_display_path("video", "clip.mp4")
+    assert display == "/Volumes/catalog/schema/vol/videos/clip.mp4"
+
+
+@pytest.mark.unit
+async def test_write_uses_user_prefixed_path(backend, mocker, mock_token_response, user_ctx):
+    mocker.patch.object(backend._client, "post", return_value=mock_token_response)
+    mocker.patch.object(backend._client, "put", return_value=_resp(200))
+
+    display = await backend.write("reference", "result.png", b"DATA")
+
+    assert display == "/Volumes/catalog/schema/vol/rcaputo3/images/result.png"
+
+
+@pytest.mark.unit
+async def test_read_uses_user_prefixed_url(backend, mocker, mock_token_response, user_ctx):
+    mocker.patch.object(backend._client, "post", return_value=mock_token_response)
+    mock_get = mocker.patch.object(backend._client, "get", return_value=_resp(200, content=b"DATA"))
+
+    await backend.read("video", "clip.mp4")
+
+    url = mock_get.call_args.args[0]
+    assert "/rcaputo3/videos/clip.mp4" in url
