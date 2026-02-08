@@ -399,8 +399,8 @@ app = CORSMiddleware(app, allow_origins=["*"], expose_headers=["Mcp-Session-Id"]
 
 | Tool | API | Best For |
 |------|-----|----------|
-| `create_image` | Responses API | Non-blocking generation + iterative refinement (RECOMMENDED) |
-| `generate_image` | Images API | Synchronous generation (blocks until done) |
+| `generate_image` | Images API | Simple one-shot generation — no polling needed (RECOMMENDED DEFAULT) |
+| `create_image` | Responses API | Parallel generation, iterative refinement chains |
 | `edit_image` | Images API | Editing existing images |
 
 All three support gpt-image-1.5 via model selection.
@@ -414,17 +414,7 @@ All three support gpt-image-1.5 via model selection.
 
 **Supported image sizes:** `1024x1024`, `1024x1536`, `1536x1024`, `auto`
 
-**Example with create_image (recommended — non-blocking):**
-```python
-# Responses API - async, supports iterative refinement
-resp = create_image(
-    prompt="a futuristic cityscape at sunset",
-    tool_config={"type": "image_generation", "model": "gpt-image-1.5", "quality": "high", "size": "1536x1024"}
-)
-# poll with get_image_status(resp.id), then download_image(resp.id)
-```
-
-**Example with generate_image (synchronous):**
+**Example with generate_image (recommended default — synchronous):**
 ```python
 # Images API - blocks until done, returns token usage
 generate_image(
@@ -433,6 +423,16 @@ generate_image(
     size="1536x1024",
     quality="high"
 )
+```
+
+**Example with create_image (parallel/refinement workflows):**
+```python
+# Responses API - async, supports iterative refinement
+resp = create_image(
+    prompt="a futuristic cityscape at sunset",
+    tool_config={"type": "image_generation", "model": "gpt-image-1.5", "quality": "high", "size": "1536x1024"}
+)
+# poll with get_image_status(resp.id), then download_image(resp.id)
 ```
 
 ## Type Safety Notes

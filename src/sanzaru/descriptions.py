@@ -167,13 +167,15 @@ Example workflow:
 
 # ==================== IMAGE GENERATION TOOL DESCRIPTIONS ====================
 
-CREATE_IMAGE = """RECOMMENDED image generation tool. Non-blocking async with gpt-image-1.5 support.
+CREATE_IMAGE = """Non-blocking async image generation with gpt-image-1.5 support.
 
 Creates images from text prompts OR edits existing images by providing reference images.
 Returns immediately with a response_id - use get_image_status() to poll for completion.
 Supports iterative refinement via previous_response_id.
 
-**Prefer this over generate_image** — non-blocking lets you do other work while generating.
+**Best for:** parallel generation (multiple images at once), iterative refinement chains,
+and workflows where you need to do other work while images generate.
+For simple one-shot generation, generate_image is simpler (no polling needed).
 
 **Text-only generation (no input_images):**
 - Generates image from scratch based on prompt
@@ -280,13 +282,13 @@ Returns ImageDownloadResult with: filename, path, size, format"""
 
 # ==================== IMAGES API TOOL DESCRIPTIONS ====================
 
-GENERATE_IMAGE = """Synchronous image generation using OpenAI's Images API.
+GENERATE_IMAGE = """RECOMMENDED default image generation tool. Synchronous — returns the finished image directly.
 
-Blocks until the image is ready — no polling needed, but ties up the tool call.
-For non-blocking generation, prefer create_image instead.
+No polling needed. Blocks until the image is ready and saves it to disk in one step.
+Provides token usage for cost tracking.
 
-Provides token usage for cost tracking. Does NOT support iterative refinement
-(use create_image with previous_response_id for that).
+For parallel generation (multiple images at once) or iterative refinement chains,
+use create_image instead (async with previous_response_id support).
 
 Parameters:
 - prompt: Text description of the image (required, max 32k chars)
