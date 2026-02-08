@@ -179,10 +179,10 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
       {blobUrl && (
         <div className="media-container">
           {input.media_type === "video" && (
-            <video src={blobUrl} controls autoPlay />
+            <video src={blobUrl} controls />
           )}
           {input.media_type === "audio" && (
-            <audio src={blobUrl} controls autoPlay />
+            <audio src={blobUrl} controls />
           )}
           {input.media_type === "image" && (
             <img src={blobUrl} alt={input.filename} />

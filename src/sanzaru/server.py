@@ -137,7 +137,7 @@ if check_image_available():
     async def download_image(response_id: str, filename: str | None = None):
         return await image.download_image(response_id, filename)
 
-    # Images API tools (direct API, supports gpt-image-1.5)
+    # Images API tools (synchronous, blocks until done)
     @mcp.tool(description=GENERATE_IMAGE)
     async def generate_image(
         prompt: str,

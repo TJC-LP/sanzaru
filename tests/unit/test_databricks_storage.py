@@ -99,6 +99,38 @@ def test_empty_env_var_raises(monkeypatch):
         DatabricksVolumesBackend()
 
 
+@pytest.mark.unit
+def test_sanzaru_media_path_fallback(monkeypatch):
+    """SANZARU_MEDIA_PATH is used when DATABRICKS_VOLUME_PATH is not set."""
+    monkeypatch.delenv("DATABRICKS_VOLUME_PATH")
+    monkeypatch.setenv("SANZARU_MEDIA_PATH", "catalog/schema/vol")
+
+    backend = DatabricksVolumesBackend()
+
+    assert backend._volume_path == "catalog/schema/vol"
+
+
+@pytest.mark.unit
+def test_databricks_volume_path_takes_precedence(monkeypatch):
+    """DATABRICKS_VOLUME_PATH takes precedence over SANZARU_MEDIA_PATH."""
+    monkeypatch.setenv("DATABRICKS_VOLUME_PATH", "catalog/schema/vol")
+    monkeypatch.setenv("SANZARU_MEDIA_PATH", "other/path")
+
+    backend = DatabricksVolumesBackend()
+
+    assert backend._volume_path == "catalog/schema/vol"
+
+
+@pytest.mark.unit
+def test_missing_volume_path_and_media_path_raises(monkeypatch):
+    """Error when neither DATABRICKS_VOLUME_PATH nor SANZARU_MEDIA_PATH is set."""
+    monkeypatch.delenv("DATABRICKS_VOLUME_PATH")
+    monkeypatch.delenv("SANZARU_MEDIA_PATH", raising=False)
+
+    with pytest.raises(RuntimeError, match="DATABRICKS_VOLUME_PATH"):
+        DatabricksVolumesBackend()
+
+
 # ------------------------------------------------------------------
 # OAuth
 # ------------------------------------------------------------------

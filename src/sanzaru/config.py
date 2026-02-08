@@ -44,11 +44,53 @@ def get_client() -> AsyncOpenAI:
 
 
 # ---------- Path configuration (runtime) ----------
+
+# Mapping from path_type to (individual env var, subdirectory under SANZARU_MEDIA_PATH)
+_MEDIA_SUBDIRS: dict[str, tuple[str, str]] = {
+    "video": ("VIDEO_PATH", "videos"),
+    "reference": ("IMAGE_PATH", "images"),
+    "audio": ("AUDIO_PATH", "audio"),
+}
+
+_ERROR_NAMES: dict[str, str] = {
+    "video": "Video download directory",
+    "reference": "Image directory",
+    "audio": "Audio files directory",
+}
+
+
+def _resolve_media_path(path_type: Literal["video", "reference", "audio"]) -> tuple[str | None, str, bool]:
+    """Resolve path string from individual env var or SANZARU_MEDIA_PATH.
+
+    Priority: individual env var > SANZARU_MEDIA_PATH/{subdir} > None.
+
+    Args:
+        path_type: Path type to resolve
+
+    Returns:
+        (path_str, env_var_name_for_errors, using_unified) tuple
+    """
+    env_var, subdir = _MEDIA_SUBDIRS[path_type]
+
+    individual = os.getenv(env_var)
+    if individual and individual.strip():
+        return individual.strip(), env_var, False
+
+    unified = os.getenv("SANZARU_MEDIA_PATH")
+    if unified and unified.strip():
+        return os.path.join(unified.strip(), subdir), "SANZARU_MEDIA_PATH", True
+
+    return None, env_var, False
+
+
 @lru_cache(maxsize=3)
 def get_path(path_type: Literal["video", "reference", "audio"]) -> pathlib.Path:
     """Get and validate a configured path from environment.
 
-    Requires explicit environment variable configuration - no defaults.
+    Supports two configuration modes:
+    1. Individual env vars: VIDEO_PATH, IMAGE_PATH, AUDIO_PATH (take precedence)
+    2. Unified root: SANZARU_MEDIA_PATH (auto-creates videos/, images/, audio/ subdirs)
+
     Creates paths lazily at runtime, so this works with both `uv run` and `mcp run`.
 
     Security: Rejects symlinks in environment variable paths to prevent directory traversal.
@@ -62,22 +104,13 @@ def get_path(path_type: Literal["video", "reference", "audio"]) -> pathlib.Path:
     Raises:
         RuntimeError: If environment variable not set, malformed, path doesn't exist, isn't a directory, or is a symlink
     """
-    if path_type == "video":
-        path_str = os.getenv("VIDEO_PATH")
-        env_var = "VIDEO_PATH"
-        error_name = "Video download directory"
-    elif path_type == "reference":
-        path_str = os.getenv("IMAGE_PATH")
-        env_var = "IMAGE_PATH"
-        error_name = "Image directory"
-    else:  # audio
-        path_str = os.getenv("AUDIO_PATH")
-        env_var = "AUDIO_PATH"
-        error_name = "Audio files directory"
+    error_name = _ERROR_NAMES[path_type]
+    path_str, env_var, using_unified = _resolve_media_path(path_type)
 
     # Validate env var is set and not empty/whitespace
-    if not path_str or not path_str.strip():
-        raise RuntimeError(f"{env_var} environment variable is not set or is empty")
+    if not path_str:
+        individual_var = _MEDIA_SUBDIRS[path_type][0]
+        raise RuntimeError(f"{error_name} not configured. Set {individual_var} or SANZARU_MEDIA_PATH")
 
     # Strip whitespace and resolve path with error handling
     try:
@@ -93,6 +126,14 @@ def get_path(path_type: Literal["video", "reference", "audio"]) -> pathlib.Path:
             raise RuntimeError(f"{error_name} cannot be a symbolic link: {path_str}")
     except PermissionError as e:
         raise RuntimeError(f"Cannot validate {error_name}: permission denied for {path_str}") from e
+
+    # Auto-create subdirectories when using unified SANZARU_MEDIA_PATH
+    if using_unified and not path.exists():
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+            logger.info("Auto-created directory: %s", path)
+        except (OSError, PermissionError) as e:
+            raise RuntimeError(f"Failed to auto-create {error_name} at {path}: {e}") from e
 
     # Validate path exists and is a directory
     if not path.exists():

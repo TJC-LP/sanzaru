@@ -118,35 +118,35 @@ class TestGetPathErrorCases:
         """Test that missing VIDEO_PATH raises RuntimeError."""
         mocker.patch.dict(os.environ, {}, clear=True)
 
-        with pytest.raises(RuntimeError, match="VIDEO_PATH environment variable is not set"):
+        with pytest.raises(RuntimeError, match="not configured.*Set VIDEO_PATH or SANZARU_MEDIA_PATH"):
             get_path("video")
 
     def test_missing_reference_env_var(self, mocker):
         """Test that missing IMAGE_PATH raises RuntimeError."""
         mocker.patch.dict(os.environ, {}, clear=True)
 
-        with pytest.raises(RuntimeError, match="IMAGE_PATH environment variable is not set"):
+        with pytest.raises(RuntimeError, match="not configured.*Set IMAGE_PATH or SANZARU_MEDIA_PATH"):
             get_path("reference")
 
     def test_missing_audio_env_var(self, mocker):
         """Test that missing AUDIO_PATH raises RuntimeError."""
         mocker.patch.dict(os.environ, {}, clear=True)
 
-        with pytest.raises(RuntimeError, match="AUDIO_PATH environment variable is not set"):
+        with pytest.raises(RuntimeError, match="not configured.*Set AUDIO_PATH or SANZARU_MEDIA_PATH"):
             get_path("audio")
 
     def test_empty_string_env_var(self, mocker):
         """Test that empty string env var raises RuntimeError."""
-        mocker.patch.dict(os.environ, {"VIDEO_PATH": ""})
+        mocker.patch.dict(os.environ, {"VIDEO_PATH": ""}, clear=True)
 
-        with pytest.raises(RuntimeError, match="is not set or is empty"):
+        with pytest.raises(RuntimeError, match="not configured"):
             get_path("video")
 
     def test_whitespace_only_env_var(self, mocker):
         """Test that whitespace-only env var raises RuntimeError."""
-        mocker.patch.dict(os.environ, {"VIDEO_PATH": "   \t\n  "})
+        mocker.patch.dict(os.environ, {"VIDEO_PATH": "   \t\n  "}, clear=True)
 
-        with pytest.raises(RuntimeError, match="is not set or is empty"):
+        with pytest.raises(RuntimeError, match="not configured"):
             get_path("video")
 
     def test_nonexistent_directory(self, mocker, tmp_path):
@@ -220,3 +220,157 @@ class TestGetPathEdgeCases:
 
         assert result == dir_with_spaces.resolve()
         assert " " in result.name
+
+
+@pytest.mark.unit
+class TestGetPathUnifiedMediaPath:
+    """Test get_path() with SANZARU_MEDIA_PATH."""
+
+    def test_unified_path_video(self, mocker, tmp_path):
+        """Test that SANZARU_MEDIA_PATH creates videos/ subdir."""
+        media_root = tmp_path / "media"
+        media_root.mkdir()
+        mocker.patch.dict(os.environ, {"SANZARU_MEDIA_PATH": str(media_root)}, clear=True)
+
+        result = get_path("video")
+
+        assert result == (media_root / "videos").resolve()
+        assert result.is_dir()
+
+    def test_unified_path_reference(self, mocker, tmp_path):
+        """Test that SANZARU_MEDIA_PATH creates images/ subdir."""
+        media_root = tmp_path / "media"
+        media_root.mkdir()
+        mocker.patch.dict(os.environ, {"SANZARU_MEDIA_PATH": str(media_root)}, clear=True)
+
+        result = get_path("reference")
+
+        assert result == (media_root / "images").resolve()
+        assert result.is_dir()
+
+    def test_unified_path_audio(self, mocker, tmp_path):
+        """Test that SANZARU_MEDIA_PATH creates audio/ subdir."""
+        media_root = tmp_path / "media"
+        media_root.mkdir()
+        mocker.patch.dict(os.environ, {"SANZARU_MEDIA_PATH": str(media_root)}, clear=True)
+
+        result = get_path("audio")
+
+        assert result == (media_root / "audio").resolve()
+        assert result.is_dir()
+
+    def test_individual_path_takes_precedence(self, mocker, tmp_path):
+        """Test that individual env var takes precedence over SANZARU_MEDIA_PATH."""
+        media_root = tmp_path / "media"
+        media_root.mkdir()
+        custom_video = tmp_path / "custom_videos"
+        custom_video.mkdir()
+
+        mocker.patch.dict(
+            os.environ,
+            {"SANZARU_MEDIA_PATH": str(media_root), "VIDEO_PATH": str(custom_video)},
+            clear=True,
+        )
+
+        result = get_path("video")
+
+        assert result == custom_video.resolve()
+        # Unified subdir should NOT have been created
+        assert not (media_root / "videos").exists()
+
+    def test_auto_creates_subdir(self, mocker, tmp_path):
+        """Test that unified path auto-creates subdirs."""
+        media_root = tmp_path / "media"
+        media_root.mkdir()
+        videos_dir = media_root / "videos"
+        assert not videos_dir.exists()
+
+        mocker.patch.dict(os.environ, {"SANZARU_MEDIA_PATH": str(media_root)}, clear=True)
+
+        result = get_path("video")
+
+        assert videos_dir.exists()
+        assert result == videos_dir.resolve()
+
+    def test_auto_creates_nested_dirs(self, mocker, tmp_path):
+        """Test that unified path creates both root and subdir with parents=True."""
+        media_root = tmp_path / "deep" / "nested" / "media"
+        assert not media_root.exists()
+
+        mocker.patch.dict(os.environ, {"SANZARU_MEDIA_PATH": str(media_root)}, clear=True)
+
+        result = get_path("video")
+
+        assert (media_root / "videos").exists()
+        assert result == (media_root / "videos").resolve()
+
+    def test_mixed_precedence(self, mocker, tmp_path):
+        """Test mixed config: some individual, some unified."""
+        media_root = tmp_path / "media"
+        media_root.mkdir()
+        custom_video = tmp_path / "custom_videos"
+        custom_video.mkdir()
+
+        mocker.patch.dict(
+            os.environ,
+            {"SANZARU_MEDIA_PATH": str(media_root), "VIDEO_PATH": str(custom_video)},
+            clear=True,
+        )
+
+        video_result = get_path("video")
+        image_result = get_path("reference")
+        audio_result = get_path("audio")
+
+        # VIDEO_PATH takes precedence
+        assert video_result == custom_video.resolve()
+        # Others fall back to unified path
+        assert image_result == (media_root / "images").resolve()
+        assert audio_result == (media_root / "audio").resolve()
+
+    def test_empty_individual_falls_through(self, mocker, tmp_path):
+        """Test that empty individual var falls through to unified path."""
+        media_root = tmp_path / "media"
+        media_root.mkdir()
+
+        mocker.patch.dict(
+            os.environ,
+            {"SANZARU_MEDIA_PATH": str(media_root), "VIDEO_PATH": ""},
+            clear=True,
+        )
+
+        result = get_path("video")
+
+        assert result == (media_root / "videos").resolve()
+
+    def test_unified_path_symlink_rejected(self, mocker, tmp_path):
+        """Test that symlinked unified subdirectory is rejected."""
+        media_root = tmp_path / "media"
+        media_root.mkdir()
+        real_dir = tmp_path / "real_videos"
+        real_dir.mkdir()
+
+        # Pre-create subdirectory as a symlink
+        videos_link = media_root / "videos"
+        videos_link.symlink_to(real_dir)
+
+        mocker.patch.dict(os.environ, {"SANZARU_MEDIA_PATH": str(media_root)}, clear=True)
+
+        with pytest.raises(RuntimeError, match="cannot be a symbolic link"):
+            get_path("video")
+
+    def test_existing_subdir_reused(self, mocker, tmp_path):
+        """Test that existing subdirectory is reused without error."""
+        media_root = tmp_path / "media"
+        media_root.mkdir()
+        videos_dir = media_root / "videos"
+        videos_dir.mkdir()
+        # Place a marker file to prove we're using the existing dir
+        marker = videos_dir / "existing.txt"
+        marker.write_text("marker")
+
+        mocker.patch.dict(os.environ, {"SANZARU_MEDIA_PATH": str(media_root)}, clear=True)
+
+        result = get_path("video")
+
+        assert result == videos_dir.resolve()
+        assert (result / "existing.txt").exists()

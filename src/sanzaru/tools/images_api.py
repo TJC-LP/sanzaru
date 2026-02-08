@@ -2,10 +2,12 @@
 """Image generation tools using OpenAI's direct Images API.
 
 This module provides tools that use the Images API directly (client.images.generate/edit)
-rather than the Responses API with tools. Key differences:
-- Supports gpt-image-1.5 model (latest, recommended)
-- Synchronous - returns image immediately (no polling)
+rather than the Responses API with tools. Key differences from create_image:
+- Synchronous — blocks until image is ready (no polling)
 - Returns token usage information for cost tracking
+- Does NOT support iterative refinement (no previous_response_id)
+
+For non-blocking generation, prefer create_image (Responses API) instead.
 """
 
 import base64

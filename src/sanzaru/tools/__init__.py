@@ -4,8 +4,8 @@
 This package contains all FastMCP tool implementations organized by category:
 - video: Sora video generation tools
 - reference: Reference image management tools
-- image: Image generation tools via Responses API
-- images_api: Direct Images API tools (gpt-image-1.5 support)
+- image: Image generation tools via Responses API (recommended, non-blocking)
+- images_api: Synchronous Images API tools (generate_image, edit_image)
 
 Tools are automatically registered with FastMCP when their modules are imported.
 """

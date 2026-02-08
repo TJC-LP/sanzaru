@@ -52,42 +52,16 @@ fi
 # Get the absolute path of the project directory
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
-# Get video path
+# Get media path
 echo ""
-echo "Default video download path: $PROJECT_DIR/videos"
-read -p "Press Enter to accept, or type a custom path: " VIDEO_PATH
-if [ -z "$VIDEO_PATH" ]; then
-    VIDEO_PATH="$PROJECT_DIR/videos"
+echo "Default media path: $PROJECT_DIR/media"
+read -p "Press Enter to accept, or type a custom path: " MEDIA_PATH
+if [ -z "$MEDIA_PATH" ]; then
+    MEDIA_PATH="$PROJECT_DIR/media"
 else
     # Convert to absolute path if relative
-    if [[ "$VIDEO_PATH" != /* ]]; then
-        VIDEO_PATH="$(cd "$(dirname "$VIDEO_PATH")" 2>/dev/null && pwd)/$(basename "$VIDEO_PATH")" || VIDEO_PATH="$PROJECT_DIR/$VIDEO_PATH"
-    fi
-fi
-
-# Get reference path
-echo ""
-echo "Default reference images path: $PROJECT_DIR/images"
-read -p "Press Enter to accept, or type a custom path: " REFERENCE_PATH
-if [ -z "$REFERENCE_PATH" ]; then
-    REFERENCE_PATH="$PROJECT_DIR/images"
-else
-    # Convert to absolute path if relative
-    if [[ "$REFERENCE_PATH" != /* ]]; then
-        REFERENCE_PATH="$(cd "$(dirname "$REFERENCE_PATH")" 2>/dev/null && pwd)/$(basename "$REFERENCE_PATH")" || REFERENCE_PATH="$PROJECT_DIR/$REFERENCE_PATH"
-    fi
-fi
-
-# Get audio path
-echo ""
-echo "Default audio files path: $PROJECT_DIR/audio"
-read -p "Press Enter to accept, or type a custom path: " AUDIO_PATH
-if [ -z "$AUDIO_PATH" ]; then
-    AUDIO_PATH="$PROJECT_DIR/audio"
-else
-    # Convert to absolute path if relative
-    if [[ "$AUDIO_PATH" != /* ]]; then
-        AUDIO_PATH="$(cd "$(dirname "$AUDIO_PATH")" 2>/dev/null && pwd)/$(basename "$AUDIO_PATH")" || AUDIO_PATH="$PROJECT_DIR/$AUDIO_PATH"
+    if [[ "$MEDIA_PATH" != /* ]]; then
+        MEDIA_PATH="$(cd "$(dirname "$MEDIA_PATH")" 2>/dev/null && pwd)/$(basename "$MEDIA_PATH")" || MEDIA_PATH="$PROJECT_DIR/$MEDIA_PATH"
     fi
 fi
 
@@ -96,15 +70,11 @@ echo "============================================"
 echo "  Creating directories..."
 echo "============================================"
 
-# Create directories
-mkdir -p "$VIDEO_PATH"
-echo "✓ Created $VIDEO_PATH"
-
-mkdir -p "$REFERENCE_PATH"
-echo "✓ Created $REFERENCE_PATH"
-
-mkdir -p "$AUDIO_PATH"
-echo "✓ Created $AUDIO_PATH"
+# Create media directory structure
+mkdir -p "$MEDIA_PATH/videos" "$MEDIA_PATH/images" "$MEDIA_PATH/audio"
+echo "✓ Created $MEDIA_PATH/videos"
+echo "✓ Created $MEDIA_PATH/images"
+echo "✓ Created $MEDIA_PATH/audio"
 
 echo ""
 echo "============================================"
@@ -114,9 +84,7 @@ echo "============================================"
 # Write .env file
 cat > .env << EOF
 OPENAI_API_KEY="$API_KEY"
-VIDEO_PATH="$VIDEO_PATH"
-IMAGE_PATH="$REFERENCE_PATH"
-AUDIO_PATH="$AUDIO_PATH"
+SANZARU_MEDIA_PATH="$MEDIA_PATH"
 EOF
 
 echo "✓ Created .env file"
@@ -146,7 +114,8 @@ echo "  2. The sanzaru MCP server will connect automatically"
 echo "  3. Start generating videos!"
 echo ""
 echo "Configuration saved to .env:"
-echo "  - Videos will be saved to: $VIDEO_PATH"
-echo "  - Reference images: $REFERENCE_PATH"
-echo "  - Audio files: $AUDIO_PATH"
+echo "  - Media root: $MEDIA_PATH"
+echo "  - Videos: $MEDIA_PATH/videos"
+echo "  - Images: $MEDIA_PATH/images"
+echo "  - Audio: $MEDIA_PATH/audio"
 echo ""

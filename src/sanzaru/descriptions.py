@@ -167,10 +167,15 @@ Example workflow:
 
 # ==================== IMAGE GENERATION TOOL DESCRIPTIONS ====================
 
-CREATE_IMAGE = """Generate or edit images using OpenAI's Responses API.
+CREATE_IMAGE = """Non-blocking async image generation with gpt-image-1.5 support.
 
 Creates images from text prompts OR edits existing images by providing reference images.
 Returns immediately with a response_id - use get_image_status() to poll for completion.
+Supports iterative refinement via previous_response_id.
+
+**Best for:** parallel generation (multiple images at once), iterative refinement chains,
+and workflows where you need to do other work while images generate.
+For simple one-shot generation, generate_image is simpler (no polling needed).
 
 **Text-only generation (no input_images):**
 - Generates image from scratch based on prompt
@@ -201,7 +206,7 @@ Parameters:
   * Requires input_images parameter
 
 **Image generation models (tool_config.model):**
-- gpt-image-1.5: STATE-OF-THE-ART - Best quality, better instruction following, improved text rendering (RECOMMENDED)
+- gpt-image-1.5: STATE-OF-THE-ART (RECOMMENDED) - Best quality, better instruction following, improved text rendering
 - gpt-image-1: High quality image generation
 - gpt-image-1-mini: Fast, cost-effective generation
 
@@ -227,30 +232,31 @@ High-fidelity with custom settings:
 
 Workflows:
 
-1. Text-only generation:
-   create_image("sunset over mountains")
-
-2. Best quality generation with GPT Image 1.5:
+1. Text-only generation (recommended):
    create_image("sunset over mountains", tool_config={"type": "image_generation", "model": "gpt-image-1.5"})
 
-3. Single image editing:
+2. Single image editing:
    create_image("add a flamingo to the pool", input_images=["lounge.png"])
 
-4. Multi-image composition:
+3. Multi-image composition:
    create_image("gift basket with all these items", input_images=["lotion.png", "soap.png", "bomb.jpg"])
 
-5. High-fidelity logo placement:
+4. High-fidelity logo placement:
    create_image(
        "add logo to woman's shirt",
        input_images=["woman.jpg", "logo.png"],
        tool_config={"type": "image_generation", "input_fidelity": "high"}
    )
 
-6. Masked inpainting:
+5. Masked inpainting:
    create_image("add flamingo", input_images=["pool.png"], mask_filename="pool_mask.png")
 
-7. Fast generation with mini model:
+6. Fast generation with mini model:
    create_image("quick sketch of a cat", tool_config={"type": "image_generation", "model": "gpt-image-1-mini"})
+
+7. Iterative refinement:
+   resp1 = create_image("a cyberpunk character")
+   resp2 = create_image("add neon details", previous_response_id=resp1.id)
 
 Returns ImageResponse with: id, status, created_at"""
 
@@ -276,21 +282,18 @@ Returns ImageDownloadResult with: filename, path, size, format"""
 
 # ==================== IMAGES API TOOL DESCRIPTIONS ====================
 
-GENERATE_IMAGE = """Generate images using OpenAI's Images API with gpt-image-1.5.
+GENERATE_IMAGE = """RECOMMENDED default image generation tool. Synchronous — returns the finished image directly.
 
-RECOMMENDED for new image generation - uses the latest gpt-image-1.5 model.
-Returns immediately with the generated image (no polling required).
+No polling needed. Blocks until the image is ready and saves it to disk in one step.
+Provides token usage for cost tracking.
 
-Unlike create_image (which uses Responses API), this tool:
-- Supports gpt-image-1.5 (state-of-the-art, 20% cheaper)
-- Returns synchronously (no polling needed)
-- Provides token usage for cost tracking
-- Does NOT support iterative refinement (use create_image for that)
+For parallel generation (multiple images at once) or iterative refinement chains,
+use create_image instead (async with previous_response_id support).
 
 Parameters:
 - prompt: Text description of the image (required, max 32k chars)
 - model: Image model to use. Default: "gpt-image-1.5"
-  * gpt-image-1.5: STATE-OF-THE-ART (recommended) - best quality, improved text rendering
+  * gpt-image-1.5: STATE-OF-THE-ART - best quality, improved text rendering
   * gpt-image-1: High quality
   * gpt-image-1-mini: Fast, cost-effective
   * dall-e-3: Legacy DALL-E 3
@@ -311,7 +314,7 @@ Returns ImageGenerateResult with: filename, path, size, format, model, usage
 
 Example workflows:
 
-1. Basic generation with gpt-image-1.5:
+1. Basic generation:
    generate_image("a sunset over mountains")
 
 2. High quality portrait:
@@ -640,9 +643,9 @@ The viewer loads the file and renders it with native playback controls.
 Parameters:
 - media_type: Type of media to view — "video", "audio", or "image" (required)
 - filename: Name of the file to open (required)
-  * video files are in VIDEO_PATH
-  * image files are in IMAGE_PATH
-  * audio files are in AUDIO_PATH
+  * video files are in the videos directory
+  * image files are in the images directory
+  * audio files are in the audio directory
 
 Use list_videos, list_reference_images, or list_audio_files to discover available files.
 
