@@ -61,7 +61,7 @@ src/sanzaru/
 │   ├── local.py        # Local filesystem backend
 │   └── databricks.py   # Databricks Unity Catalog Volumes backend
 ├── tools/              # Tool implementations
-│   ├── video.py        # 6 video tools
+│   ├── video.py        # 7 video tools
 │   ├── reference.py    # 2 reference image tools
 │   ├── image.py        # 3 image generation tools (Responses API)
 │   ├── images_api.py   # 2 image tools (Images API, gpt-image-1.5)

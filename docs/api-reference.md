@@ -63,7 +63,7 @@ Download a completed video to `VIDEO_PATH`.
 - `"thumbnail"` → WEBP image
 - `"spritesheet"` → JPG image
 
-**Returns:** DownloadResult with `filename`, `path`, `variant`
+**Returns:** DownloadResult with `filename`, `variant`
 
 **Example:**
 ```python
@@ -117,6 +117,32 @@ Create a new video by remixing an existing completed video.
 
 ---
 
+### `list_local_videos`
+List locally downloaded video files in `VIDEO_PATH`.
+
+**Parameters:**
+- `pattern` (string, optional): Glob pattern to filter filenames (e.g., `"*.mp4"`, `"sora*"`)
+- `file_type` (string, optional): Filter by type - `"mp4"`, `"webm"`, `"mov"`, or `"all"` (default)
+- `sort_by` (string, optional): Sort by `"name"`, `"size"`, or `"modified"` (default)
+- `order` (string, optional): `"desc"` (default) or `"asc"`
+- `limit` (integer, optional): Max results (default: 50)
+
+**Returns:** Object with `data` (array of VideoFile objects with `filename`, `size_bytes`, `modified_timestamp`, `file_type`)
+
+**Example:**
+```python
+# List all local videos
+videos = list_local_videos()
+
+# Find MP4 files matching a pattern
+videos = list_local_videos(pattern="sora*", file_type="mp4")
+
+# Get recently modified
+recent = list_local_videos(sort_by="modified", order="desc", limit=10)
+```
+
+---
+
 ## Image Generation Tools
 
 Two APIs are available for image generation:
@@ -151,7 +177,7 @@ Generate images using OpenAI's Images API with gpt-image-1.5. **RECOMMENDED** fo
 - `moderation` (string, optional): Content moderation - `"auto"` (default), `"low"`
 - `filename` (string, optional): Custom output filename (auto-generated if omitted)
 
-**Returns:** ImageGenerateResult with `filename`, `path`, `size`, `format`, `model`, `usage`
+**Returns:** ImageGenerateResult with `filename`, `size`, `format`, `model`, `usage`
 
 **Usage tracking:** Returns token counts for cost monitoring:
 ```python
@@ -210,7 +236,7 @@ Edit existing images using OpenAI's Images API with gpt-image-1.5.
 - `input_fidelity` (string, optional): Fidelity to input - `"high"` (preserve faces/style) or `"low"` (more creative freedom). gpt-image-1 only.
 - `filename` (string, optional): Custom output filename
 
-**Returns:** ImageGenerateResult with `filename`, `path`, `size`, `format`, `model`, `usage`
+**Returns:** ImageGenerateResult with `filename`, `size`, `format`, `model`, `usage`
 
 **Examples:**
 ```python
@@ -295,7 +321,7 @@ Download completed image to `IMAGE_PATH`.
 - `response_id` (string, required): ID of completed image
 - `filename` (string, optional): Custom filename (auto-generated if omitted)
 
-**Returns:** ImageDownloadResult with `filename`, `path`, `size`, `format`
+**Returns:** ImageDownloadResult with `filename`, `size`, `format`
 
 ---
 
@@ -338,7 +364,7 @@ Resize images to match Sora's required dimensions.
 - **pad**: Scale to fit inside target, add black bars (no distortion, preserves full image)
 - **rescale**: Stretch/squash to exact dimensions (may distort, no cropping/padding)
 
-**Returns:** PrepareResult with `output_filename`, `original_size`, `target_size`, `resize_mode`, `path`
+**Returns:** PrepareResult with `output_filename`, `original_size`, `target_size`, `resize_mode`
 
 **Example:**
 ```python

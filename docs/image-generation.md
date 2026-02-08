@@ -38,7 +38,7 @@ The Images API provides synchronous image generation with OpenAI's latest gpt-im
 ```python
 # Generate an image (returns immediately)
 result = generate_image(prompt="sunset over mountains")
-# File immediately available at result.path
+# File immediately available at result.filename
 
 # With quality and size options
 result = generate_image(
@@ -316,7 +316,7 @@ while True:
 
 # Step 3: Download
 result = download_image(resp.id, filename="astronaut.png")
-print(f"Downloaded: {result.path}")
+print(f"Downloaded: {result.filename}")
 
 # Step 4: Prepare for video (if dimensions don't match)
 prep = prepare_reference_image(
