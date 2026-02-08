@@ -296,7 +296,7 @@ async def download_image(
         filename = generate_filename("img", output_format, use_timestamp=True)
 
     # Write image via storage backend (handles path validation + security)
-    display_path = await storage.write("reference", filename, image_bytes)
+    await storage.write("reference", filename, image_bytes)
 
     # Get dimensions in thread pool (PIL operations) - use in-memory bytes
     def _get_dimensions() -> tuple[tuple[int, int], str]:
@@ -309,7 +309,6 @@ async def download_image(
 
     return {
         "filename": filename,
-        "path": display_path,
         "size": size,
         "format": output_format,
     }

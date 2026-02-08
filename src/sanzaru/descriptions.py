@@ -44,7 +44,7 @@ IMPORTANT: Only call this AFTER get_video_status shows status='completed'.
 If the video is not completed, this will fail.
 
 The video is automatically saved to the directory configured in VIDEO_PATH.
-Returns the absolute path to the downloaded file.
+Returns the filename of the downloaded file.
 
 Parameters:
 - video_id: The ID from create_video or remix_video (required)
@@ -57,9 +57,9 @@ Parameters:
 Typical workflow:
 1. Create: create_video() -> video_id
 2. Poll: get_video_status(video_id) until status='completed'
-3. Download: download_video(video_id, filename="my_video.mp4") -> returns local file path
+3. Download: download_video(video_id, filename="my_video.mp4") -> returns filename
 
-Returns DownloadResult with: filename, path, variant"""
+Returns DownloadResult with: filename, variant"""
 
 LIST_VIDEOS = """List all video jobs in your OpenAI account with pagination support.
 
@@ -95,6 +95,24 @@ Parameters:
 - video_id: The ID of the video to delete (required)
 
 Returns confirmation with the deleted video_id and deleted=true."""
+
+LIST_LOCAL_VIDEOS = """List locally downloaded video files with filtering and sorting.
+
+Use this to discover what video files have been downloaded to the VIDEO_PATH directory.
+These are videos previously downloaded with download_video.
+
+Parameters:
+- pattern: Glob pattern to filter filenames (e.g., "sora*.mp4", "*.webm"). Default: all files
+- file_type: Filter by type: "mp4", "webm", "mov", or "all". Default: "all"
+- sort_by: Sort results by "name", "size", or "modified". Default: "modified"
+- order: "desc" for newest/largest/Z-A first, "asc" for oldest/smallest/A-Z. Default: "desc"
+- limit: Max results to return. Default: 50
+
+Returns list of VideoFile objects with: filename, size_bytes, modified_timestamp, file_type.
+
+Example workflow:
+1. list_local_videos(file_type="mp4") -> find downloaded MP4 videos
+2. view_media(media_type="video", filename="my_video.mp4") -> watch it"""
 
 REMIX_VIDEO = """Create a NEW video by remixing an existing completed video with a different prompt.
 
@@ -157,7 +175,7 @@ Parameters:
   * "pad": Scale to fit inside target, add black bars (no distortion, preserves full image)
   * "rescale": Stretch/squash to exact dimensions (may distort, no cropping/padding)
 
-Returns PrepareResult with: output_filename, original_size, target_size, resize_mode, path
+Returns PrepareResult with: output_filename, original_size, target_size, resize_mode
 
 Example workflow:
 1. list_reference_images() -> find "photo.jpg"
@@ -277,7 +295,7 @@ Parameters:
 - response_id: The response ID from create_image (required)
 - filename: Custom filename (optional, auto-generates if not provided)
 
-Returns ImageDownloadResult with: filename, path, size, format"""
+Returns ImageDownloadResult with: filename, size, format"""
 
 
 # ==================== IMAGES API TOOL DESCRIPTIONS ====================
@@ -310,7 +328,7 @@ Parameters:
   * "auto", "low"
 - filename: Custom output filename (optional)
 
-Returns ImageGenerateResult with: filename, path, size, format, model, usage
+Returns ImageGenerateResult with: filename, size, format, model, usage
 
 Example workflows:
 
@@ -347,7 +365,7 @@ Parameters:
   * "low" - more creative freedom
 - filename: Custom output filename (optional)
 
-Returns ImageGenerateResult with: filename, path, size, format, model, usage
+Returns ImageGenerateResult with: filename, size, format, model, usage
 
 Example workflows:
 
@@ -650,15 +668,3 @@ Parameters:
 Use list_videos, list_reference_images, or list_audio_files to discover available files.
 
 Returns metadata: filename, media_type, size_bytes, mime_type"""
-
-GET_MEDIA_DATA = """Internal tool for the media viewer app — reads media file data in chunks.
-
-Called by the media viewer UI via callServerTool. Not intended to be called directly by the LLM.
-
-Parameters:
-- media_type: "video", "audio", or "image" (required)
-- filename: Name of the file (required)
-- offset: Byte offset to start reading from (default: 0)
-- chunk_size: Bytes per chunk (default: 2097152 = 2 MB)
-
-Returns: base64-encoded data chunk with offset metadata and completion status."""
