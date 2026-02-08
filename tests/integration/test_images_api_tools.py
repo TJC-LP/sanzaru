@@ -78,7 +78,6 @@ async def test_generate_image_with_custom_filename(mocker, tmp_reference_path):
     result = await generate_image(prompt="test", filename="custom_name.png")
 
     assert result.filename == "custom_name.png"
-    assert "custom_name.png" in result.path
 
 
 @pytest.mark.integration

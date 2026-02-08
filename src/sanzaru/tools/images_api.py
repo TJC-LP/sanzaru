@@ -95,7 +95,7 @@ async def generate_image(
         filename = generate_filename("gen", output_format, use_timestamp=True)
 
     # Write image via storage backend
-    display_path = await storage.write("reference", filename, image_bytes)
+    await storage.write("reference", filename, image_bytes)
 
     # Get dimensions in thread pool (PIL operations)
     def _get_dimensions() -> tuple[tuple[int, int], str]:
@@ -115,7 +115,6 @@ async def generate_image(
 
     return ImageGenerateResult(
         filename=filename,
-        path=display_path,
         size=dimensions,
         format=detected_format,
         model=str(model),
@@ -245,7 +244,7 @@ async def edit_image(
         filename = generate_filename("edit", output_format, use_timestamp=True)
 
     # Write image via storage backend
-    display_path = await storage.write("reference", filename, image_bytes)
+    await storage.write("reference", filename, image_bytes)
 
     # Get dimensions in thread pool
     def _get_dimensions() -> tuple[tuple[int, int], str]:
@@ -265,7 +264,6 @@ async def edit_image(
 
     return ImageGenerateResult(
         filename=filename,
-        path=display_path,
         size=dimensions,
         format=detected_format,
         model=str(model),

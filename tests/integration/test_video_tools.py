@@ -9,6 +9,7 @@ from sanzaru.tools.video import (
     delete_video,
     download_video,
     get_video_status,
+    list_local_videos,
     list_videos,
     remix_video,
 )
@@ -70,7 +71,6 @@ async def test_sora_download(mocker, tmp_video_path):
 
     assert result["filename"] == "test.mp4"
     assert result["variant"] == "video"
-    assert "test.mp4" in result["path"]
     mock_get_client.return_value.with_streaming_response.videos.download_content.assert_called_once_with(
         "vid_test123", variant="video"
     )
@@ -197,3 +197,85 @@ async def test_create_video_with_reference_image_mime_types(mocker, mock_video_q
         assert input_reference_arg[0] == filename, f"Filename mismatch for {filename}"
         assert isinstance(input_reference_arg[1], bytes), f"Expected bytes for {filename}"
         assert input_reference_arg[2] == expected_mime, f"MIME type mismatch for {filename}: {input_reference_arg[2]}"
+
+
+# ==================== list_local_videos Tests ====================
+
+
+@pytest.mark.integration
+async def test_list_local_videos_basic(mocker, tmp_video_path):
+    """Test listing local video files."""
+    # Create test video files
+    (tmp_video_path / "video1.mp4").write_bytes(b"x" * 100)
+    (tmp_video_path / "video2.webm").write_bytes(b"y" * 200)
+    (tmp_video_path / "video3.mov").write_bytes(b"z" * 300)
+
+    storage = LocalStorageBackend(path_overrides={"video": tmp_video_path})
+    mocker.patch("sanzaru.tools.video.get_storage", return_value=storage)
+
+    result = await list_local_videos()
+
+    assert len(result["data"]) == 3
+    filenames = {v["filename"] for v in result["data"]}
+    assert filenames == {"video1.mp4", "video2.webm", "video3.mov"}
+    # Verify no path fields leaked
+    for item in result["data"]:
+        assert "path" not in item
+
+
+@pytest.mark.integration
+async def test_list_local_videos_filter_by_type(mocker, tmp_video_path):
+    """Test filtering local videos by file type."""
+    (tmp_video_path / "video1.mp4").write_bytes(b"x" * 100)
+    (tmp_video_path / "video2.webm").write_bytes(b"y" * 200)
+    (tmp_video_path / "video3.mp4").write_bytes(b"z" * 300)
+
+    storage = LocalStorageBackend(path_overrides={"video": tmp_video_path})
+    mocker.patch("sanzaru.tools.video.get_storage", return_value=storage)
+
+    result = await list_local_videos(file_type="mp4")
+
+    assert len(result["data"]) == 2
+    for item in result["data"]:
+        assert item["file_type"] == "mp4"
+
+
+@pytest.mark.integration
+async def test_list_local_videos_sort_by_size(mocker, tmp_video_path):
+    """Test sorting local videos by size."""
+    (tmp_video_path / "small.mp4").write_bytes(b"x" * 100)
+    (tmp_video_path / "large.mp4").write_bytes(b"y" * 1000)
+    (tmp_video_path / "medium.mp4").write_bytes(b"z" * 500)
+
+    storage = LocalStorageBackend(path_overrides={"video": tmp_video_path})
+    mocker.patch("sanzaru.tools.video.get_storage", return_value=storage)
+
+    result = await list_local_videos(sort_by="size", order="asc")
+
+    sizes = [item["size_bytes"] for item in result["data"]]
+    assert sizes == sorted(sizes)
+
+
+@pytest.mark.integration
+async def test_list_local_videos_limit(mocker, tmp_video_path):
+    """Test limiting the number of results."""
+    for i in range(10):
+        (tmp_video_path / f"video{i}.mp4").write_bytes(b"x" * (i + 1) * 100)
+
+    storage = LocalStorageBackend(path_overrides={"video": tmp_video_path})
+    mocker.patch("sanzaru.tools.video.get_storage", return_value=storage)
+
+    result = await list_local_videos(limit=3)
+
+    assert len(result["data"]) == 3
+
+
+@pytest.mark.integration
+async def test_list_local_videos_empty(mocker, tmp_video_path):
+    """Test listing when no video files exist."""
+    storage = LocalStorageBackend(path_overrides={"video": tmp_video_path})
+    mocker.patch("sanzaru.tools.video.get_storage", return_value=storage)
+
+    result = await list_local_videos()
+
+    assert result["data"] == []

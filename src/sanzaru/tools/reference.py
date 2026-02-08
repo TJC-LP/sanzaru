@@ -290,8 +290,6 @@ async def prepare_reference_image(
         # Run in thread pool - multiple image preps can now run concurrently
         original_size, final_filename = await anyio.to_thread.run_sync(_process_image)
 
-    display_path = storage.resolve_display_path("reference", output_filename)
-
     logger.info(
         "Prepared reference: %s -> %s (%s, %dx%d -> %dx%d)",
         input_filename,
@@ -308,5 +306,4 @@ async def prepare_reference_image(
         "original_size": original_size,
         "target_size": (target_width, target_height),
         "resize_mode": resize_mode,
-        "path": display_path,
     }

@@ -42,6 +42,7 @@ if check_video_available():
         DELETE_VIDEO,
         DOWNLOAD_VIDEO,
         GET_VIDEO_STATUS,
+        LIST_LOCAL_VIDEOS,
         LIST_VIDEOS,
         REMIX_VIDEO,
     )
@@ -81,7 +82,17 @@ if check_video_available():
     async def remix_video(previous_video_id: str, prompt: str):
         return await video.remix_video(previous_video_id, prompt)
 
-    logger.info("Video tools registered (6 tools)")
+    @mcp.tool(description=LIST_LOCAL_VIDEOS)
+    async def list_local_videos(
+        pattern: str | None = None,
+        file_type: Literal["mp4", "webm", "mov", "all"] = "all",
+        sort_by: Literal["name", "size", "modified"] = "modified",
+        order: Literal["asc", "desc"] = "desc",
+        limit: int = 50,
+    ):
+        return await video.list_local_videos(pattern, file_type, sort_by, order, limit)
+
+    logger.info("Video tools registered (7 tools)")
 
 
 # ==================== IMAGE TOOLS (CONDITIONAL) ====================
@@ -293,7 +304,7 @@ def media_viewer_html() -> str:
 
 
 if check_video_available() or check_audio_available() or check_image_available():
-    from .descriptions import GET_MEDIA_DATA, VIEW_MEDIA
+    from .descriptions import VIEW_MEDIA
     from .tools import media_viewer
 
     @mcp.tool(
@@ -306,7 +317,7 @@ if check_video_available() or check_audio_available() or check_image_available()
     ):
         return await media_viewer.view_media(media_type, filename)
 
-    @mcp.tool(description=GET_MEDIA_DATA)
+    @mcp.tool()
     async def _get_media_data(
         media_type: Literal["video", "audio", "image"],
         filename: str,

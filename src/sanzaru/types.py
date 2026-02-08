@@ -15,7 +15,6 @@ class DownloadResult(TypedDict):
     """Result from downloading a video asset."""
 
     filename: str
-    path: str
     variant: Literal["video", "thumbnail", "spritesheet"]
 
 
@@ -39,6 +38,15 @@ class ListResult(TypedDict):
     last: str | None
 
 
+class VideoFile(TypedDict):
+    """Metadata for a local video file."""
+
+    filename: str
+    size_bytes: int
+    modified_timestamp: int
+    file_type: str
+
+
 class ReferenceImage(TypedDict):
     """Metadata for a reference image file."""
 
@@ -55,7 +63,6 @@ class PrepareResult(TypedDict):
     original_size: tuple[int, int]
     target_size: tuple[int, int]
     resize_mode: str
-    path: str
 
 
 class ImageResponse(TypedDict):
@@ -70,7 +77,6 @@ class ImageDownloadResult(TypedDict):
     """Result from downloading a generated image."""
 
     filename: str
-    path: str
     size: tuple[int, int]
     format: str
 
@@ -79,7 +85,6 @@ class ImageGenerateResult(BaseModel):
     """Result from generating an image via Images API."""
 
     filename: str
-    path: str
     size: tuple[int, int]
     format: str
     model: str

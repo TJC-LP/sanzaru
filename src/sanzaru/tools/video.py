@@ -16,7 +16,7 @@ from openai.types import Video, VideoDeleteResponse, VideoModel, VideoSeconds, V
 
 from ..config import get_client, logger
 from ..storage import get_storage
-from ..types import DownloadResult, ListResult, VideoSummary
+from ..types import DownloadResult, ListResult, VideoFile, VideoSummary
 from ..utils import generate_filename, suffix_for_variant
 
 
@@ -140,7 +140,7 @@ async def download_video(
         display_path = await storage.write_stream("video", filename, response.iter_bytes())
 
     logger.info("Wrote %s (%s)", display_path, variant)
-    return {"filename": filename, "path": display_path, "variant": variant}
+    return {"filename": filename, "variant": variant}
 
 
 async def list_videos(limit: int = 20, after: str | None = None, order: Literal["asc", "desc"] = "desc") -> ListResult:
@@ -212,3 +212,73 @@ async def remix_video(previous_video_id: str, prompt: str) -> Video:
     video = await client.videos.remix(previous_video_id, prompt=prompt)
     logger.info("Started remix %s (from %s)", video.id, previous_video_id)
     return video
+
+
+async def list_local_videos(
+    pattern: str | None = None,
+    file_type: Literal["mp4", "webm", "mov", "all"] = "all",
+    sort_by: Literal["name", "size", "modified"] = "modified",
+    order: Literal["asc", "desc"] = "desc",
+    limit: int = 50,
+) -> dict:
+    """List locally downloaded video files.
+
+    Args:
+        pattern: Glob pattern to filter filenames (e.g., "*.mp4", "sora*")
+        file_type: Filter by video type
+        sort_by: Sort criterion (name, size, or modified timestamp)
+        order: Sort order (asc or desc)
+        limit: Maximum number of results to return
+
+    Returns:
+        Dict with "data" key containing list of VideoFile objects
+
+    Raises:
+        RuntimeError: If VIDEO_PATH not configured
+    """
+    storage = get_storage()
+
+    # Map file_type to extensions
+    type_to_extensions: dict[str, set[str]] = {
+        "mp4": {".mp4"},
+        "webm": {".webm"},
+        "mov": {".mov"},
+        "all": {".mp4", ".webm", ".mov"},
+    }
+    allowed_extensions = type_to_extensions[file_type]
+
+    # Collect matching files via storage backend
+    glob_pattern = pattern if pattern else "*"
+    file_infos = await storage.list_files("video", pattern=glob_pattern, extensions=allowed_extensions)
+
+    # Sort files
+    if sort_by == "name":
+        file_infos.sort(key=lambda x: x.name, reverse=(order == "desc"))
+    elif sort_by == "size":
+        file_infos.sort(key=lambda x: x.size_bytes, reverse=(order == "desc"))
+    elif sort_by == "modified":
+        file_infos.sort(key=lambda x: x.modified_timestamp, reverse=(order == "desc"))
+
+    # Build result list
+    results: list[VideoFile] = []
+    for info in file_infos[:limit]:
+        # Determine file type from extension
+        ext = ("." + info.name.rsplit(".", 1)[-1].lower()) if "." in info.name else ""
+        if ext == ".mp4":
+            vid_type = "mp4"
+        elif ext == ".webm":
+            vid_type = "webm"
+        else:
+            vid_type = "mov"
+
+        results.append(
+            {
+                "filename": info.name,
+                "size_bytes": info.size_bytes,
+                "modified_timestamp": int(info.modified_timestamp),
+                "file_type": vid_type,
+            }
+        )
+
+    logger.info("Listed %d local videos (pattern=%s, type=%s)", len(results), glob_pattern, file_type)
+    return {"data": results}
