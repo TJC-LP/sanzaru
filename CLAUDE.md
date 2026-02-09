@@ -55,6 +55,7 @@ src/sanzaru/
 ├── utils.py            # Shared helpers
 ├── features.py         # Feature detection (optional deps + env vars)
 ├── descriptions.py     # LLM-facing tool descriptions
+├── user_context.py     # Per-request user context (multi-tenant support)
 ├── storage/            # Pluggable file I/O
 │   ├── protocol.py     # StorageBackend protocol + FileInfo
 │   ├── factory.py      # get_storage() singleton factory
@@ -290,6 +291,16 @@ DATABRICKS_VOLUME_PATH="/Volumes/catalog/schema/volume"
 | `list_files(path_type, pattern, extensions)` | List with filtering → `list[FileInfo]` |
 | `local_path(path_type, filename)` | Context manager yielding `pathlib.Path` |
 | `local_tempfile(path_type, filename)` | Context manager for writing (uploads on exit) |
+
+### Multi-Tenant Support (Databricks)
+
+For deployments where multiple users share one server (e.g., Databricks Apps), the `user_context` module provides per-user storage isolation. When middleware sets a `UserContext` via `set_user_context()`, the Databricks backend automatically prefixes volume paths with a user slug:
+
+```
+/Volumes/{volume_path}/{user_slug}/videos/{filename}
+```
+
+The user slug is derived from the email local part (e.g., `rcaputo3@tjclp.com` → `rcaputo3`). When no user context is set (default), paths are unchanged — fully backward-compatible.
 
 ### Known Limitations (Databricks)
 

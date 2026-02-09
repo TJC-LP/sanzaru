@@ -1,6 +1,6 @@
 [project]
 name = "sanzaru"
-version = "0.4.1"
+version = "0.4.2"
 description = "Unified MCP server for OpenAI multimodal APIs (Sora, Whisper, GPT Vision)"
 readme = "README.md"
 requires-python = ">=3.10"
