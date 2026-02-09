@@ -1,0 +1,14 @@
+{
+  "name": "sanzaru-marketplace",
+  "owner": {
+    "name": "TJC L.P.",
+    "url": "https://github.com/TJC-LP"
+  },
+  "plugins": [
+    {
+      "name": "sanzaru",
+      "source": "./plugin",
+      "description": "MCP server for OpenAI multimodal APIs (Sora video, image generation, audio)"
+    }
+  ]
+}
