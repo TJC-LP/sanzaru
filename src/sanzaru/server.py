@@ -221,7 +221,7 @@ if check_audio_available():
         min_modified_time: float | None = None,
         max_modified_time: float | None = None,
         format: str | None = None,
-        sort_by: SortBy = SortBy.NAME,
+        sort_by: Literal["name", "size", "duration", "modified_time", "format"] = "name",
         reverse: bool = False,
     ):
         return await audio.list_audio_files(
@@ -233,7 +233,7 @@ if check_audio_available():
             min_modified_time=min_modified_time,
             max_modified_time=max_modified_time,
             format=format,
-            sort_by=sort_by,
+            sort_by=SortBy(sort_by),
             reverse=reverse,
         )
 
@@ -317,7 +317,9 @@ if check_video_available() or check_audio_available() or check_image_available()
     ):
         return await media_viewer.view_media(media_type, filename)
 
-    @mcp.tool()
+    @mcp.tool(
+        description="Internal tool used by the MCP App media viewer to fetch base64-encoded chunks of media data. Do not call directly — use view_media instead."
+    )  # noqa: E501
     async def _get_media_data(
         media_type: Literal["video", "audio", "image"],
         filename: str,

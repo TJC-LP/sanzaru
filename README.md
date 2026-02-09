@@ -38,10 +38,18 @@ A **stateless**, lightweight **MCP** server that wraps **OpenAI's Sora Video API
 - Python 3.10+
 - `OPENAI_API_KEY` environment variable
 
-**Feature-specific paths** (set only what you need):
-- `VIDEO_PATH` - Enables video generation features
-- `IMAGE_PATH` - Enables image generation features
-- `AUDIO_PATH` - Enables audio processing features
+**Media storage** (choose one):
+```bash
+# Recommended: unified path (auto-creates videos/, images/, audio/ subdirs)
+SANZARU_MEDIA_PATH="/path/to/media"
+
+# Or individual paths (legacy, still supported)
+VIDEO_PATH="/path/to/videos"
+IMAGE_PATH="/path/to/images"
+AUDIO_PATH="/path/to/audio"
+```
+
+Features are auto-detected based on configured paths. Set only what you need.
 
 ## Quick Start
 
@@ -100,9 +108,7 @@ Add to your `claude_desktop_config.json`:
       "args": ["sanzaru[all]"],
       "env": {
         "OPENAI_API_KEY": "your-api-key-here",
-        "VIDEO_PATH": "/absolute/path/to/videos",
-        "IMAGE_PATH": "/absolute/path/to/images",
-        "AUDIO_PATH": "/absolute/path/to/audio"
+        "SANZARU_MEDIA_PATH": "/absolute/path/to/media"
       }
     }
   }
@@ -126,20 +132,8 @@ Or from source:
 # Using uvx (from PyPI)
 codex mcp add sanzaru \
   --env OPENAI_API_KEY="sk-..." \
-  --env VIDEO_PATH="$HOME/sanzaru-videos" \
-  --env IMAGE_PATH="$HOME/sanzaru-images" \
-  --env AUDIO_PATH="$HOME/sanzaru-audio" \
+  --env SANZARU_MEDIA_PATH="$HOME/sanzaru-media" \
   -- uvx "sanzaru[all]"
-
-# Or from source
-cd /path/to/sanzaru
-set -a; source .env; set +a
-codex mcp add sanzaru \
-  --env OPENAI_API_KEY="$OPENAI_API_KEY" \
-  --env VIDEO_PATH="$VIDEO_PATH" \
-  --env IMAGE_PATH="$IMAGE_PATH" \
-  --env AUDIO_PATH="$AUDIO_PATH" \
-  -- uv run --directory "$(pwd)" sanzaru
 ```
 
 ### Manual Setup
@@ -149,15 +143,14 @@ uv sync
 
 # Set required environment variables
 export OPENAI_API_KEY=sk-...
-export VIDEO_PATH=~/videos
-export IMAGE_PATH=~/images
-export AUDIO_PATH=~/audio
+export SANZARU_MEDIA_PATH=~/sanzaru-media
 
-# Run server
+# Run server (stdio for MCP clients)
 uv run sanzaru
-```
 
-**Feature Auto-Detection:** Features are automatically enabled based on configured paths. Set only the paths you need.
+# Or HTTP mode (for remote access)
+uv run sanzaru --transport http --port 8000
+```
 
 </details>
 
@@ -165,10 +158,11 @@ uv run sanzaru
 
 | Category | Tools | Description |
 |----------|-------|-------------|
-| **Video** | `create_video`, `get_video_status`, `download_video`, `list_videos`, `delete_video`, `remix_video` | Generate and manage Sora videos with optional reference images |
+| **Video** | `create_video`, `get_video_status`, `download_video`, `list_videos`, `list_local_videos`, `delete_video`, `remix_video` | Generate and manage Sora videos with optional reference images |
 | **Image** | `generate_image`, `edit_image`, `create_image`, `get_image_status`, `download_image` | Generate with gpt-image-1.5 (sync) or GPT-5 (polling) |
 | **Reference** | `list_reference_images`, `prepare_reference_image` | Manage and resize images for Sora compatibility |
 | **Audio** | `transcribe_audio`, `chat_with_audio`, `create_audio`, `convert_audio`, `compress_audio`, `list_audio_files`, `get_latest_audio`, `transcribe_with_enhancement` | Transcription, analysis, TTS, and file management |
+| **Media** | `view_media` | Interactive media player via MCP App protocol |
 
 > **Full API documentation**: See [docs/api-reference.md](docs/api-reference.md)
 
@@ -234,6 +228,24 @@ analysis = chat_with_audio(
 - **[Sora Prompting Guide](docs/sora2-prompting-guide.md)** - Crafting effective video prompts
 - **[Audio Features](docs/audio/README.md)** - Audio transcription, chat, and TTS
 - **[Performance & Architecture](docs/async-optimizations.md)** - Technical details and benchmarks
+
+## Transport Modes
+
+| Mode | Command | Use Case |
+|------|---------|----------|
+| **stdio** (default) | `uv run sanzaru` | Claude Desktop, Claude Code, local MCP clients |
+| **HTTP** | `uv run sanzaru --transport http` | Remote access, Databricks Apps, web clients |
+
+## Storage Backends
+
+| Backend | Config | Use Case |
+|---------|--------|----------|
+| **Local** (default) | `SANZARU_MEDIA_PATH=/path/to/media` | Development, local deployments |
+| **Databricks** | `STORAGE_BACKEND=databricks` | Databricks Apps with Unity Catalog Volumes |
+
+The Databricks backend supports per-user storage isolation via the `user_context` module, enabling multi-tenant deployments where each user's media is stored under their own volume prefix.
+
+See [CLAUDE.md](CLAUDE.md) for full configuration details.
 
 ## Performance
 

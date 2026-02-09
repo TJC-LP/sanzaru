@@ -442,12 +442,10 @@ This tool ensures compatibility.
 Parameters:
 - input_file_name: Name of the input audio file to convert (required)
 - target_format: Target format - "mp3" (smaller, lossy) or "wav" (larger, lossless). Default: "mp3"
-- output_file_name: Optional custom name for output file (defaults to input name with new extension)
+- output_filename: Optional custom name for output file (defaults to input name with new extension)
 
 Returns AudioProcessingResult with:
-- output_file_name: Name of the converted file
-- success: Boolean indicating if conversion succeeded
-- message: Description of the operation
+- output_file: Name of the converted file
 
 Example workflow:
 1. list_audio_files(format="flac") -> find "recording.flac"
@@ -470,12 +468,10 @@ the limit, it returns the original unchanged.
 Parameters:
 - input_file_name: Name of the input audio file to compress (required)
 - max_mb: Maximum target size in MB. Default: 25 (API limit)
-- output_file_name: Optional custom name for compressed file (defaults to input name with _compressed suffix)
+- output_filename: Optional custom name for compressed file (defaults to input name with _compressed suffix)
 
 Returns AudioProcessingResult with:
-- output_file_name: Name of compressed file (or original if no compression needed)
-- success: Boolean indicating if compression succeeded
-- message: Description of operation (e.g., "File already under 25MB" or "Compressed from 45MB to 24MB")
+- output_file: Name of compressed file (or original if no compression needed)
 
 Example workflow:
 1. list_audio_files(min_size_bytes=26214400) -> find large files
@@ -627,12 +623,10 @@ Parameters:
 - voice: Voice to use. Default: "alloy"
 - instructions: Optional style guidance (e.g., "Speak slowly and clearly", "Use British accent", "Sound excited")
 - speed: Speech speed from 0.25 (very slow) to 4.0 (very fast). Default: 1.0
-- output_file_name: Optional custom filename (defaults to "speech_<timestamp>.mp3")
+- output_filename: Optional custom filename (defaults to "speech_<timestamp>.mp3")
 
 Returns TTSResult with:
-- output_file_name: Name of the generated audio file
-- success: Boolean indicating if generation succeeded
-- duration_seconds: Length of generated audio (if available)
+- output_file: Name of the generated audio file (use this exact filename in follow-up calls like view_media)
 
 Example workflows:
 1. Basic TTS:
@@ -648,7 +642,7 @@ Example workflows:
    create_audio("An entire blog post with thousands of words...")  # Automatically chunks
 
 5. Custom filename:
-   create_audio("Welcome message", voice="shimmer", output_file_name="welcome.mp3")"""
+   create_audio("Welcome message", voice="shimmer", output_filename="welcome.mp3")"""
 
 
 # ==================== MEDIA VIEWER TOOL DESCRIPTIONS ====================
