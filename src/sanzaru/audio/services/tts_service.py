@@ -48,7 +48,7 @@ class TTSService:
 
         """
         # Determine output filename
-        filename = output_filename or f"speech_{time.time_ns()}.mp3"
+        filename = output_filename or f"speech_{int(time.time() * 1000)}.mp3"
 
         # Split text if it exceeds the API limit
         text_chunks = split_text_for_tts(text_prompt)
