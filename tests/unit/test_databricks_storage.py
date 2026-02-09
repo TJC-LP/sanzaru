@@ -101,6 +101,26 @@ def test_empty_env_var_raises(monkeypatch):
 
 
 @pytest.mark.unit
+def test_host_without_scheme_gets_https(monkeypatch):
+    """DATABRICKS_HOST without https:// gets it added automatically."""
+    monkeypatch.setenv("DATABRICKS_HOST", "adb-123.azuredatabricks.net")
+
+    backend = DatabricksVolumesBackend()
+
+    assert backend._host == "https://adb-123.azuredatabricks.net"
+
+
+@pytest.mark.unit
+def test_host_with_scheme_preserved(monkeypatch):
+    """DATABRICKS_HOST with https:// is preserved as-is."""
+    monkeypatch.setenv("DATABRICKS_HOST", "https://adb-123.azuredatabricks.net")
+
+    backend = DatabricksVolumesBackend()
+
+    assert backend._host == "https://adb-123.azuredatabricks.net"
+
+
+@pytest.mark.unit
 def test_sanzaru_media_path_fallback(monkeypatch):
     """SANZARU_MEDIA_PATH is used when DATABRICKS_VOLUME_PATH is not set."""
     monkeypatch.delenv("DATABRICKS_VOLUME_PATH")

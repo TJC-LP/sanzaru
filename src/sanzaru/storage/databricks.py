@@ -65,7 +65,10 @@ class DatabricksVolumesBackend:
             )
             raise RuntimeError(f"Missing required Databricks environment variable(s):\n{details}")
 
-        self._host = os.environ["DATABRICKS_HOST"].rstrip("/")
+        host = os.environ["DATABRICKS_HOST"].rstrip("/")
+        if not host.startswith(("http://", "https://")):
+            host = f"https://{host}"
+        self._host = host
         self._client_id = os.environ["DATABRICKS_CLIENT_ID"]
         self._client_secret = os.environ["DATABRICKS_CLIENT_SECRET"]
         self._volume_path = volume_path.strip("/")
