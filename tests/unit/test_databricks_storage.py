@@ -221,6 +221,48 @@ async def test_read_404_raises_file_not_found(backend, mocker, mock_token_respon
 
 
 # ------------------------------------------------------------------
+# read_range
+# ------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_read_range_sends_range_header(backend, mocker, mock_token_response):
+    mocker.patch.object(backend._client, "post", return_value=mock_token_response)
+    mock_get = mocker.patch.object(backend._client, "get", return_value=_resp(206, content=b"CHUNK"))
+
+    data = await backend.read_range("reference", "hero.png", offset=100, length=50)
+
+    assert data == b"CHUNK"
+    headers = mock_get.call_args.kwargs["headers"]
+    assert headers["Range"] == "bytes=100-149"
+
+
+@pytest.mark.unit
+async def test_read_range_accepts_200(backend, mocker, mock_token_response):
+    """Some servers return 200 instead of 206 for range requests."""
+    mocker.patch.object(backend._client, "post", return_value=mock_token_response)
+    mocker.patch.object(backend._client, "get", return_value=_resp(200, content=b"FULL"))
+
+    data = await backend.read_range("reference", "hero.png", offset=0, length=100)
+    assert data == b"FULL"
+
+
+@pytest.mark.unit
+async def test_read_range_404_raises(backend, mocker, mock_token_response):
+    mocker.patch.object(backend._client, "post", return_value=mock_token_response)
+    mocker.patch.object(backend._client, "get", return_value=_resp(404))
+
+    with pytest.raises(FileNotFoundError, match="hero.png"):
+        await backend.read_range("reference", "hero.png", offset=0, length=100)
+
+
+@pytest.mark.unit
+async def test_read_range_negative_offset_raises(backend):
+    with pytest.raises(ValueError, match="non-negative"):
+        await backend.read_range("reference", "hero.png", offset=-1, length=100)
+
+
+# ------------------------------------------------------------------
 # write
 # ------------------------------------------------------------------
 

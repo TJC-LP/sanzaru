@@ -47,6 +47,21 @@ class StorageBackend(Protocol):
         """
         ...
 
+    async def read_range(self, path_type: PathType, filename: str, offset: int, length: int) -> bytes:
+        """Read a byte range from a file.
+
+        Returns up to *length* bytes starting at *offset*.  Returns fewer
+        bytes if the file is shorter than ``offset + length``.
+
+        This avoids loading the entire file into memory for chunked serving
+        (e.g. the MCP media viewer).
+
+        Raises:
+            FileNotFoundError: If file does not exist.
+            ValueError: If path traversal detected or offset is negative.
+        """
+        ...
+
     async def write(self, path_type: PathType, filename: str, data: bytes) -> str:
         """Write entire file contents.
 

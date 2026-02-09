@@ -59,6 +59,15 @@ class LocalStorageBackend:
         async with aiofiles.open(file_path, "rb") as f:
             return await f.read()
 
+    async def read_range(self, path_type: PathType, filename: str, offset: int, length: int) -> bytes:
+        if offset < 0:
+            raise ValueError(f"offset must be non-negative, got {offset}")
+        self._check_symlink(path_type, filename)
+        file_path = self._safe(path_type, filename)
+        async with aiofiles.open(file_path, "rb") as f:
+            await f.seek(offset)
+            return await f.read(length)
+
     async def write(self, path_type: PathType, filename: str, data: bytes) -> str:
         file_path = self._safe(path_type, filename, allow_create=True)
         async with aiofiles.open(file_path, "wb") as f:

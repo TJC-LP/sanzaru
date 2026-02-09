@@ -10,6 +10,8 @@ import base64
 import mimetypes
 from typing import Literal, TypedDict
 
+import anyio
+
 from ..config import logger
 from ..storage.factory import get_storage
 from ..storage.protocol import PathType
@@ -137,17 +139,18 @@ async def get_media_data(
     path_type = _resolve_path_type(media_type)
     storage = get_storage()
 
-    # Read entire file, then slice (storage.read returns full bytes)
-    file_data = await storage.read(path_type, filename)
-    total_size = len(file_data)
+    # Get total size via stat (single HEAD request for Databricks)
+    info = await storage.stat(path_type, filename)
+    total_size = info.size_bytes
 
-    # Slice the requested chunk
-    chunk = file_data[offset : offset + chunk_size]
+    # Read only the requested range (avoids full-file reads on remote backends)
+    chunk = await storage.read_range(path_type, filename, offset, chunk_size)
     actual_chunk_size = len(chunk)
     is_last = (offset + actual_chunk_size) >= total_size
 
     mime_type = _guess_mime_type(filename, media_type)
-    encoded = base64.b64encode(chunk).decode("ascii")
+    # Base64 encode in thread pool to avoid blocking the event loop
+    encoded = await anyio.to_thread.run_sync(lambda: base64.b64encode(chunk).decode("ascii"))
 
     logger.debug(
         "get_media_data: %s/%s offset=%d chunk=%d total=%d is_last=%s",

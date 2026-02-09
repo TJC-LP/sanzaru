@@ -70,6 +70,55 @@ async def test_read_rejects_symlink(tmp_path):
 
 
 # ------------------------------------------------------------------
+# read_range
+# ------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_read_range_basic(tmp_path):
+    ref = tmp_path / "refs"
+    ref.mkdir()
+    (ref / "data.bin").write_bytes(b"0123456789ABCDEF")
+
+    backend = LocalStorageBackend(path_overrides={"reference": ref})
+    chunk = await backend.read_range("reference", "data.bin", offset=4, length=4)
+    assert chunk == b"4567"
+
+
+@pytest.mark.unit
+async def test_read_range_from_start(tmp_path):
+    ref = tmp_path / "refs"
+    ref.mkdir()
+    (ref / "data.bin").write_bytes(b"HELLO_WORLD")
+
+    backend = LocalStorageBackend(path_overrides={"reference": ref})
+    chunk = await backend.read_range("reference", "data.bin", offset=0, length=5)
+    assert chunk == b"HELLO"
+
+
+@pytest.mark.unit
+async def test_read_range_past_end(tmp_path):
+    ref = tmp_path / "refs"
+    ref.mkdir()
+    (ref / "data.bin").write_bytes(b"SHORT")
+
+    backend = LocalStorageBackend(path_overrides={"reference": ref})
+    chunk = await backend.read_range("reference", "data.bin", offset=3, length=100)
+    assert chunk == b"RT"
+
+
+@pytest.mark.unit
+async def test_read_range_negative_offset(tmp_path):
+    ref = tmp_path / "refs"
+    ref.mkdir()
+    (ref / "data.bin").write_bytes(b"DATA")
+
+    backend = LocalStorageBackend(path_overrides={"reference": ref})
+    with pytest.raises(ValueError, match="non-negative"):
+        await backend.read_range("reference", "data.bin", offset=-1, length=4)
+
+
+# ------------------------------------------------------------------
 # write
 # ------------------------------------------------------------------
 
