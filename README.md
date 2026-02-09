@@ -77,6 +77,16 @@ That's it! Claude Code will automatically connect and you can start generating v
 
 ## Installation
 
+### Claude Code Plugin (Recommended)
+
+Install as a plugin — auto-configures the MCP server + includes prompting guidance:
+
+```bash
+/plugin marketplace add TJC-LP/sanzaru
+```
+
+Requires `OPENAI_API_KEY` and `SANZARU_MEDIA_PATH` environment variables to be set.
+
 ### Quick Install
 ```bash
 # All features

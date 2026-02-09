@@ -1,8 +1,8 @@
 {
   "mcpServers": {
     "sanzaru": {
-      "command": "uv",
-      "args": ["run", "sanzaru"],
+      "command": "uvx",
+      "args": ["sanzaru[all]"],
       "env": {
         "OPENAI_API_KEY": "${OPENAI_API_KEY}",
         "SANZARU_MEDIA_PATH": "${SANZARU_MEDIA_PATH}"
