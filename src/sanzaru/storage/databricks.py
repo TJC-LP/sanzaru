@@ -17,6 +17,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from urllib.parse import quote
 
+import aiofiles
 import httpx
 
 from ..user_context import get_user_context, user_slug
@@ -191,6 +192,19 @@ class DatabricksVolumesBackend:
         resp.raise_for_status()
         return resp.content
 
+    async def read_range(self, path_type: PathType, filename: str, offset: int, length: int) -> bytes:
+        if offset < 0:
+            raise ValueError(f"offset must be non-negative, got {offset}")
+        headers = await self._headers()
+        headers["Range"] = f"bytes={offset}-{offset + length - 1}"
+        resp = await self._client.get(self._file_url(path_type, filename), headers=headers)
+        if resp.status_code == 404:
+            raise FileNotFoundError(f"File not found: {filename}")
+        # Accept both 200 (full content) and 206 (partial content)
+        if resp.status_code not in (200, 206):
+            resp.raise_for_status()
+        return resp.content
+
     async def write(self, path_type: PathType, filename: str, data: bytes) -> str:
         self._validate_filename(filename)
         headers = await self._headers()
@@ -291,9 +305,10 @@ class DatabricksVolumesBackend:
         suffix = pathlib.PurePosixPath(filename).suffix
         tmp = tempfile.NamedTemporaryFile(suffix=suffix, delete=False)  # noqa: SIM115
         tmp_path = pathlib.Path(tmp.name)
+        tmp.close()
         try:
-            tmp.write(data)
-            tmp.close()
+            async with aiofiles.open(tmp_path, "wb") as f:
+                await f.write(data)
             yield tmp_path
         finally:
             tmp_path.unlink(missing_ok=True)

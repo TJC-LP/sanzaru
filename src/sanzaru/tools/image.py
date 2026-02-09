@@ -166,8 +166,8 @@ async def create_image(
             # Read image via storage backend (handles path validation + security)
             img_bytes = await storage.read("reference", filename)
 
-            # Encode to base64
-            base64_data = _encode_image_base64(img_bytes)
+            # Encode to base64 (in thread pool to avoid blocking event loop)
+            base64_data = await anyio.to_thread.run_sync(_encode_image_base64, img_bytes)
             mime_type = _get_mime_type(filename)
 
             # Add to content items
