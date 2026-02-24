@@ -61,11 +61,21 @@ src/sanzaru/
 │   ├── factory.py      # get_storage() singleton factory
 │   ├── local.py        # Local filesystem backend
 │   └── databricks.py   # Databricks Unity Catalog Volumes backend
+├── infrastructure/     # Shared infrastructure
+│   ├── cache.py        # Audio file support caching
+│   ├── file_system.py  # FileSystemRepository (storage-backed file I/O)
+│   ├── path_resolver.py # SecurePathResolver
+│   └── text_utils.py   # split_text_for_tts and text chunking
+├── audio/              # Audio domain logic and services
+│   ├── processor.py    # AudioProcessor (format conversion, concatenation)
+│   └── services/       # TTSService, FileService, AudioService, TranscriptionService
 ├── tools/              # Tool implementations
 │   ├── video.py        # 7 video tools
 │   ├── reference.py    # 2 reference image tools
 │   ├── image.py        # 3 image generation tools (Responses API)
 │   ├── images_api.py   # 2 image tools (Images API, gpt-image-1.5)
+│   ├── audio.py        # 9 audio tools (list, transcribe, TTS, chat)
+│   ├── podcast.py      # 1 podcast generation tool
 │   └── media_viewer.py # 2 media viewer tools (MCP App)
 └── app/                # Frontend assets (built, committed)
     └── media-viewer/   # React MCP App for media playback
@@ -307,6 +317,10 @@ The user slug is derived from the email local part (e.g., `rcaputo3@tjclp.com` �
 - **`write_stream()` buffers in memory** — Databricks Files API requires a complete PUT body. For typical Sora videos (20-60 MB) this is acceptable; monitor memory for very large files.
 - **`stat()` returns `modified_timestamp=0.0`** — HEAD response doesn't include mtime.
 - **`local_path()` downloads to temp file** — Libraries needing filesystem access (PIL, pydub) get a temp copy that's cleaned up on context exit.
+
+### Known Limitations (Podcast)
+
+- **Memory footprint**: All segment audio is held in memory during generation. For a 30-minute podcast (~45 MB at 192k MP3), peak memory is approximately 2x the final file size. Monitor for very long podcasts (60+ minutes).
 
 ## Media Viewer (MCP App)
 

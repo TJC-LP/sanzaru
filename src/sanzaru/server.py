@@ -204,12 +204,13 @@ if check_audio_available():
         COMPRESS_AUDIO,
         CONVERT_AUDIO,
         CREATE_AUDIO,
+        GENERATE_PODCAST,
         GET_LATEST_AUDIO,
         LIST_AUDIO_FILES,
         TRANSCRIBE_AUDIO,
         TRANSCRIBE_WITH_ENHANCEMENT,
     )
-    from .tools import audio
+    from .tools import audio, podcast
 
     @mcp.tool(description=LIST_AUDIO_FILES)
     async def list_audio_files(
@@ -287,7 +288,11 @@ if check_audio_available():
     ):
         return await audio.create_audio(text_prompt, model, voice, instructions, speed, output_filename)
 
-    logger.info("Audio tools registered (8 tools)")
+    @mcp.tool(description=GENERATE_PODCAST)
+    async def generate_podcast(script: podcast.PodcastScript, model: SpeechModel = "gpt-4o-mini-tts"):
+        return await podcast.generate_podcast(script, model=model)
+
+    logger.info("Audio tools registered (9 tools)")
 
 
 # ==================== MEDIA VIEWER (CONDITIONAL) ====================
