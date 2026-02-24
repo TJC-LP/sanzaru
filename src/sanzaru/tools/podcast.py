@@ -14,6 +14,7 @@ from io import BytesIO
 from typing import Literal, NotRequired, TypedDict
 
 import anyio
+from aioresult import ResultCapture  # type: ignore[import-untyped]
 from openai._types import Omit, omit
 from openai.types.audio.speech_model import SpeechModel
 from pydantic import BaseModel
@@ -44,11 +45,9 @@ class Segment(TypedDict):
 
 class PodcastConfig(TypedDict):
     default_pause_ms: int
-    section_pause_ms: NotRequired[int]
     intro_silence_ms: NotRequired[int]
     outro_silence_ms: NotRequired[int]
     normalize_loudness: bool
-    target_lufs: NotRequired[float]
     output_format: Literal["mp3", "wav"]
     output_bitrate: NotRequired[str]
 
@@ -133,18 +132,14 @@ def _validate_script(script: PodcastScript) -> tuple[str, list[Speaker], list[Se
 
 def _estimate_duration(segments: list[Segment], speakers: list[Speaker], config: PodcastConfig) -> float:
     """Estimate total podcast duration in seconds (~150 wpm)."""
-    speaker_speeds = {s["id"]: float(s.get("speed", 1.0)) for s in speakers}
+    speaker_speeds = {s["id"]: float(s["speed"]) for s in speakers}
 
     speech_seconds = 0.0
     total_pause_ms = 0
 
     for segment in segments:
         word_count = len(segment["text"].split())
-        speed = (
-            float(segment["speed_override"])
-            if "speed_override" in segment
-            else speaker_speeds.get(segment["speaker"], 1.0)
-        )
+        speed = float(segment["speed_override"]) if "speed_override" in segment else speaker_speeds[segment["speaker"]]
         speech_seconds += word_count * 60.0 / (150.0 * speed)
         total_pause_ms += int(segment.get("pause_after", config["default_pause_ms"]))
 
@@ -167,8 +162,6 @@ async def _generate_tts_bytes(
     into chunks and concatenating. Chunk-level generation is parallelised
     for long segments.
     """
-    from aioresult import ResultCapture  # type: ignore[import-untyped]
-
     client = get_client()
     text_chunks = split_text_for_tts(text)
     instr_param: str | Omit = omit if instructions is None else instructions
@@ -180,6 +173,7 @@ async def _generate_tts_bytes(
             voice=voice,  # type: ignore[arg-type]
             speed=speed,
             instructions=instr_param,
+            response_format="mp3",
         )
         return response.content
 
@@ -193,6 +187,7 @@ async def _generate_tts_bytes(
             voice=voice,  # type: ignore[arg-type]
             speed=speed,
             instructions=instr_param,
+            response_format="mp3",
         )
         return r.content
 
@@ -232,6 +227,7 @@ def _stitch_audio(
     combined = AudioSegment.silent(duration=intro_ms) if intro_ms > 0 else AudioSegment.empty()
 
     for raw_bytes, pause_ms in zip(segment_bytes_list, pause_ms_list, strict=True):
+        # TTS calls explicitly request response_format="mp3" — keep in sync
         seg = AudioSegment.from_mp3(BytesIO(raw_bytes))
         if normalize_loudness:
             seg = pydub_normalize(seg)
@@ -269,18 +265,21 @@ async def generate_podcast(script: PodcastScript, model: SpeechModel = "gpt-4o-m
         f"Podcast '{title}': {len(segments)} segments, {len(speakers)} speakers, ~{estimated_duration:.0f}s estimated"
     )
 
-    segment_bytes_list: list[bytes] = []
-    for i, segment in enumerate(segments):
+    # Generate all TTS segments in parallel
+    async def _gen_segment(i: int, segment: Segment) -> bytes:
         speaker = speaker_map[segment["speaker"]]
         voice = speaker["voice"]
-        speed = segment["speed_override"] if "speed_override" in segment else speaker.get("speed", 1.0)
-        instructions = segment.get("instruction_override") or speaker.get("instructions")
-
+        speed = segment["speed_override"] if "speed_override" in segment else speaker["speed"]
+        instructions = segment.get("instruction_override") or speaker["instructions"]
         logger.info(f"Generating segment {i + 1}/{len(segments)} [{speaker['name']} / {voice}]")
-        audio_bytes = await _generate_tts_bytes(
+        return await _generate_tts_bytes(
             text=segment["text"], voice=voice, speed=speed, model=model, instructions=instructions
         )
-        segment_bytes_list.append(audio_bytes)
+
+    async with anyio.create_task_group() as tg:
+        captures = [ResultCapture.start_soon(tg, _gen_segment, i, seg) for i, seg in enumerate(segments)]
+
+    segment_bytes_list = [c.result() for c in captures]
 
     default_pause_ms = config.get("default_pause_ms", 600)
     pause_ms_list: list[int] = []

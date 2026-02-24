@@ -669,7 +669,7 @@ script must be a JSON object matching this structure:
       "name": string,                // Display name (e.g. "Alex")
       "voice": string,               // TTS voice: alloy|ash|ballad|coral|echo|fable|nova|onyx|sage|shimmer
       "speed": number,               // Speed multiplier 0.25-4.0 (1.0 = normal)
-      "instructions": string,        // Style description (informational)
+      "instructions": string,        // Style directives passed to TTS voice (e.g. "Speak confidently and clearly")
       "role": string                 // Optional: "host"|"cohost"|"narrator"|"interviewer"|"guest"
     }
   ],
@@ -684,11 +684,9 @@ script must be a JSON object matching this structure:
   ],
   "config": {                        // Global podcast settings (required)
     "default_pause_ms": number,      // Default silence between segments (required; 400-800ms recommended)
-    "section_pause_ms": number,      // Longer pause for topic transitions (required; 1000-1500ms recommended)
     "intro_silence_ms": number,      // Silence before first segment (optional; 500ms recommended)
     "outro_silence_ms": number,      // Silence after last segment (optional; 1000ms recommended)
     "normalize_loudness": boolean,   // Peak-normalize each segment for consistent volume (required)
-    "target_lufs": number,           // Target LUFS if normalizing (optional; -16 is podcast standard)
     "output_format": "mp3"|"wav",    // Output format (required)
     "output_bitrate": string         // MP3 bitrate (optional; default "192k")
   }
@@ -738,7 +736,6 @@ A 10-minute podcast needs ~1500 words of content.
   ],
   "config": {
     "default_pause_ms": 600,
-    "section_pause_ms": 1200,
     "intro_silence_ms": 500,
     "outro_silence_ms": 1000,
     "normalize_loudness": true,

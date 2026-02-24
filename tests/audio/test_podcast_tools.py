@@ -65,7 +65,6 @@ def two_speaker_script():
         ],
         "config": {
             "default_pause_ms": 600,
-            "section_pause_ms": 1200,
             "intro_silence_ms": 500,
             "outro_silence_ms": 1000,
             "normalize_loudness": True,
@@ -75,6 +74,7 @@ def two_speaker_script():
     }
 
 
+@pytest.mark.unit
 class TestValidateScript:
     """Unit tests for _validate_script."""
 
@@ -225,12 +225,8 @@ class TestValidateScript:
         minimal_script["speakers"][0]["speed"] = 4.0
         _validate_script(minimal_script)
 
-    def test_section_pause_ms_is_optional(self, minimal_script):
-        """section_pause_ms is not required in config."""
-        assert "section_pause_ms" not in minimal_script["config"]
-        _validate_script(minimal_script)  # Should not raise
 
-
+@pytest.mark.unit
 class TestEstimateDuration:
     """Unit tests for _estimate_duration."""
 
@@ -325,6 +321,7 @@ class TestEstimateDuration:
         assert duration >= 0
 
 
+@pytest.mark.unit
 class TestSafeTitle:
     """Unit tests for _safe_title."""
 
@@ -397,7 +394,6 @@ async def test_generate_podcast_happy_path(mocker, tmp_audio_path):
         ],
         "config": {
             "default_pause_ms": 300,
-            "section_pause_ms": 600,
             "intro_silence_ms": 200,
             "outro_silence_ms": 200,
             "normalize_loudness": True,

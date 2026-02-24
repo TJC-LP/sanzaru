@@ -78,7 +78,7 @@ differences so listeners can distinguish speakers without visual cues.
 |-----------|------------------------|
 | Normal conversational turn | 500–700ms (use default_pause_ms) |
 | Question followed by answer | 700–900ms (slightly longer) |
-| Section transition | 1200–1500ms (use section_pause_ms) |
+| Section transition | 1200–1500ms (explicit pause_after) |
 | Dramatic pause after punchline | 1000–1200ms (explicit pause_after) |
 | Rapid back-and-forth banter | 300–500ms |
 
@@ -86,7 +86,6 @@ differences so listeners can distinguish speakers without visual cues.
 ```json
 {
   "default_pause_ms": 600,
-  "section_pause_ms": 1200,
   "intro_silence_ms": 500,
   "outro_silence_ms": 1000,
   "normalize_loudness": true,
@@ -115,7 +114,7 @@ COHOST: See you next time.
 ```
 
 ### Marking section transitions
-To signal a section break (longer pause), set `pause_after` to `section_pause_ms` value
+To signal a section break (longer pause), set a larger `pause_after` (1200–1500ms)
 on the last segment before the transition:
 ```json
 {"speaker": "host", "text": "Now let's turn to the risks.", "pause_after": 1200}
@@ -173,11 +172,9 @@ on the last segment before the transition:
   ],
   "config": {
     "default_pause_ms": 600,
-    "section_pause_ms": 1200,
     "intro_silence_ms": 500,
     "outro_silence_ms": 1000,
     "normalize_loudness": true,
-    "target_lufs": -16,
     "output_format": "mp3",
     "output_bitrate": "192k"
   }
