@@ -10,7 +10,7 @@
   [![PyPI downloads](https://img.shields.io/pypi/dm/sanzaru)](https://pypi.org/project/sanzaru/)
 </div>
 
-A **stateless**, lightweight **MCP** server that wraps **OpenAI's Sora Video API, Whisper, and GPT-4o Audio APIs** via the OpenAI Python SDK.
+A **stateless**, lightweight **MCP** server that wraps **OpenAI's Sora Video API, Whisper, GPT-4o Audio, and TTS APIs** via the OpenAI Python SDK.
 
 ## Features
 
@@ -31,6 +31,11 @@ A **stateless**, lightweight **MCP** server that wraps **OpenAI's Sora Video API
 - **Audio Chat**: Interactive analysis with GPT-4o
 - **Text-to-Speech**: Multi-voice TTS generation
 - **Processing**: Format conversion, compression, file management
+
+### Podcast Generation
+- Multi-voice podcasts with up to 4 speakers and 10 TTS voices
+- Parallel segment generation with configurable pacing
+- MP3/WAV output with loudness normalization
 
 > **Note:** Content guardrails are enforced by OpenAI. This server does not run local moderation.
 
@@ -172,6 +177,7 @@ uv run sanzaru --transport http --port 8000
 | **Image** | `generate_image`, `edit_image`, `create_image`, `get_image_status`, `download_image` | Generate with gpt-image-1.5 (sync) or GPT-5 (polling) |
 | **Reference** | `list_reference_images`, `prepare_reference_image` | Manage and resize images for Sora compatibility |
 | **Audio** | `transcribe_audio`, `chat_with_audio`, `create_audio`, `convert_audio`, `compress_audio`, `list_audio_files`, `get_latest_audio`, `transcribe_with_enhancement` | Transcription, analysis, TTS, and file management |
+| **Podcast** | `generate_podcast` | Multi-voice podcast generation with parallel TTS and audio stitching |
 | **Media** | `view_media` | Interactive media player via MCP App protocol |
 
 > **Full API documentation**: See [docs/api-reference.md](docs/api-reference.md)
@@ -228,6 +234,21 @@ analysis = chat_with_audio(
     "meeting.mp3",
     user_prompt="Summarize key decisions and action items"
 )
+```
+
+### Generate a Podcast
+```python
+generate_podcast(script={
+    "title": "AI Weekly",
+    "speakers": [
+        {"id": "host", "name": "Alex", "voice": "nova"},
+        {"id": "guest", "name": "Sam", "voice": "echo"}
+    ],
+    "segments": [
+        {"speaker": "host", "text": "Welcome to AI Weekly!"},
+        {"speaker": "guest", "text": "Thanks for having me."}
+    ]
+})
 ```
 
 ## Documentation
