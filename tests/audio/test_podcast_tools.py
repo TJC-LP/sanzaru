@@ -6,7 +6,6 @@ import pytest
 
 from sanzaru.tools.podcast import (
     PodcastResult,
-    _build_transcript,
     _estimate_duration,
     _safe_title,
     _validate_script,
@@ -21,9 +20,6 @@ def tmp_audio_path(tmp_path: pathlib.Path) -> pathlib.Path:
     audio_path = tmp_path / "audio"
     audio_path.mkdir()
     return audio_path
-
-
-# ==================== FIXTURES ====================
 
 
 @pytest.fixture
@@ -88,9 +84,6 @@ def two_speaker_script():
             "output_bitrate": "192k",
         },
     }
-
-
-# ==================== _validate_script UNIT TESTS ====================
 
 
 class TestValidateScript:
@@ -213,9 +206,6 @@ class TestValidateScript:
         _validate_script(minimal_script)  # Should not raise
 
 
-# ==================== _estimate_duration UNIT TESTS ====================
-
-
 class TestEstimateDuration:
     """Unit tests for _estimate_duration."""
 
@@ -299,59 +289,6 @@ class TestEstimateDuration:
         assert duration >= 0
 
 
-# ==================== _build_transcript UNIT TESTS ====================
-
-
-class TestBuildTranscript:
-    """Unit tests for _build_transcript."""
-
-    def test_single_segment_transcript(self):
-        """Single segment produces correct transcript format."""
-        segments = [{"speaker": "host", "text": "Hello there."}]
-        speaker_map = {"host": {"id": "host", "name": "Alex", "voice": "ash", "speed": 1.0, "instructions": ""}}
-
-        result = _build_transcript(segments, speaker_map)
-        assert result == "**Alex:** Hello there."
-
-    def test_two_speaker_transcript(self):
-        """Two-speaker transcript has blank line between turns."""
-        segments = [
-            {"speaker": "host", "text": "Welcome."},
-            {"speaker": "cohost", "text": "Thanks for having me."},
-        ]
-        speaker_map = {
-            "host": {"id": "host", "name": "Alex", "voice": "ash", "speed": 1.0, "instructions": ""},
-            "cohost": {"id": "cohost", "name": "Sam", "voice": "nova", "speed": 1.05, "instructions": ""},
-        }
-
-        result = _build_transcript(segments, speaker_map)
-        lines = result.split("\n\n")
-        assert len(lines) == 2
-        assert lines[0] == "**Alex:** Welcome."
-        assert lines[1] == "**Sam:** Thanks for having me."
-
-    def test_alternating_speakers(self):
-        """Multiple alternating speakers are ordered correctly."""
-        segments = [
-            {"speaker": "a", "text": "First."},
-            {"speaker": "b", "text": "Second."},
-            {"speaker": "a", "text": "Third."},
-        ]
-        speaker_map = {
-            "a": {"id": "a", "name": "Anna", "voice": "ash", "speed": 1.0, "instructions": ""},
-            "b": {"id": "b", "name": "Bob", "voice": "nova", "speed": 1.0, "instructions": ""},
-        }
-
-        result = _build_transcript(segments, speaker_map)
-        lines = result.split("\n\n")
-        assert lines[0] == "**Anna:** First."
-        assert lines[1] == "**Bob:** Second."
-        assert lines[2] == "**Anna:** Third."
-
-
-# ==================== _safe_title UNIT TESTS ====================
-
-
 class TestSafeTitle:
     """Unit tests for _safe_title."""
 
@@ -380,12 +317,9 @@ class TestSafeTitle:
 
     def test_unicode_preserved(self):
         """Unicode letters (accented chars) are treated as alphanumeric and preserved."""
-        result = _safe_title("café podcast")
-        # é is alphanumeric per str.isalnum(), so it is kept
-        assert result == "café_podcast"
-
-
-# ==================== INTEGRATION TESTS ====================
+        result = _safe_title("caf\u00e9 podcast")
+        # \u00e9 is alphanumeric per str.isalnum(), so it is kept
+        assert result == "caf\u00e9_podcast"
 
 
 @pytest.mark.integration
@@ -444,8 +378,6 @@ async def test_generate_podcast_happy_path(mocker, tmp_audio_path):
     assert result.title == "test_ep1"
     assert result.segment_count == 3
     assert result.speakers == ["Alex", "Sam"]
-    assert "Alex" in result.transcript
-    assert "Sam" in result.transcript
     assert result.output_file.startswith("test_ep1_")
     assert result.output_file.endswith(".mp3")
     assert result.estimated_duration_seconds >= 0
@@ -457,6 +389,45 @@ async def test_generate_podcast_happy_path(mocker, tmp_audio_path):
     output_path = tmp_audio_path / result.output_file
     assert output_path.exists()
     assert output_path.read_bytes() == fake_stitched
+
+    # Transcript includes all speakers with correct format
+    assert result.transcript == (
+        "**Alex:** Welcome to the show.\n\n**Sam:** Great to be here.\n\n**Alex:** Let us get started."
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_generate_podcast_single_speaker_transcript(mocker, tmp_audio_path):
+    """generate_podcast transcript for a single segment has correct format."""
+    from sanzaru.storage.local import LocalStorageBackend
+
+    mock_response = mocker.MagicMock()
+    mock_response.content = b"FAKE"
+    mock_client = mocker.MagicMock()
+    mock_client.audio.speech.create = mocker.AsyncMock(return_value=mock_response)
+    mocker.patch("sanzaru.tools.podcast.get_client", return_value=mock_client)
+    mocker.patch("sanzaru.tools.podcast._stitch_audio", return_value=b"STITCHED")
+
+    storage = LocalStorageBackend(path_overrides={"audio": tmp_audio_path})
+    mocker.patch("sanzaru.infrastructure.file_system.get_storage", return_value=storage)
+
+    script = {
+        "title": "solo",
+        "speakers": [{"id": "host", "name": "Alex", "voice": "ash", "speed": 1.0, "instructions": ""}],
+        "segments": [{"speaker": "host", "text": "Hello there."}],
+        "config": {
+            "default_pause_ms": 600,
+            "section_pause_ms": 1200,
+            "normalize_loudness": True,
+            "output_format": "mp3",
+        },
+    }
+
+    from sanzaru.tools.podcast import generate_podcast
+
+    result = await generate_podcast(script)
+    assert result.transcript == "**Alex:** Hello there."
 
 
 @pytest.mark.integration

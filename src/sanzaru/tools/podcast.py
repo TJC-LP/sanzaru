@@ -11,7 +11,7 @@ Generates a multi-voice podcast from a structured script by:
 
 import time
 from io import BytesIO
-from typing import Any
+from typing import Literal, NotRequired, TypedDict
 
 import anyio
 from pydantic import BaseModel
@@ -22,7 +22,41 @@ from ..audio.processor import AudioProcessor
 from ..config import get_client, logger
 from ..infrastructure import FileSystemRepository, split_text_for_tts
 
-# ==================== RESULT MODEL ====================
+
+class Speaker(TypedDict):
+    id: str
+    name: str
+    voice: str
+    speed: float
+    instructions: str
+    role: NotRequired[str]
+
+
+class Segment(TypedDict):
+    speaker: str
+    text: str
+    pause_after: NotRequired[int]
+    speed_override: NotRequired[float]
+    instruction_override: NotRequired[str]
+
+
+class PodcastConfig(TypedDict):
+    default_pause_ms: int
+    section_pause_ms: int
+    intro_silence_ms: NotRequired[int]
+    outro_silence_ms: NotRequired[int]
+    normalize_loudness: bool
+    target_lufs: NotRequired[float]
+    output_format: Literal["mp3", "wav"]
+    output_bitrate: NotRequired[str]
+
+
+class PodcastScript(TypedDict):
+    title: str
+    description: NotRequired[str]
+    speakers: list[Speaker]
+    segments: list[Segment]
+    config: PodcastConfig
 
 
 class PodcastResult(BaseModel):
@@ -36,30 +70,20 @@ class PodcastResult(BaseModel):
     transcript: str
 
 
-# ==================== VALIDATION ====================
-
-
-def _validate_script(script: dict[str, Any]) -> tuple[str, list[dict[str, Any]], list[dict[str, Any]], dict[str, Any]]:
+def _validate_script(script: PodcastScript) -> tuple[str, list[Speaker], list[Segment], PodcastConfig]:
     """Validate PodcastScript structure and return its components.
 
-    Args:
-        script: Raw dict representing a PodcastScript.
-
-    Returns:
-        Tuple of (title, speakers, segments, config).
-
-    Raises:
-        ValueError: If the script is invalid.
+    Raises ValueError if the script is invalid.
     """
     for key in ("title", "speakers", "segments", "config"):
         if key not in script:
             raise ValueError(f"PodcastScript missing required field: '{key}'")
 
-    title: str = script["title"]
+    title = script["title"]
     if not title or not title.strip():
         raise ValueError("PodcastScript 'title' must not be empty")
 
-    speakers: list[dict[str, Any]] = script["speakers"]
+    speakers = script["speakers"]
     if not speakers:
         raise ValueError("PodcastScript must have at least 1 speaker")
     if len(speakers) > 4:
@@ -72,7 +96,7 @@ def _validate_script(script: dict[str, Any]) -> tuple[str, list[dict[str, Any]],
                 raise ValueError(f"Speaker {i} missing required field: '{field}'")
         speaker_ids.add(speaker["id"])
 
-    segments: list[dict[str, Any]] = script["segments"]
+    segments = script["segments"]
     if not segments:
         raise ValueError("PodcastScript must have at least 1 segment")
 
@@ -86,7 +110,7 @@ def _validate_script(script: dict[str, Any]) -> tuple[str, list[dict[str, Any]],
         if len(segment["text"]) > 40000:
             raise ValueError(f"Segment {i} text exceeds 40000 characters")
 
-    config: dict[str, Any] = script["config"]
+    config = script["config"]
     for key in ("default_pause_ms", "section_pause_ms", "normalize_loudness", "output_format"):
         if key not in config:
             raise ValueError(f"PodcastConfig missing required field: '{key}'")
@@ -97,26 +121,8 @@ def _validate_script(script: dict[str, Any]) -> tuple[str, list[dict[str, Any]],
     return title, speakers, segments, config
 
 
-# ==================== DURATION ESTIMATION ====================
-
-
-def _estimate_duration(
-    segments: list[dict[str, Any]],
-    speakers: list[dict[str, Any]],
-    config: dict[str, Any],
-) -> float:
-    """Estimate total podcast duration in seconds.
-
-    Uses ~150 words/minute at 1.0x speed as the baseline.
-
-    Args:
-        segments: List of segment dicts.
-        speakers: List of speaker dicts.
-        config: PodcastConfig dict.
-
-    Returns:
-        Estimated duration in seconds.
-    """
+def _estimate_duration(segments: list[Segment], speakers: list[Speaker], config: PodcastConfig) -> float:
+    """Estimate total podcast duration in seconds (~150 wpm)."""
     speaker_speeds = {s["id"]: float(s.get("speed", 1.0)) for s in speakers}
 
     speech_seconds = 0.0
@@ -132,9 +138,6 @@ def _estimate_duration(
     outro_ms = int(config.get("outro_silence_ms") or 0)
 
     return speech_seconds + (total_pause_ms + intro_ms + outro_ms) / 1000.0
-
-
-# ==================== TTS GENERATION ====================
 
 
 async def _generate_tts_bytes(
@@ -190,9 +193,6 @@ async def _generate_tts_bytes(
     return await processor.concatenate_audio_segments(audio_chunks)
 
 
-# ==================== STITCHING ====================
-
-
 def _stitch_audio(
     segment_bytes_list: list[bytes],
     pause_ms_list: list[int],
@@ -240,89 +240,48 @@ def _stitch_audio(
     return output.getvalue()
 
 
-# ==================== TRANSCRIPT BUILDER ====================
-
-
-def _build_transcript(
-    segments: list[dict[str, Any]],
-    speaker_map: dict[str, dict[str, Any]],
-) -> str:
-    """Build a plain-text transcript from the podcast script.
-
-    Args:
-        segments: List of segment dicts.
-        speaker_map: Mapping from speaker id to speaker dict.
-
-    Returns:
-        Formatted transcript string.
-    """
-    lines = []
-    for segment in segments:
-        speaker = speaker_map[segment["speaker"]]
-        lines.append(f"**{speaker['name']}:** {segment['text']}")
-    return "\n\n".join(lines)
-
-
-# ==================== SAFE FILENAME ====================
-
-
 def _safe_title(title: str) -> str:
     """Convert a podcast title to a filesystem-safe slug."""
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in title).strip("_") or "podcast"
 
 
-# ==================== MAIN TOOL ====================
-
-
-async def generate_podcast(script: dict[str, Any]) -> PodcastResult:
+async def generate_podcast(script: PodcastScript) -> PodcastResult:
     """Generate a multi-voice podcast from a structured PodcastScript.
 
-    Args:
-        script: A PodcastScript object (see schema in tool description).
-
-    Returns:
-        PodcastResult with output filename, duration estimate, and transcript.
-
-    Raises:
-        ValueError: If the script fails validation.
+    Raises ValueError if the script fails validation.
     """
-    # 1. Validate
     title, speakers, segments, config = _validate_script(script)
-    speaker_map = {s["id"]: s for s in speakers}
+    speaker_map: dict[str, Speaker] = {s["id"]: s for s in speakers}
 
-    # 2. Estimate duration (informational)
     estimated_duration = _estimate_duration(segments, speakers, config)
     logger.info(
         f"Podcast '{title}': {len(segments)} segments, {len(speakers)} speakers, ~{estimated_duration:.0f}s estimated"
     )
 
-    # 3. Generate segments sequentially
     segment_bytes_list: list[bytes] = []
     for i, segment in enumerate(segments):
         speaker = speaker_map[segment["speaker"]]
-        voice = str(speaker["voice"])
-        speed = float(segment.get("speed_override") or speaker.get("speed", 1.0))
+        voice = speaker["voice"]
+        speed = segment.get("speed_override") or speaker.get("speed", 1.0)
 
         logger.info(f"Generating segment {i + 1}/{len(segments)} [{speaker['name']} / {voice}]")
         audio_bytes = await _generate_tts_bytes(text=segment["text"], voice=voice, speed=speed)
         segment_bytes_list.append(audio_bytes)
 
-    # 4. Build silence schedule (no trailing pause on last segment — outro covers it)
-    default_pause_ms = int(config.get("default_pause_ms", 600))
+    default_pause_ms = config.get("default_pause_ms", 600)
     pause_ms_list: list[int] = []
     for i, segment in enumerate(segments):
         if i == len(segments) - 1:
             pause_ms_list.append(0)
         else:
-            pause_ms_list.append(int(segment.get("pause_after", default_pause_ms)))
+            pause_ms_list.append(segment.get("pause_after", default_pause_ms))
 
-    intro_ms = int(config.get("intro_silence_ms") or 0)
-    outro_ms = int(config.get("outro_silence_ms") or 0)
-    normalize_loudness = bool(config.get("normalize_loudness", True))
-    output_format = str(config.get("output_format", "mp3"))
-    output_bitrate = str(config.get("output_bitrate", "192k"))
+    intro_ms = config.get("intro_silence_ms") or 0
+    outro_ms = config.get("outro_silence_ms") or 0
+    normalize_loudness = config.get("normalize_loudness", True)
+    output_format = config.get("output_format", "mp3")
+    output_bitrate = config.get("output_bitrate", "192k")
 
-    # 5. Stitch (CPU-bound — run in thread pool)
     logger.info("Stitching podcast audio...")
     final_audio = await anyio.to_thread.run_sync(
         lambda: _stitch_audio(
@@ -336,15 +295,13 @@ async def generate_podcast(script: dict[str, Any]) -> PodcastResult:
         )
     )
 
-    # 6. Write output to audio storage
     timestamp = int(time.time())
     output_filename = f"{_safe_title(title)}_{timestamp}.{output_format}"
     file_repo = FileSystemRepository()
     await file_repo.write_audio_file(output_filename, final_audio)
     logger.info(f"Podcast written: {output_filename} ({len(final_audio):,} bytes)")
 
-    # 7. Build transcript
-    transcript = _build_transcript(segments, speaker_map)
+    transcript = "\n\n".join(f"**{speaker_map[s['speaker']]['name']}:** {s['text']}" for s in segments)
 
     return PodcastResult(
         output_file=output_filename,
