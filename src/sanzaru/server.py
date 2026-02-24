@@ -289,7 +289,7 @@ if check_audio_available():
         return await audio.create_audio(text_prompt, model, voice, instructions, speed, output_filename)
 
     @mcp.tool(description=GENERATE_PODCAST)
-    async def generate_podcast(script: dict):
+    async def generate_podcast(script: podcast.PodcastScript):
         return await podcast.generate_podcast(script)
 
     logger.info("Audio tools registered (9 tools)")
