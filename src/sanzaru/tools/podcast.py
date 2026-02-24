@@ -14,6 +14,8 @@ from io import BytesIO
 from typing import Literal, NotRequired, TypedDict
 
 import anyio
+from openai._types import Omit, omit
+from openai.types.audio.speech_model import SpeechModel
 from pydantic import BaseModel
 from pydub import AudioSegment  # type: ignore[import-untyped]
 from pydub.effects import normalize as pydub_normalize  # type: ignore[import-untyped]
@@ -42,7 +44,7 @@ class Segment(TypedDict):
 
 class PodcastConfig(TypedDict):
     default_pause_ms: int
-    section_pause_ms: int
+    section_pause_ms: NotRequired[int]
     intro_silence_ms: NotRequired[int]
     outro_silence_ms: NotRequired[int]
     normalize_loudness: bool
@@ -94,6 +96,8 @@ def _validate_script(script: PodcastScript) -> tuple[str, list[Speaker], list[Se
         for field in ("id", "name", "voice", "speed", "instructions"):
             if field not in speaker:
                 raise ValueError(f"Speaker {i} missing required field: '{field}'")
+        if not (0.25 <= speaker["speed"] <= 4.0):
+            raise ValueError(f"Speaker {i} speed must be between 0.25 and 4.0, got {speaker['speed']}")
         speaker_ids.add(speaker["id"])
 
     segments = script["segments"]
@@ -107,11 +111,17 @@ def _validate_script(script: PodcastScript) -> tuple[str, list[Speaker], list[Se
             raise ValueError(f"Segment {i} missing required field: 'text'")
         if segment["speaker"] not in speaker_ids:
             raise ValueError(f"Segment {i} references unknown speaker id: '{segment['speaker']}'")
+        if not segment["text"].strip():
+            raise ValueError(f"Segment {i} text must not be empty")
         if len(segment["text"]) > 40000:
             raise ValueError(f"Segment {i} text exceeds 40000 characters")
+        if "speed_override" in segment and not (0.25 <= segment["speed_override"] <= 4.0):
+            raise ValueError(
+                f"Segment {i} speed_override must be between 0.25 and 4.0, got {segment['speed_override']}"
+            )
 
     config = script["config"]
-    for key in ("default_pause_ms", "section_pause_ms", "normalize_loudness", "output_format"):
+    for key in ("default_pause_ms", "normalize_loudness", "output_format"):
         if key not in config:
             raise ValueError(f"PodcastConfig missing required field: '{key}'")
 
@@ -130,7 +140,11 @@ def _estimate_duration(segments: list[Segment], speakers: list[Speaker], config:
 
     for segment in segments:
         word_count = len(segment["text"].split())
-        speed = float(segment.get("speed_override") or speaker_speeds.get(segment["speaker"], 1.0))
+        speed = (
+            float(segment["speed_override"])
+            if "speed_override" in segment
+            else speaker_speeds.get(segment["speaker"], 1.0)
+        )
         speech_seconds += word_count * 60.0 / (150.0 * speed)
         total_pause_ms += int(segment.get("pause_after", config["default_pause_ms"]))
 
@@ -144,32 +158,28 @@ async def _generate_tts_bytes(
     text: str,
     voice: str,
     speed: float,
+    model: SpeechModel = "gpt-4o-mini-tts",
+    instructions: str | None = None,
 ) -> bytes:
     """Generate TTS audio bytes for a single text block.
 
     Handles texts longer than the 4096-character API limit by splitting
     into chunks and concatenating. Chunk-level generation is parallelised
     for long segments.
-
-    Args:
-        text: Text to synthesise.
-        voice: TTS voice identifier.
-        speed: Speech speed multiplier (0.25–4.0).
-
-    Returns:
-        Raw MP3 bytes from the TTS API.
     """
     from aioresult import ResultCapture  # type: ignore[import-untyped]
 
     client = get_client()
     text_chunks = split_text_for_tts(text)
+    instr_param: str | Omit = omit if instructions is None else instructions
 
     if len(text_chunks) == 1:
         response = await client.audio.speech.create(
             input=text_chunks[0],
-            model="gpt-4o-mini-tts",
+            model=model,
             voice=voice,  # type: ignore[arg-type]
             speed=speed,
+            instructions=instr_param,
         )
         return response.content
 
@@ -179,9 +189,10 @@ async def _generate_tts_bytes(
     async def _gen_chunk(chunk_text: str) -> bytes:
         r = await client.audio.speech.create(
             input=chunk_text,
-            model="gpt-4o-mini-tts",
+            model=model,
             voice=voice,  # type: ignore[arg-type]
             speed=speed,
+            instructions=instr_param,
         )
         return r.content
 
@@ -245,7 +256,7 @@ def _safe_title(title: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in title).strip("_") or "podcast"
 
 
-async def generate_podcast(script: PodcastScript) -> PodcastResult:
+async def generate_podcast(script: PodcastScript, model: SpeechModel = "gpt-4o-mini-tts") -> PodcastResult:
     """Generate a multi-voice podcast from a structured PodcastScript.
 
     Raises ValueError if the script fails validation.
@@ -262,10 +273,13 @@ async def generate_podcast(script: PodcastScript) -> PodcastResult:
     for i, segment in enumerate(segments):
         speaker = speaker_map[segment["speaker"]]
         voice = speaker["voice"]
-        speed = segment.get("speed_override") or speaker.get("speed", 1.0)
+        speed = segment["speed_override"] if "speed_override" in segment else speaker.get("speed", 1.0)
+        instructions = segment.get("instruction_override") or speaker.get("instructions")
 
         logger.info(f"Generating segment {i + 1}/{len(segments)} [{speaker['name']} / {voice}]")
-        audio_bytes = await _generate_tts_bytes(text=segment["text"], voice=voice, speed=speed)
+        audio_bytes = await _generate_tts_bytes(
+            text=segment["text"], voice=voice, speed=speed, model=model, instructions=instructions
+        )
         segment_bytes_list.append(audio_bytes)
 
     default_pause_ms = config.get("default_pause_ms", 600)

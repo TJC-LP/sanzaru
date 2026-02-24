@@ -1,7 +1,5 @@
 """Tests for the multi-voice podcast generation tool."""
 
-import pathlib
-
 import pytest
 
 from sanzaru.tools.podcast import (
@@ -12,14 +10,6 @@ from sanzaru.tools.podcast import (
 )
 
 pytestmark = pytest.mark.audio
-
-
-@pytest.fixture
-def tmp_audio_path(tmp_path: pathlib.Path) -> pathlib.Path:
-    """Create a temporary directory for audio files."""
-    audio_path = tmp_path / "audio"
-    audio_path.mkdir()
-    return audio_path
 
 
 @pytest.fixture
@@ -41,7 +31,6 @@ def minimal_script():
         ],
         "config": {
             "default_pause_ms": 600,
-            "section_pause_ms": 1200,
             "normalize_loudness": True,
             "output_format": "mp3",
         },
@@ -205,6 +194,42 @@ class TestValidateScript:
         minimal_script["segments"][0]["speaker"] = "s0"
         _validate_script(minimal_script)  # Should not raise
 
+    def test_segment_empty_text_raises(self, minimal_script):
+        """Segment with empty/whitespace-only text raises ValueError."""
+        minimal_script["segments"][0]["text"] = "   "
+        with pytest.raises(ValueError, match="text must not be empty"):
+            _validate_script(minimal_script)
+
+    def test_speaker_speed_out_of_range_raises(self, minimal_script):
+        """Speaker speed outside 0.25–4.0 raises ValueError."""
+        minimal_script["speakers"][0]["speed"] = 5.0
+        with pytest.raises(ValueError, match="speed must be between 0.25 and 4.0"):
+            _validate_script(minimal_script)
+
+    def test_speaker_speed_too_low_raises(self, minimal_script):
+        """Speaker speed below 0.25 raises ValueError."""
+        minimal_script["speakers"][0]["speed"] = 0.1
+        with pytest.raises(ValueError, match="speed must be between 0.25 and 4.0"):
+            _validate_script(minimal_script)
+
+    def test_segment_speed_override_out_of_range_raises(self, minimal_script):
+        """Segment speed_override outside 0.25–4.0 raises ValueError."""
+        minimal_script["segments"][0]["speed_override"] = 0.1
+        with pytest.raises(ValueError, match="speed_override must be between 0.25 and 4.0"):
+            _validate_script(minimal_script)
+
+    def test_speed_at_boundaries_valid(self, minimal_script):
+        """Speed values at exactly 0.25 and 4.0 pass validation."""
+        minimal_script["speakers"][0]["speed"] = 0.25
+        _validate_script(minimal_script)
+        minimal_script["speakers"][0]["speed"] = 4.0
+        _validate_script(minimal_script)
+
+    def test_section_pause_ms_is_optional(self, minimal_script):
+        """section_pause_ms is not required in config."""
+        assert "section_pause_ms" not in minimal_script["config"]
+        _validate_script(minimal_script)  # Should not raise
+
 
 class TestEstimateDuration:
     """Unit tests for _estimate_duration."""
@@ -277,6 +302,17 @@ class TestEstimateDuration:
 
         duration = _estimate_duration(segments, speakers, config)
         assert duration == pytest.approx(30.0)
+
+    def test_speed_override_zero_not_ignored(self):
+        """speed_override=0.25 (minimum) is not treated as falsy and ignored."""
+        text = " ".join(["word"] * 150)
+        speakers = [{"id": "host", "speed": 1.0}]
+        segments = [{"speaker": "host", "text": text, "speed_override": 0.25}]
+        config = {"default_pause_ms": 0}
+
+        duration = _estimate_duration(segments, speakers, config)
+        # At 0.25x speed: 150 * 60 / (150 * 0.25) = 240s
+        assert duration == pytest.approx(240.0)
 
     def test_empty_intro_outro_defaults_to_zero(self):
         """Missing intro/outro silence defaults to zero without error."""
@@ -418,7 +454,6 @@ async def test_generate_podcast_single_speaker_transcript(mocker, tmp_audio_path
         "segments": [{"speaker": "host", "text": "Hello there."}],
         "config": {
             "default_pause_ms": 600,
-            "section_pause_ms": 1200,
             "normalize_loudness": True,
             "output_format": "mp3",
         },
@@ -452,7 +487,6 @@ async def test_generate_podcast_unknown_speaker_raises():
         "segments": [{"speaker": "nobody", "text": "This will fail."}],
         "config": {
             "default_pause_ms": 600,
-            "section_pause_ms": 1200,
             "normalize_loudness": True,
             "output_format": "mp3",
         },

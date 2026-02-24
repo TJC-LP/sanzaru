@@ -289,8 +289,8 @@ if check_audio_available():
         return await audio.create_audio(text_prompt, model, voice, instructions, speed, output_filename)
 
     @mcp.tool(description=GENERATE_PODCAST)
-    async def generate_podcast(script: podcast.PodcastScript):
-        return await podcast.generate_podcast(script)
+    async def generate_podcast(script: podcast.PodcastScript, model: SpeechModel = "gpt-4o-mini-tts"):
+        return await podcast.generate_podcast(script, model=model)
 
     logger.info("Audio tools registered (9 tools)")
 
