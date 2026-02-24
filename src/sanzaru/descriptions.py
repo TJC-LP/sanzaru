@@ -645,6 +645,109 @@ Example workflows:
    create_audio("Welcome message", voice="shimmer", output_filename="welcome.mp3")"""
 
 
+# ==================== PODCAST GENERATION TOOL DESCRIPTIONS ====================
+
+GENERATE_PODCAST = """Generate a multi-voice podcast from a structured PodcastScript.
+
+Takes a fully-specified script with speaker definitions and segment content, generates
+each segment via TTS (sequentially), and stitches them into a single audio file with
+configurable silence gaps and optional loudness normalization.
+
+All state is in-memory — no temp files are created. The final output is written directly
+to the audio storage path.
+
+**Schema:**
+
+script must be a JSON object matching this structure:
+
+{
+  "title": string,                   // Used for output filename (required)
+  "description": string,             // Optional show notes (optional)
+  "speakers": [                      // 1-4 speaker definitions (required)
+    {
+      "id": string,                  // Unique identifier, referenced in segments (e.g. "host")
+      "name": string,                // Display name (e.g. "Alex")
+      "voice": string,               // TTS voice: alloy|ash|ballad|coral|echo|fable|nova|onyx|sage|shimmer
+      "speed": number,               // Speed multiplier 0.25-4.0 (1.0 = normal)
+      "instructions": string,        // Style description (informational)
+      "role": string                 // Optional: "host"|"cohost"|"narrator"|"interviewer"|"guest"
+    }
+  ],
+  "segments": [                      // Ordered list of spoken segments (required)
+    {
+      "speaker": string,             // Must match a speaker id (required)
+      "text": string,                // Spoken content (required, max ~40000 chars)
+      "pause_after": number,         // Silence in ms after this segment (optional, overrides default)
+      "speed_override": number,      // Override speaker speed for this segment (optional)
+      "instruction_override": string // Override speaker instructions for this segment (optional)
+    }
+  ],
+  "config": {                        // Global podcast settings (required)
+    "default_pause_ms": number,      // Default silence between segments (required; 400-800ms recommended)
+    "section_pause_ms": number,      // Longer pause for topic transitions (required; 1000-1500ms recommended)
+    "intro_silence_ms": number,      // Silence before first segment (optional; 500ms recommended)
+    "outro_silence_ms": number,      // Silence after last segment (optional; 1000ms recommended)
+    "normalize_loudness": boolean,   // Peak-normalize each segment for consistent volume (required)
+    "target_lufs": number,           // Target LUFS if normalizing (optional; -16 is podcast standard)
+    "output_format": "mp3"|"wav",    // Output format (required)
+    "output_bitrate": string         // MP3 bitrate (optional; default "192k")
+  }
+}
+
+**Voice guide:**
+- ash: Authoritative, confident — good for hosts and anchors
+- nova: Youthful, friendly — good for co-hosts and guests
+- onyx: Deep, professional — good for narrators
+- alloy: Neutral, balanced — good all-rounder
+- coral: Bright, energetic — good for enthusiastic co-hosts
+- fable: Warm, storytelling — good for narrative segments
+- shimmer: Smooth, polished — good for intros and sign-offs
+
+**Recommended voice pairings:**
+- News/analysis: ash (host) + nova (co-host)
+- Technical deep-dive: onyx (host) + coral (co-host)
+- Narrative/documentary: fable (narrator) + alloy (interview subject)
+- Debate: ash (moderator) + shimmer (guest A) + nova (guest B)
+
+**Duration estimation:**
+Before running, estimate duration: ~150 words/minute at 1.0x speed.
+A 10-minute podcast needs ~1500 words of content.
+
+**Parameters:**
+- script: PodcastScript object (required)
+
+**Returns** PodcastResult with:
+- output_file: Filename of the generated audio (use with view_media or list_audio_files)
+- title: Podcast title
+- segment_count: Number of segments generated
+- estimated_duration_seconds: Estimated total duration
+- speakers: List of speaker display names
+- transcript: Full formatted transcript
+
+**Example (minimal two-speaker podcast):**
+{
+  "title": "tech_talk_ep1",
+  "speakers": [
+    {"id": "host", "name": "Alex", "voice": "ash", "speed": 1.0, "instructions": "Confident host"},
+    {"id": "cohost", "name": "Sam", "voice": "nova", "speed": 1.05, "instructions": "Curious co-host"}
+  ],
+  "segments": [
+    {"speaker": "host", "text": "Welcome to Tech Talk. Today we are discussing functional programming."},
+    {"speaker": "cohost", "text": "I am really excited about this one. Haskell in production — is it real?", "pause_after": 1000},
+    {"speaker": "host", "text": "It absolutely is. Let us break down why."}
+  ],
+  "config": {
+    "default_pause_ms": 600,
+    "section_pause_ms": 1200,
+    "intro_silence_ms": 500,
+    "outro_silence_ms": 1000,
+    "normalize_loudness": true,
+    "output_format": "mp3",
+    "output_bitrate": "192k"
+  }
+}"""
+
+
 # ==================== MEDIA VIEWER TOOL DESCRIPTIONS ====================
 
 VIEW_MEDIA = """Open a media file in the interactive media viewer.
