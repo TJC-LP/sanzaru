@@ -13,6 +13,7 @@ import mimetypes
 from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import ToolAnnotations
 from openai.types import VideoModel, VideoSeconds, VideoSize
 from openai.types.responses.tool_param import ImageGeneration
 from starlette.requests import Request
@@ -34,6 +35,13 @@ except ImportError:
 # Initialize FastMCP server (stateless configuration set at runtime)
 mcp = FastMCP("sanzaru")
 
+# Tool annotation presets (MCP 2025-03-26+)
+READ_ONLY_OPEN = ToolAnnotations(readOnlyHint=True, openWorldHint=True)
+READ_ONLY_CLOSED = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
+WRITE_OPEN = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True)
+WRITE_CLOSED = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+DESTRUCTIVE_OPEN = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=True)
+
 
 # ==================== VIDEO TOOLS (CONDITIONAL) ====================
 if check_video_available():
@@ -48,7 +56,7 @@ if check_video_available():
     )
     from .tools import video
 
-    @mcp.tool(description=CREATE_VIDEO)
+    @mcp.tool(description=CREATE_VIDEO, annotations=WRITE_OPEN)
     async def create_video(
         prompt: str,
         model: VideoModel = "sora-2",
@@ -58,11 +66,11 @@ if check_video_available():
     ):
         return await video.create_video(prompt, model, seconds, size, input_reference_filename)
 
-    @mcp.tool(description=GET_VIDEO_STATUS)
+    @mcp.tool(description=GET_VIDEO_STATUS, annotations=READ_ONLY_OPEN)
     async def get_video_status(video_id: str):
         return await video.get_video_status(video_id)
 
-    @mcp.tool(description=DOWNLOAD_VIDEO)
+    @mcp.tool(description=DOWNLOAD_VIDEO, annotations=WRITE_CLOSED)
     async def download_video(
         video_id: str,
         filename: str | None = None,
@@ -70,19 +78,19 @@ if check_video_available():
     ):
         return await video.download_video(video_id, filename, variant)
 
-    @mcp.tool(description=LIST_VIDEOS)
+    @mcp.tool(description=LIST_VIDEOS, annotations=READ_ONLY_OPEN)
     async def list_videos(limit: int = 20, after: str | None = None, order: Literal["asc", "desc"] = "desc"):
         return await video.list_videos(limit, after, order)
 
-    @mcp.tool(description=DELETE_VIDEO)
+    @mcp.tool(description=DELETE_VIDEO, annotations=DESTRUCTIVE_OPEN)
     async def delete_video(video_id: str):
         return await video.delete_video(video_id)
 
-    @mcp.tool(description=REMIX_VIDEO)
+    @mcp.tool(description=REMIX_VIDEO, annotations=WRITE_OPEN)
     async def remix_video(previous_video_id: str, prompt: str):
         return await video.remix_video(previous_video_id, prompt)
 
-    @mcp.tool(description=LIST_LOCAL_VIDEOS)
+    @mcp.tool(description=LIST_LOCAL_VIDEOS, annotations=READ_ONLY_CLOSED)
     async def list_local_videos(
         pattern: str | None = None,
         file_type: Literal["mp4", "webm", "mov", "all"] = "all",
@@ -110,7 +118,7 @@ if check_image_available():
     )
     from .tools import image, images_api, reference
 
-    @mcp.tool(description=LIST_REFERENCE_IMAGES)
+    @mcp.tool(description=LIST_REFERENCE_IMAGES, annotations=READ_ONLY_CLOSED)
     async def list_reference_images(
         pattern: str | None = None,
         file_type: Literal["jpeg", "png", "webp", "all"] = "all",
@@ -120,7 +128,7 @@ if check_image_available():
     ):
         return await reference.list_reference_images(pattern, file_type, sort_by, order, limit)
 
-    @mcp.tool(description=PREPARE_REFERENCE_IMAGE)
+    @mcp.tool(description=PREPARE_REFERENCE_IMAGE, annotations=WRITE_CLOSED)
     async def prepare_reference_image(
         input_filename: str,
         target_size: VideoSize,
@@ -129,7 +137,7 @@ if check_image_available():
     ):
         return await reference.prepare_reference_image(input_filename, target_size, output_filename, resize_mode)
 
-    @mcp.tool(description=CREATE_IMAGE)
+    @mcp.tool(description=CREATE_IMAGE, annotations=WRITE_OPEN)
     async def create_image(
         prompt: str,
         model: str = "gpt-5.2",
@@ -140,16 +148,16 @@ if check_image_available():
     ):
         return await image.create_image(prompt, model, tool_config, previous_response_id, input_images, mask_filename)
 
-    @mcp.tool(description=GET_IMAGE_STATUS)
+    @mcp.tool(description=GET_IMAGE_STATUS, annotations=READ_ONLY_OPEN)
     async def get_image_status(response_id: str):
         return await image.get_image_status(response_id)
 
-    @mcp.tool(description=DOWNLOAD_IMAGE)
+    @mcp.tool(description=DOWNLOAD_IMAGE, annotations=WRITE_CLOSED)
     async def download_image(response_id: str, filename: str | None = None):
         return await image.download_image(response_id, filename)
 
     # Images API tools (synchronous, blocks until done)
-    @mcp.tool(description=GENERATE_IMAGE)
+    @mcp.tool(description=GENERATE_IMAGE, annotations=WRITE_OPEN)
     async def generate_image(
         prompt: str,
         model: ImageModel = "gpt-image-1.5",
@@ -164,7 +172,7 @@ if check_image_available():
             prompt, model, size, quality, background, output_format, moderation, filename
         )
 
-    @mcp.tool(description=EDIT_IMAGE)
+    @mcp.tool(description=EDIT_IMAGE, annotations=WRITE_OPEN)
     async def edit_image(
         prompt: str,
         input_images: list[str],
@@ -212,7 +220,7 @@ if check_audio_available():
     )
     from .tools import audio, podcast
 
-    @mcp.tool(description=LIST_AUDIO_FILES)
+    @mcp.tool(description=LIST_AUDIO_FILES, annotations=READ_ONLY_CLOSED)
     async def list_audio_files(
         pattern: str | None = None,
         min_size_bytes: int | None = None,
@@ -238,19 +246,19 @@ if check_audio_available():
             reverse=reverse,
         )
 
-    @mcp.tool(description=GET_LATEST_AUDIO)
+    @mcp.tool(description=GET_LATEST_AUDIO, annotations=READ_ONLY_CLOSED)
     async def get_latest_audio():
         return await audio.get_latest_audio()
 
-    @mcp.tool(description=CONVERT_AUDIO)
+    @mcp.tool(description=CONVERT_AUDIO, annotations=WRITE_CLOSED)
     async def convert_audio(input_path: str, output_format: Literal["mp3", "wav"]):
         return await audio.convert_audio(input_path, output_format)
 
-    @mcp.tool(description=COMPRESS_AUDIO)
+    @mcp.tool(description=COMPRESS_AUDIO, annotations=WRITE_CLOSED)
     async def compress_audio(input_path: str, max_mb: int = 25):
         return await audio.compress_audio(input_path, max_mb)
 
-    @mcp.tool(description=TRANSCRIBE_AUDIO)
+    @mcp.tool(description=TRANSCRIBE_AUDIO, annotations=WRITE_OPEN)
     async def transcribe_audio(
         file_path: str,
         model: AudioModel = "gpt-4o-mini-transcribe",
@@ -260,7 +268,7 @@ if check_audio_available():
     ):
         return await audio.transcribe_audio(file_path, model, response_format, prompt, timestamp_granularities)
 
-    @mcp.tool(description=CHAT_WITH_AUDIO)
+    @mcp.tool(description=CHAT_WITH_AUDIO, annotations=WRITE_OPEN)
     async def chat_with_audio(
         file_path: str,
         model: AudioChatModel = "gpt-4o-audio-preview",
@@ -269,7 +277,7 @@ if check_audio_available():
     ):
         return await audio.chat_with_audio(file_path, model, system_prompt, user_prompt)
 
-    @mcp.tool(description=TRANSCRIBE_WITH_ENHANCEMENT)
+    @mcp.tool(description=TRANSCRIBE_WITH_ENHANCEMENT, annotations=WRITE_OPEN)
     async def transcribe_with_enhancement(
         file_path: str,
         enhancement_type: EnhancementType = "detailed",
@@ -277,7 +285,7 @@ if check_audio_available():
     ):
         return await audio.transcribe_with_enhancement(file_path, enhancement_type, model)
 
-    @mcp.tool(description=CREATE_AUDIO)
+    @mcp.tool(description=CREATE_AUDIO, annotations=WRITE_OPEN)
     async def create_audio(
         text_prompt: str,
         model: SpeechModel = "gpt-4o-mini-tts",
@@ -288,7 +296,7 @@ if check_audio_available():
     ):
         return await audio.create_audio(text_prompt, model, voice, instructions, speed, output_filename)
 
-    @mcp.tool(description=GENERATE_PODCAST)
+    @mcp.tool(description=GENERATE_PODCAST, annotations=WRITE_OPEN)
     async def generate_podcast(script: podcast.PodcastScript, model: SpeechModel = "gpt-4o-mini-tts"):
         return await podcast.generate_podcast(script, model=model)
 
@@ -314,6 +322,7 @@ if check_video_available() or check_audio_available() or check_image_available()
 
     @mcp.tool(
         description=VIEW_MEDIA,
+        annotations=READ_ONLY_CLOSED,
         meta={"ui": {"resourceUri": "ui://sanzaru/media-viewer.html"}},
     )
     async def view_media(
@@ -323,8 +332,9 @@ if check_video_available() or check_audio_available() or check_image_available()
         return await media_viewer.view_media(media_type, filename)
 
     @mcp.tool(
-        description="Internal tool used by the MCP App media viewer to fetch base64-encoded chunks of media data. Do not call directly — use view_media instead."
-    )  # noqa: E501
+        description="Internal tool used by the MCP App media viewer to fetch base64-encoded chunks of media data. Do not call directly — use view_media instead.",  # noqa: E501
+        annotations=READ_ONLY_CLOSED,
+    )
     async def _get_media_data(
         media_type: Literal["video", "audio", "image"],
         filename: str,
