@@ -139,10 +139,18 @@ def check_google_available() -> bool:
 
     use_vertex = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("true", "1")
     if use_vertex:
-        if os.getenv("GOOGLE_CLOUD_PROJECT"):
-            logger.info("Google Nano Banana available via Vertex AI (project=%s)", os.getenv("GOOGLE_CLOUD_PROJECT"))
+        project = os.getenv("GOOGLE_CLOUD_PROJECT")
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if project and api_key:
+            logger.info("Google Nano Banana available via Vertex AI Express (project=%s, api_key)", project)
             return True
-        logger.info("GOOGLE_GENAI_USE_VERTEXAI=True but GOOGLE_CLOUD_PROJECT not set - Google image gen disabled")
+        if project:
+            logger.info("Google Nano Banana available via Vertex AI ADC (project=%s)", project)
+            return True
+        if api_key:
+            logger.info("Google Nano Banana available via Vertex AI Express (api_key only)")
+            return True
+        logger.info("GOOGLE_GENAI_USE_VERTEXAI=True but neither GOOGLE_CLOUD_PROJECT nor GOOGLE_API_KEY set")
         return False
 
     if os.getenv("GOOGLE_API_KEY"):

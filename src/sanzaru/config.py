@@ -47,20 +47,23 @@ def get_client() -> AsyncOpenAI:
 def get_google_client():
     """Get a Google Gen AI client instance.
 
-    Supports both Vertex AI and Gemini Developer API via environment variable auto-detection.
+    Supports Vertex AI (ADC or Express mode) and Gemini Developer API via env var auto-detection.
 
-    Credential resolution order (ADC):
-      1. GOOGLE_APPLICATION_CREDENTIALS → JSON file (service account key or WIF config)
-      2. gcloud auth application-default login (local dev)
-      3. Attached service account on GCP compute (GKE, Cloud Run, Compute Engine)
+    Auth is fully driven by environment variables — no explicit credential loading required.
 
-    For Vertex AI (GOOGLE_GENAI_USE_VERTEXAI=True):
-      - Requires: GOOGLE_CLOUD_PROJECT
-      - Optional: GOOGLE_CLOUD_LOCATION (default: us-central1)
-      - Credentials: resolved automatically by ADC
+    Vertex AI (GOOGLE_GENAI_USE_VERTEXAI=True):
+      Standard mode (ADC) — for teams using service accounts, gcloud, or attached SA:
+        GOOGLE_CLOUD_PROJECT=<project>      (required)
+        GOOGLE_CLOUD_LOCATION=<region>      (optional, default: us-central1)
+        GOOGLE_APPLICATION_CREDENTIALS=...  (optional — SA key file, WIF config, etc.)
 
-    For Gemini Developer API:
-      - Requires: GOOGLE_API_KEY
+      Express mode — simplified access for paid-tier projects via API key:
+        GOOGLE_API_KEY=<google-cloud-api-key>
+        GOOGLE_CLOUD_PROJECT=<project>      (optional, but recommended)
+        GOOGLE_CLOUD_LOCATION=<region>      (optional, default: us-central1)
+
+    Gemini Developer API (no GOOGLE_GENAI_USE_VERTEXAI):
+        GOOGLE_API_KEY=<gemini-api-key>
 
     Returns:
         Configured Google Gen AI Client
@@ -78,10 +81,22 @@ def get_google_client():
 
     if use_vertex:
         project = os.getenv("GOOGLE_CLOUD_PROJECT")
-        if not project:
-            raise RuntimeError("GOOGLE_CLOUD_PROJECT is required when GOOGLE_GENAI_USE_VERTEXAI=True")
         location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
-        return genai.Client(vertexai=True, project=project, location=location)
+        api_key = os.getenv("GOOGLE_API_KEY")
+
+        if not project and not api_key:
+            raise RuntimeError(
+                "Vertex AI requires GOOGLE_CLOUD_PROJECT (ADC/service-account auth) "
+                "or GOOGLE_API_KEY (Express mode) when GOOGLE_GENAI_USE_VERTEXAI=True"
+            )
+
+        # Build kwargs: pass project + location when available; add api_key for Express mode
+        kwargs: dict[str, object] = {"vertexai": True, "location": location}
+        if project:
+            kwargs["project"] = project
+        if api_key:
+            kwargs["api_key"] = api_key
+        return genai.Client(**kwargs)
 
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:
