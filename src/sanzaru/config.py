@@ -43,6 +43,56 @@ def get_client() -> AsyncOpenAI:
     return AsyncOpenAI(api_key=api_key)
 
 
+# ---------- Google Gen AI client (stateless) ----------
+def get_google_client():
+    """Get a Google Gen AI client instance.
+
+    Supports both Vertex AI and Gemini Developer API via environment variable auto-detection.
+
+    Credential resolution order (ADC):
+      1. GOOGLE_APPLICATION_CREDENTIALS → JSON file (service account key or WIF config)
+      2. gcloud auth application-default login (local dev)
+      3. Attached service account on GCP compute (GKE, Cloud Run, Compute Engine)
+
+    For Vertex AI (GOOGLE_GENAI_USE_VERTEXAI=True):
+      - Requires: GOOGLE_CLOUD_PROJECT
+      - Optional: GOOGLE_CLOUD_LOCATION (default: us-central1)
+      - Credentials: resolved automatically by ADC
+
+    For Gemini Developer API:
+      - Requires: GOOGLE_API_KEY
+
+    Returns:
+        Configured Google Gen AI Client
+
+    Raises:
+        ImportError: If google-genai package is not installed
+        RuntimeError: If required environment variables are not set
+    """
+    try:
+        from google import genai
+    except ImportError as e:
+        raise ImportError("google-genai package is required. Install with: uv add 'sanzaru[google]'") from e
+
+    use_vertex = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("true", "1")
+
+    if use_vertex:
+        project = os.getenv("GOOGLE_CLOUD_PROJECT")
+        if not project:
+            raise RuntimeError("GOOGLE_CLOUD_PROJECT is required when GOOGLE_GENAI_USE_VERTEXAI=True")
+        location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+        return genai.Client(vertexai=True, project=project, location=location)
+
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "Google credentials not configured. "
+            "Set GOOGLE_GENAI_USE_VERTEXAI=True + GOOGLE_CLOUD_PROJECT (Vertex AI) "
+            "or GOOGLE_API_KEY (Gemini Developer API)"
+        )
+    return genai.Client(api_key=api_key)
+
+
 # ---------- Path configuration (runtime) ----------
 
 # Mapping from path_type to (individual env var, subdirectory under SANZARU_MEDIA_PATH)

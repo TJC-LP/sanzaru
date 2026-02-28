@@ -9,6 +9,7 @@ This module handles image generation operations:
 
 import base64
 import io
+from typing import Literal
 
 import anyio
 from openai._types import Omit, omit
@@ -23,7 +24,7 @@ from openai.types.responses.response_output_item import ImageGenerationCall
 from openai.types.responses.tool_param import ImageGeneration
 from PIL import Image
 
-from ..config import get_client, logger
+from ..config import get_client, get_google_client, logger
 from ..storage import get_storage
 from ..types import ImageDownloadResult, ImageResponse
 from ..utils import generate_filename
@@ -84,35 +85,125 @@ async def _upload_mask_file(data: bytes, filename: str) -> str:
         raise ValueError(f"Failed to upload mask file: {e}") from e
 
 
+# ==================== GOOGLE NANO BANANA ====================
+
+_GOOGLE_DEFAULT_MODEL = "gemini-3.1-flash-image-preview"  # Nano Banana 2
+
+
+async def _create_image_google(
+    prompt: str,
+    model: str,
+    aspect_ratio: str,
+    filename: str | None,
+) -> ImageDownloadResult:
+    """Generate an image using Google Nano Banana (Gemini image generation models).
+
+    Wraps the synchronous Google Gen AI client in a thread pool for async compatibility.
+    The Google API is synchronous and returns results immediately (no polling required).
+
+    Args:
+        prompt: Text description of the image to generate
+        model: Google model ID (e.g., "gemini-3.1-flash-image-preview" for Nano Banana 2)
+        aspect_ratio: Image aspect ratio ("1:1", "16:9", "9:16", "4:3", "3:4")
+        filename: Optional custom filename for the saved image (auto-generated if None)
+
+    Returns:
+        ImageDownloadResult with filename, pixel dimensions, and format
+
+    Raises:
+        ImportError: If google-genai package is not installed
+        RuntimeError: If Google credentials are not configured
+        ValueError: If generation returns no images (e.g., blocked by safety filters)
+    """
+    try:
+        from google.genai.types import GenerateImagesConfig
+    except ImportError as e:
+        raise ImportError("google-genai package is required. Install with: uv add 'sanzaru[google]'") from e
+
+    storage = get_storage()
+    google_client = get_google_client()
+
+    config = GenerateImagesConfig(
+        number_of_images=1,
+        aspect_ratio=aspect_ratio,
+        output_mime_type="image/png",
+    )
+
+    logger.info("Generating Nano Banana image: model=%s aspect_ratio=%s", model, aspect_ratio)
+
+    # Wrap synchronous Google API in thread pool (network I/O — avoids blocking the event loop)
+    def _call_google() -> object:
+        return google_client.models.generate_images(model=model, prompt=prompt, config=config)
+
+    response = await anyio.to_thread.run_sync(_call_google)
+
+    if not response.generated_images:
+        raise ValueError("Google Nano Banana returned no images — prompt may have been blocked by safety filters")
+
+    image_bytes: bytes = response.generated_images[0].image.image_bytes
+
+    if filename is None:
+        filename = generate_filename("nb", "png", use_timestamp=True)
+
+    await storage.write("reference", filename, image_bytes)
+
+    def _get_dimensions() -> tuple[tuple[int, int], str]:
+        img = Image.open(io.BytesIO(image_bytes))
+        return img.size, img.format.lower() if img.format else "png"
+
+    size, fmt = await anyio.to_thread.run_sync(_get_dimensions)
+
+    logger.info("Nano Banana image saved: %s (%dx%d, %s)", filename, size[0], size[1], fmt)
+
+    return {"filename": filename, "size": size, "format": fmt}
+
+
 # ==================== PUBLIC API ====================
 
 
 async def create_image(
     prompt: str,
-    model: str = "gpt-5.2",
+    provider: Literal["openai", "google"] = "openai",
+    model: str | None = None,
+    aspect_ratio: str = "1:1",
+    filename: str | None = None,
     tool_config: ImageGeneration | None = None,
     previous_response_id: str | None = None,
     input_images: list[str] | None = None,
     mask_filename: str | None = None,
-) -> ImageResponse:
-    """Create a new image generation job using Responses API.
+) -> ImageResponse | ImageDownloadResult:
+    """Create a new image generation job using OpenAI Responses API or Google Nano Banana.
 
     Args:
         prompt: Text description of image to generate (or edits to make if input_images provided)
-        model: Mainline model to use (gpt-5.2, gpt-5.1, gpt-5, etc.) - calls the image generation tool
-        tool_config: Optional ImageGeneration tool configuration (size, quality, model, moderation, etc.)
-        previous_response_id: Optional ID to refine previous generation
-        input_images: Optional list of reference image filenames from IMAGE_PATH
-        mask_filename: Optional PNG mask with alpha channel for inpainting
+        provider: Image provider — "openai" (default) or "google" (Nano Banana / Gemini image models)
+        model: Model ID. Defaults by provider:
+            - openai: "gpt-5.2" (or any mainline model)
+            - google: "gemini-3.1-flash-image-preview" (Nano Banana 2, recommended)
+              Other Google models: "gemini-3-pro-image-preview" (Nano Banana Pro),
+              "gemini-2.5-flash-image" (Nano Banana)
+        aspect_ratio: Image aspect ratio for Google provider ("1:1", "16:9", "9:16", "4:3", "3:4").
+            Ignored for OpenAI (use tool_config.size instead).
+        filename: Output filename for Google provider (auto-generated if None).
+            Ignored for OpenAI (use download_image after polling).
+        tool_config: OpenAI ImageGeneration tool configuration (size, quality, model, moderation, etc.).
+            Only used for OpenAI provider.
+        previous_response_id: Refine a previous OpenAI generation iteratively. Only used for OpenAI.
+        input_images: List of reference image filenames from IMAGE_PATH. Only used for OpenAI.
+        mask_filename: PNG mask with alpha channel for inpainting. Only used for OpenAI.
 
     Returns:
-        ImageResponse with response ID, status, and creation timestamp
+        - OpenAI provider: ImageResponse with {id, status, created_at} — poll with get_image_status,
+          then download with download_image.
+        - Google provider: ImageDownloadResult with {filename, size, format} — image is ready
+          immediately, no polling required.
 
     Raises:
-        RuntimeError: If OPENAI_API_KEY not set or IMAGE_PATH not configured
+        RuntimeError: If required API credentials are not set
         ValueError: If invalid filename, path traversal, or mask without input_images
+        ImportError: If google-genai is not installed and provider="google"
 
-    Example tool_config:
+    Example tool_config (OpenAI):
         {
             "type": "image_generation",
             "model": "gpt-image-1.5",  # recommended (or "gpt-image-1", "gpt-image-1-mini")
@@ -124,6 +215,15 @@ async def create_image(
             "background": "transparent"
         }
     """
+    if provider == "google":
+        return await _create_image_google(
+            prompt=prompt,
+            model=model or _GOOGLE_DEFAULT_MODEL,
+            aspect_ratio=aspect_ratio,
+            filename=filename,
+        )
+    # OpenAI provider path
+    openai_model = model or "gpt-5.2"
     client = get_client()
     storage = get_storage()
 
@@ -195,7 +295,7 @@ async def create_image(
     # Create response with image generation tool
     prev_resp_param: str | Omit = omit if previous_response_id is None else previous_response_id
     response = await client.responses.create(
-        model=model,
+        model=openai_model,
         input=input_param,
         tools=[config],
         previous_response_id=prev_resp_param,

@@ -132,13 +132,26 @@ if check_image_available():
     @mcp.tool(description=CREATE_IMAGE)
     async def create_image(
         prompt: str,
-        model: str = "gpt-5.2",
+        provider: Literal["openai", "google"] = "openai",
+        model: str | None = None,
+        aspect_ratio: str = "1:1",
+        filename: str | None = None,
         tool_config: ImageGeneration | None = None,
         previous_response_id: str | None = None,
         input_images: list[str] | None = None,
         mask_filename: str | None = None,
     ):
-        return await image.create_image(prompt, model, tool_config, previous_response_id, input_images, mask_filename)
+        return await image.create_image(
+            prompt,
+            provider,
+            model,
+            aspect_ratio,
+            filename,
+            tool_config,
+            previous_response_id,
+            input_images,
+            mask_filename,
+        )
 
     @mcp.tool(description=GET_IMAGE_STATUS)
     async def get_image_status(response_id: str):

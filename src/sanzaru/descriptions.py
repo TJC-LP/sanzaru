@@ -185,98 +185,74 @@ Example workflow:
 
 # ==================== IMAGE GENERATION TOOL DESCRIPTIONS ====================
 
-CREATE_IMAGE = """Non-blocking async image generation with gpt-image-1.5 support.
+CREATE_IMAGE = """Image generation supporting OpenAI Responses API and Google Nano Banana (Gemini image models).
 
-Creates images from text prompts OR edits existing images by providing reference images.
-Returns immediately with a response_id - use get_image_status() to poll for completion.
-Supports iterative refinement via previous_response_id.
+Switch between providers via the `provider` parameter. Each provider has different strengths:
 
-**Best for:** parallel generation (multiple images at once), iterative refinement chains,
-and workflows where you need to do other work while images generate.
-For simple one-shot generation, generate_image is simpler (no polling needed).
+**Google Nano Banana (provider="google") — synchronous, image ready immediately:**
+- Fastest path: no polling required, result returned directly with filename
+- Powered by Gemini image models (Nano Banana 2 is the default)
+- Best for: speed-first workflows, high-volume generation, character/object consistency
+- Up to 4K resolution, SynthID watermarking, C2PA credentials
 
-**Text-only generation (no input_images):**
-- Generates image from scratch based on prompt
-
-**Image editing (with input_images):**
-- Modifies existing images based on prompt
-- Combines multiple images into new composition
-- First image receives highest detail preservation
-- Prompt describes desired changes, not what's already in images
+**OpenAI Responses API (provider="openai") — async with polling:**
+- Returns immediately with a response_id; poll with get_image_status(), then download_image()
+- Best for: parallel generation, iterative refinement chains (previous_response_id)
 
 Parameters:
 - prompt: Text description (required)
-  * Without input_images: Describe what to generate
-  * With input_images: Describe what changes to make
-- model: Mainline model - "gpt-5.2" (default), "gpt-5.1", "gpt-5", etc.
-- tool_config: Optional ImageGeneration configuration object (optional)
-  * Supports all fields: model, size, quality, moderation, input_fidelity, etc.
-  * MCP library handles serialization automatically
-  * See examples below for common configurations
-- previous_response_id: Refine previous image iteratively (optional)
-- input_images: List of filenames from IMAGE_PATH (optional)
-  * Example: ["cat.png"] or ["lotion.jpg", "soap.png", "bomb.jpg"]
-  * Use list_reference_images() to discover available images
-  * Supported formats: JPEG, PNG, WEBP
-- mask_filename: PNG with alpha channel for inpainting (optional)
-  * Defines which region of first input image to edit
-  * Transparent = edit this area, black = keep original
-  * Requires input_images parameter
+- provider: "openai" (default) or "google"
+- model: Model ID. Defaults per provider:
+  * openai: "gpt-5.2" (mainline model that calls image generation tool)
+  * google: "gemini-3.1-flash-image-preview" (Nano Banana 2, RECOMMENDED)
+    - "gemini-3-pro-image-preview" → Nano Banana Pro (max quality, complex instructions)
+    - "gemini-2.5-flash-image" → Nano Banana (fastest, high-volume)
+- aspect_ratio: Google only — "1:1" (default), "16:9", "9:16", "4:3", "3:4"
+- filename: Google only — custom output filename (auto-generated if omitted)
+- tool_config: OpenAI only — ImageGeneration config object (model, size, quality, etc.)
+  * gpt-image-1.5: STATE-OF-THE-ART OpenAI image model
+  * gpt-image-1: High quality
+  * gpt-image-1-mini: Fast, cost-effective
+- previous_response_id: OpenAI only — refine a previous generation iteratively
+- input_images: OpenAI only — list of reference image filenames from IMAGE_PATH
+- mask_filename: OpenAI only — PNG with alpha channel for inpainting
 
-**Image generation models (tool_config.model):**
-- gpt-image-1.5: STATE-OF-THE-ART (RECOMMENDED) - Best quality, better instruction following, improved text rendering
-- gpt-image-1: High quality image generation
-- gpt-image-1-mini: Fast, cost-effective generation
-
-Common tool_config examples:
-
-Best quality with GPT Image 1.5:
-  tool_config={"type": "image_generation", "model": "gpt-image-1.5"}
-
-Fast generation with mini model:
-  tool_config={"type": "image_generation", "model": "gpt-image-1-mini"}
-
-Lower content moderation:
-  tool_config={"type": "image_generation", "moderation": "low"}
-
-High-fidelity with custom settings:
-  tool_config={
-      "type": "image_generation",
-      "model": "gpt-image-1.5",
-      "quality": "high",
-      "input_fidelity": "high",
-      "size": "1536x1024"
-  }
+Returns:
+- provider="google": ImageDownloadResult with {filename, size, format} — ready immediately
+- provider="openai": ImageResponse with {id, status, created_at} — poll then download
 
 Workflows:
 
-1. Text-only generation (recommended):
+1. Google Nano Banana 2 (fast, synchronous):
+   create_image("a futuristic cityscape at dusk", provider="google")
+
+2. Google landscape:
+   create_image("mountain vista at golden hour", provider="google", aspect_ratio="16:9")
+
+3. Google Nano Banana Pro (max quality):
+   create_image("detailed product render", provider="google", model="gemini-3-pro-image-preview")
+
+4. OpenAI text-only generation:
    create_image("sunset over mountains", tool_config={"type": "image_generation", "model": "gpt-image-1.5"})
 
-2. Single image editing:
+5. OpenAI image editing:
    create_image("add a flamingo to the pool", input_images=["lounge.png"])
 
-3. Multi-image composition:
-   create_image("gift basket with all these items", input_images=["lotion.png", "soap.png", "bomb.jpg"])
+6. OpenAI multi-image composition:
+   create_image("gift basket with all items", input_images=["lotion.png", "soap.png"])
 
-4. High-fidelity logo placement:
-   create_image(
-       "add logo to woman's shirt",
-       input_images=["woman.jpg", "logo.png"],
-       tool_config={"type": "image_generation", "input_fidelity": "high"}
-   )
-
-5. Masked inpainting:
+7. OpenAI masked inpainting:
    create_image("add flamingo", input_images=["pool.png"], mask_filename="pool_mask.png")
 
-6. Fast generation with mini model:
-   create_image("quick sketch of a cat", tool_config={"type": "image_generation", "model": "gpt-image-1-mini"})
-
-7. Iterative refinement:
+8. OpenAI iterative refinement:
    resp1 = create_image("a cyberpunk character")
    resp2 = create_image("add neon details", previous_response_id=resp1.id)
 
-Returns ImageResponse with: id, status, created_at"""
+OpenAI tool_config examples:
+
+Best quality: tool_config={"type": "image_generation", "model": "gpt-image-1.5"}
+Fast: tool_config={"type": "image_generation", "model": "gpt-image-1-mini"}
+High-fidelity: tool_config={"type": "image_generation", "model": "gpt-image-1.5", "quality": "high", "size": "1536x1024"}"""
 
 GET_IMAGE_STATUS = """Check status and progress of image generation.
 
