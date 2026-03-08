@@ -185,79 +185,100 @@ Example workflow:
 
 # ==================== IMAGE GENERATION TOOL DESCRIPTIONS ====================
 
-CREATE_IMAGE = """Image generation supporting OpenAI Responses API and Google Nano Banana (Gemini image models).
+CREATE_IMAGE = """Create an async image generation job via OpenAI Responses API.
 
-Switch between providers via the `provider` parameter. Each provider has different strengths:
+Returns immediately with a response_id. Poll with get_image_status() until completed, then download_image().
+Best for: parallel generation (multiple images at once) and iterative refinement chains (previous_response_id).
 
-**Google Nano Banana (provider="google") — synchronous, image ready immediately:**
-- Fastest path: no polling required, result returned directly with filename
-- Powered by Gemini image models (Nano Banana 2 is the default)
-- Best for: speed-first workflows, high-volume generation, character/object consistency
-- Up to 4K resolution, SynthID watermarking, C2PA credentials
-
-**OpenAI Responses API (provider="openai") — async with polling:**
-- Returns immediately with a response_id; poll with get_image_status(), then download_image()
-- Best for: parallel generation, iterative refinement chains (previous_response_id)
+For synchronous one-shot generation (no polling), use generate_image instead.
+For Google Nano Banana generation, use create_image_google.
 
 Parameters:
-- prompt: Text description (required)
-- provider: "openai" (default) or "google"
-- model: Model ID. Defaults per provider:
-  * openai: "gpt-5.2" (mainline model that calls image generation tool)
-  * google: "gemini-3.1-flash-image-preview" (Nano Banana 2, RECOMMENDED)
-    - "gemini-3-pro-image-preview" → Nano Banana Pro (max quality, complex instructions)
-    - "gemini-2.5-flash-image" → Nano Banana (fastest, high-volume)
-- aspect_ratio: Google only — "1:1" (default), "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9", "5:4", "4:5", "auto"
-- image_size: Google only — output resolution: "1K" (default), "2K", "4K"
-- filename: Google only — custom output filename (auto-generated if omitted)
-- safety_settings: Google only — list of {"category", "threshold"} dicts. All OFF by default.
-  Categories: HARM_CATEGORY_HATE_SPEECH, HARM_CATEGORY_DANGEROUS_CONTENT,
-  HARM_CATEGORY_SEXUALLY_EXPLICIT, HARM_CATEGORY_HARASSMENT
-  Thresholds: "OFF" (default), "BLOCK_LOW_AND_ABOVE", "BLOCK_MEDIUM_AND_ABOVE", "BLOCK_HIGH_AND_ABOVE"
-- tool_config: OpenAI only — ImageGeneration config object (model, size, quality, etc.)
-  * gpt-image-1.5: STATE-OF-THE-ART OpenAI image model
+- prompt: Text description of image to generate (required)
+- model: OpenAI model ID (default: "gpt-5.2")
+- tool_config: ImageGeneration config object to control the image generation tool:
+  * gpt-image-1.5: STATE-OF-THE-ART (recommended)
   * gpt-image-1: High quality
   * gpt-image-1-mini: Fast, cost-effective
-- previous_response_id: OpenAI only — refine a previous generation iteratively
-- input_images: OpenAI only — list of reference image filenames from IMAGE_PATH
-- mask_filename: OpenAI only — PNG with alpha channel for inpainting
+- previous_response_id: Refine a previous generation iteratively (optional)
+- input_images: List of reference image filenames from IMAGE_PATH (optional)
+- mask_filename: PNG with alpha channel for inpainting (optional, requires input_images)
 
-Returns:
-- provider="google": ImageDownloadResult with {filename, size, format} — ready immediately
-- provider="openai": ImageResponse with {id, status, created_at} — poll then download
+Returns ImageResponse with {id, status, created_at} — poll then download.
 
 Workflows:
 
-1. Google Nano Banana 2 (fast, synchronous):
-   create_image("a futuristic cityscape at dusk", provider="google")
-
-2. Google landscape:
-   create_image("mountain vista at golden hour", provider="google", aspect_ratio="16:9")
-
-3. Google Nano Banana Pro (max quality):
-   create_image("detailed product render", provider="google", model="gemini-3-pro-image-preview")
-
-4. OpenAI text-only generation:
+1. Text-only generation:
    create_image("sunset over mountains", tool_config={"type": "image_generation", "model": "gpt-image-1.5"})
 
-5. OpenAI image editing:
+2. Image editing:
    create_image("add a flamingo to the pool", input_images=["lounge.png"])
 
-6. OpenAI multi-image composition:
+3. Multi-image composition:
    create_image("gift basket with all items", input_images=["lotion.png", "soap.png"])
 
-7. OpenAI masked inpainting:
+4. Masked inpainting:
    create_image("add flamingo", input_images=["pool.png"], mask_filename="pool_mask.png")
 
-8. OpenAI iterative refinement:
+5. Iterative refinement:
    resp1 = create_image("a cyberpunk character")
    resp2 = create_image("add neon details", previous_response_id=resp1.id)
 
-OpenAI tool_config examples:
+tool_config examples:
+Best quality: {"type": "image_generation", "model": "gpt-image-1.5"}
+Fast: {"type": "image_generation", "model": "gpt-image-1-mini"}
+High-fidelity: {"type": "image_generation", "model": "gpt-image-1.5", "quality": "high", "size": "1536x1024"}"""
 
-Best quality: tool_config={"type": "image_generation", "model": "gpt-image-1.5"}
-Fast: tool_config={"type": "image_generation", "model": "gpt-image-1-mini"}
-High-fidelity: tool_config={"type": "image_generation", "model": "gpt-image-1.5", "quality": "high", "size": "1536x1024"}"""
+CREATE_IMAGE_GOOGLE = """Generate an image using Google Nano Banana (Gemini image models). Synchronous — image ready immediately.
+
+No polling required. Returns the saved filename, dimensions, and format directly.
+Supports reference images for editing, style transfer, and multi-image composition (up to 14 images).
+
+Models:
+- "gemini-3.1-flash-image-preview": Nano Banana 2 (DEFAULT, RECOMMENDED) — Flash speed + Pro quality, thinking-enhanced
+- "gemini-3-pro-image-preview": Nano Banana Pro — max quality, complex instructions, slowest
+- "gemini-2.5-flash-image": Nano Banana — fastest, high-volume generation
+
+Parameters:
+- prompt: Text description (required). When using input_images, describe only the desired edits/transformation.
+- model: Google model ID (default: "gemini-3.1-flash-image-preview")
+- aspect_ratio: "1:1" (default), "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9", "5:4", "4:5", "auto"
+- image_size: Output resolution: "1K" (default), "2K", "4K"
+- filename: Custom output filename (auto-generated if omitted)
+- input_images: List of reference image filenames from IMAGE_PATH (optional, max 14).
+  Supported formats: JPEG, PNG, WEBP. Use list_reference_images to find available images.
+- safety_settings: List of {"category", "threshold"} dicts. All OFF by default.
+  Categories: HARM_CATEGORY_HATE_SPEECH, HARM_CATEGORY_DANGEROUS_CONTENT,
+  HARM_CATEGORY_SEXUALLY_EXPLICIT, HARM_CATEGORY_HARASSMENT
+  Thresholds: "OFF" (default), "BLOCK_LOW_AND_ABOVE", "BLOCK_MEDIUM_AND_ABOVE", "BLOCK_HIGH_AND_ABOVE"
+
+Returns ImageDownloadResult with {filename, size, format} — ready immediately.
+
+Workflows:
+
+1. Text-only generation:
+   create_image_google("a futuristic cityscape at dusk")
+
+2. Landscape with high resolution:
+   create_image_google("mountain vista at golden hour", aspect_ratio="16:9", image_size="4K")
+
+3. Max quality (Nano Banana Pro):
+   create_image_google("detailed product render", model="gemini-3-pro-image-preview")
+
+4. Image editing with reference:
+   create_image_google("make this watercolor style", input_images=["photo.png"])
+
+5. Multi-image composition:
+   create_image_google("combine these into a collage", input_images=["img1.png", "img2.png", "img3.png"])
+
+6. Character consistency (same character, new scene):
+   create_image_google("place this character in a forest", input_images=["character.png"])
+
+7. Style transfer from reference:
+   create_image_google("apply this art style to a cityscape", input_images=["style_ref.png"])
+
+8. Custom filename:
+   create_image_google("a cute robot", filename="robot_concept.png")"""
 
 GET_IMAGE_STATUS = """Check status and progress of image generation.
 

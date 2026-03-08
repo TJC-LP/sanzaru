@@ -29,6 +29,9 @@ from ..storage import get_storage
 from ..types import ImageDownloadResult, ImageResponse
 from ..utils import generate_filename
 
+# Allowed image extensions for reference image validation
+_ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
+
 # ==================== HELPER FUNCTIONS ====================
 
 
@@ -110,12 +113,13 @@ _DEFAULT_SAFETY_OFF = [
 ]
 
 
-async def _create_image_google(
+async def create_image_google(
     prompt: str,
-    model: GoogleImageModel,
-    aspect_ratio: GoogleAspectRatio,
-    image_size: GoogleImageSize,
-    filename: str | None,
+    model: GoogleImageModel = "gemini-3.1-flash-image-preview",
+    aspect_ratio: GoogleAspectRatio = "1:1",
+    image_size: GoogleImageSize = "1K",
+    filename: str | None = None,
+    input_images: list[str] | None = None,
     safety_settings: list[dict[str, str]] | None = None,
 ) -> ImageDownloadResult:
     """Generate an image using Google Nano Banana (Gemini image generation models).
@@ -123,12 +127,18 @@ async def _create_image_google(
     Uses generate_content() with IMAGE response modality — Nano Banana models are Gemini
     models, not Imagen, so they use the content generation API with image output.
 
+    Supports multimodal input: when input_images are provided, they are loaded as PIL.Image
+    objects and passed alongside the text prompt for image editing, style transfer, or
+    multi-image composition (up to 14 reference images).
+
     Args:
-        prompt: Text description of the image to generate
-        model: Google model ID (e.g., "gemini-3.1-flash-image-preview" for Nano Banana 2)
+        prompt: Text description of the image to generate (or edits to apply to input images)
+        model: Google model ID (default: "gemini-3.1-flash-image-preview" for Nano Banana 2)
         aspect_ratio: Image aspect ratio ("1:1", "16:9", "9:16", "4:3", "3:4", "auto")
         image_size: Output resolution ("1K", "2K", "4K")
         filename: Optional custom filename for the saved image (auto-generated if None)
+        input_images: Optional list of reference image filenames from IMAGE_PATH (max 14).
+            Supported formats: JPEG, PNG, WEBP.
         safety_settings: Optional list of safety settings dicts. Defaults to all OFF.
 
     Returns:
@@ -137,7 +147,7 @@ async def _create_image_google(
     Raises:
         ImportError: If google-genai package is not installed
         RuntimeError: If Google credentials are not configured
-        ValueError: If generation returns no images (e.g., blocked by safety filters)
+        ValueError: If generation returns no images, invalid image format, or too many images
     """
     try:
         from google.genai import types as genai_types
@@ -171,17 +181,53 @@ async def _create_image_google(
     if model in _THINKING_MODELS:
         config.thinking_config = genai_types.ThinkingConfig(thinking_level=genai_types.ThinkingLevel.HIGH)
 
-    logger.info(
-        "Generating Nano Banana image: model=%s aspect_ratio=%s image_size=%s thinking=%s",
-        model,
-        aspect_ratio,
-        image_size,
-        model in _THINKING_MODELS,
-    )
+    # Build contents: text-only or multimodal with reference images
+    contents: str | list[str | Image.Image]
+    if input_images:
+        if len(input_images) > 14:
+            raise ValueError(f"Too many input images ({len(input_images)}). Maximum is 14.")
+
+        pil_images: list[Image.Image] = []
+        for img_filename in input_images:
+            # Validate extension
+            ext = ("." + img_filename.rsplit(".", 1)[-1].lower()) if "." in img_filename else ""
+            if ext not in _ALLOWED_IMAGE_EXTENSIONS:
+                raise ValueError(f"Unsupported image format: {img_filename} (use JPEG, PNG, WEBP)")
+
+            # Read via storage backend (handles path validation + security)
+            img_bytes = await storage.read("reference", img_filename)
+
+            # Open as PIL.Image in thread pool (blocking I/O)
+            def _open_image(data: bytes = img_bytes) -> Image.Image:
+                return Image.open(io.BytesIO(data))
+
+            pil_img = await anyio.to_thread.run_sync(_open_image)
+            pil_images.append(pil_img)
+
+        contents = [prompt, *pil_images]
+
+        logger.info(
+            "Generating Nano Banana image with %d reference image(s): model=%s aspect_ratio=%s image_size=%s thinking=%s",
+            len(input_images),
+            model,
+            aspect_ratio,
+            image_size,
+            model in _THINKING_MODELS,
+        )
+    else:
+        contents = prompt
+
+        logger.info(
+            "Generating Nano Banana image: model=%s aspect_ratio=%s image_size=%s thinking=%s",
+            model,
+            aspect_ratio,
+            image_size,
+            model in _THINKING_MODELS,
+        )
 
     # Wrap synchronous Google API in thread pool (network I/O — avoids blocking the event loop)
     def _call_google() -> genai_types.GenerateContentResponse:
-        return google_client.models.generate_content(model=model, contents=prompt, config=config)
+        return google_client.models.generate_content(model=model, contents=contents, config=config)
 
     response: genai_types.GenerateContentResponse = await anyio.to_thread.run_sync(_call_google)
 
@@ -217,48 +263,30 @@ async def _create_image_google(
 
 async def create_image(
     prompt: str,
-    provider: Literal["openai", "google"] = "openai",
-    model: str | GoogleImageModel | None = None,
-    aspect_ratio: GoogleAspectRatio = "1:1",
-    image_size: GoogleImageSize = "1K",
-    filename: str | None = None,
-    safety_settings: list[dict[str, str]] | None = None,
+    model: str = "gpt-5.2",
     tool_config: ImageGeneration | None = None,
     previous_response_id: str | None = None,
     input_images: list[str] | None = None,
     mask_filename: str | None = None,
-) -> ImageResponse | ImageDownloadResult:
-    """Create a new image generation job using OpenAI Responses API or Google Nano Banana.
+) -> ImageResponse:
+    """Create a new image generation job using OpenAI Responses API.
 
     Args:
         prompt: Text description of image to generate (or edits to make if input_images provided)
-        provider: Image provider — "openai" (default) or "google" (Nano Banana / Gemini image models)
-        model: Model ID. Defaults by provider:
-            - openai: "gpt-5.2" (or any mainline model)
-            - google: "gemini-3.1-flash-image-preview" (Nano Banana 2, recommended)
-              Other Google models: "gemini-3-pro-image-preview" (Nano Banana Pro),
-              "gemini-2.5-flash-image" (Nano Banana)
-        aspect_ratio: Google only — "1:1" (default), "16:9", "9:16", "4:3", "3:4", "auto".
-        image_size: Google only — output resolution "1K" (default), "2K", or "4K".
-        filename: Google only — custom output filename (auto-generated if None).
-        safety_settings: Google only — list of safety setting dicts with "category" and "threshold".
-            Defaults to all categories OFF. Example to enable filtering:
-            [{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"}]
-        tool_config: OpenAI only — ImageGeneration tool configuration (size, quality, model, etc.).
-        previous_response_id: OpenAI only — refine a previous generation iteratively.
-        input_images: OpenAI only — list of reference image filenames from IMAGE_PATH.
-        mask_filename: OpenAI only — PNG mask with alpha channel for inpainting.
+        model: OpenAI model ID (default: "gpt-5.2")
+        tool_config: ImageGeneration tool configuration (size, quality, model, etc.).
+        previous_response_id: Refine a previous generation iteratively.
+        input_images: List of reference image filenames from IMAGE_PATH.
+        mask_filename: PNG mask with alpha channel for inpainting.
 
     Returns:
-        - OpenAI: ImageResponse with {id, status, created_at} — poll then download.
-        - Google: ImageDownloadResult with {filename, size, format} — ready immediately.
+        ImageResponse with {id, status, created_at} — poll with get_image_status, then download_image.
 
     Raises:
-        RuntimeError: If required API credentials are not set
+        RuntimeError: If OPENAI_API_KEY not set
         ValueError: If invalid filename, path traversal, or mask without input_images
-        ImportError: If google-genai is not installed and provider="google"
 
-    Example tool_config (OpenAI):
+    Example tool_config:
         {
             "type": "image_generation",
             "model": "gpt-image-1.5",  # recommended (or "gpt-image-1", "gpt-image-1-mini")
@@ -270,19 +298,6 @@ async def create_image(
             "background": "transparent"
         }
     """
-    if provider == "google":
-        # Default to Nano Banana 2; cast is safe — MCP Literal types enforce valid values at the boundary
-        google_model: GoogleImageModel = model or _GOOGLE_DEFAULT_MODEL  # type: ignore[assignment]
-        return await _create_image_google(
-            prompt=prompt,
-            model=google_model,
-            aspect_ratio=aspect_ratio,
-            image_size=image_size,
-            filename=filename,
-            safety_settings=safety_settings,
-        )
-    # OpenAI provider path
-    openai_model = model or "gpt-5.2"
     client = get_client()
     storage = get_storage()
 
@@ -316,18 +331,18 @@ async def create_image(
         # Structured input with images
         content_items: ResponseInputMessageContentListParam = [ResponseInputTextParam(type="input_text", text=prompt)]
 
-        for filename in input_images:
+        for img_filename in input_images:
             # Validate file extension
-            ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
-            if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
-                raise ValueError(f"Unsupported image format: {filename} (use JPEG, PNG, WEBP)")
+            ext = ("." + img_filename.rsplit(".", 1)[-1].lower()) if "." in img_filename else ""
+            if ext not in _ALLOWED_IMAGE_EXTENSIONS:
+                raise ValueError(f"Unsupported image format: {img_filename} (use JPEG, PNG, WEBP)")
 
             # Read image via storage backend (handles path validation + security)
-            img_bytes = await storage.read("reference", filename)
+            img_bytes = await storage.read("reference", img_filename)
 
             # Encode to base64 (in thread pool to avoid blocking event loop)
             base64_data = await anyio.to_thread.run_sync(_encode_image_base64, img_bytes)
-            mime_type = _get_mime_type(filename)
+            mime_type = _get_mime_type(img_filename)
 
             # Add to content items
             image_item: ResponseInputImageParam = {
@@ -354,7 +369,7 @@ async def create_image(
     # Create response with image generation tool
     prev_resp_param: str | Omit = omit if previous_response_id is None else previous_response_id
     response = await client.responses.create(
-        model=openai_model,
+        model=model,
         input=input_param,
         tools=[config],
         previous_response_id=prev_resp_param,
