@@ -207,8 +207,13 @@ Parameters:
   * google: "gemini-3.1-flash-image-preview" (Nano Banana 2, RECOMMENDED)
     - "gemini-3-pro-image-preview" → Nano Banana Pro (max quality, complex instructions)
     - "gemini-2.5-flash-image" → Nano Banana (fastest, high-volume)
-- aspect_ratio: Google only — "1:1" (default), "16:9", "9:16", "4:3", "3:4"
+- aspect_ratio: Google only — "1:1" (default), "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9", "5:4", "4:5", "auto"
+- image_size: Google only — output resolution: "1K" (default), "2K", "4K"
 - filename: Google only — custom output filename (auto-generated if omitted)
+- safety_settings: Google only — list of {"category", "threshold"} dicts. All OFF by default.
+  Categories: HARM_CATEGORY_HATE_SPEECH, HARM_CATEGORY_DANGEROUS_CONTENT,
+  HARM_CATEGORY_SEXUALLY_EXPLICIT, HARM_CATEGORY_HARASSMENT
+  Thresholds: "OFF" (default), "BLOCK_LOW_AND_ABOVE", "BLOCK_MEDIUM_AND_ABOVE", "BLOCK_HIGH_AND_ABOVE"
 - tool_config: OpenAI only — ImageGeneration config object (model, size, quality, etc.)
   * gpt-image-1.5: STATE-OF-THE-ART OpenAI image model
   * gpt-image-1: High quality

@@ -90,13 +90,11 @@ def get_google_client():
                 "or GOOGLE_API_KEY (Express mode) when GOOGLE_GENAI_USE_VERTEXAI=True"
             )
 
-        # Build kwargs: pass project + location when available; add api_key for Express mode
-        kwargs: dict[str, object] = {"vertexai": True, "location": location}
-        if project:
-            kwargs["project"] = project
+        # API key and project/location are mutually exclusive in the SDK.
+        # Express mode: api_key only. Standard mode: project + location + ADC.
         if api_key:
-            kwargs["api_key"] = api_key
-        return genai.Client(**kwargs)
+            return genai.Client(vertexai=True, api_key=api_key)
+        return genai.Client(vertexai=True, project=project, location=location)
 
     api_key = os.getenv("GOOGLE_API_KEY")
     if not api_key:

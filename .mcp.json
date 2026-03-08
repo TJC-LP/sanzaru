@@ -5,7 +5,11 @@
       "args": ["run", "sanzaru"],
       "env": {
         "OPENAI_API_KEY": "${OPENAI_API_KEY}",
-        "SANZARU_MEDIA_PATH": "${SANZARU_MEDIA_PATH}"
+        "SANZARU_MEDIA_PATH": "${SANZARU_MEDIA_PATH}",
+        "GOOGLE_API_KEY": "${GOOGLE_API_KEY}",
+        "GOOGLE_GENAI_USE_VERTEXAI": "${GOOGLE_GENAI_USE_VERTEXAI}",
+        "GOOGLE_CLOUD_PROJECT": "${GOOGLE_CLOUD_PROJECT}",
+        "GOOGLE_CLOUD_LOCATION": "${GOOGLE_CLOUD_LOCATION}"
       }
     }
   }

@@ -89,23 +89,47 @@ async def _upload_mask_file(data: bytes, filename: str) -> str:
 
 _GOOGLE_DEFAULT_MODEL = "gemini-3.1-flash-image-preview"  # Nano Banana 2
 
+# Type aliases for Google image generation parameters
+GoogleImageModel = Literal[
+    "gemini-3.1-flash-image-preview",  # Nano Banana 2 (default — Flash speed + Pro quality)
+    "gemini-3-pro-image-preview",  # Nano Banana Pro (max quality, complex instructions)
+    "gemini-2.5-flash-image",  # Nano Banana (fastest, high-volume)
+]
+GoogleImageSize = Literal["1K", "2K", "4K"]
+GoogleAspectRatio = Literal["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "21:9", "5:4", "4:5", "auto"]
+
+# Models that support thinking_config (Nano Banana 2 / Flash-based)
+_THINKING_MODELS: set[str] = {"gemini-3.1-flash-image-preview"}
+
+# Default safety settings — all OFF for maximum creative freedom
+_DEFAULT_SAFETY_OFF = [
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "OFF"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "OFF"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "OFF"},
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "OFF"},
+]
+
 
 async def _create_image_google(
     prompt: str,
-    model: str,
-    aspect_ratio: str,
+    model: GoogleImageModel,
+    aspect_ratio: GoogleAspectRatio,
+    image_size: GoogleImageSize,
     filename: str | None,
+    safety_settings: list[dict[str, str]] | None = None,
 ) -> ImageDownloadResult:
     """Generate an image using Google Nano Banana (Gemini image generation models).
 
-    Wraps the synchronous Google Gen AI client in a thread pool for async compatibility.
-    The Google API is synchronous and returns results immediately (no polling required).
+    Uses generate_content() with IMAGE response modality — Nano Banana models are Gemini
+    models, not Imagen, so they use the content generation API with image output.
 
     Args:
         prompt: Text description of the image to generate
         model: Google model ID (e.g., "gemini-3.1-flash-image-preview" for Nano Banana 2)
-        aspect_ratio: Image aspect ratio ("1:1", "16:9", "9:16", "4:3", "3:4")
+        aspect_ratio: Image aspect ratio ("1:1", "16:9", "9:16", "4:3", "3:4", "auto")
+        image_size: Output resolution ("1K", "2K", "4K")
         filename: Optional custom filename for the saved image (auto-generated if None)
+        safety_settings: Optional list of safety settings dicts. Defaults to all OFF.
 
     Returns:
         ImageDownloadResult with filename, pixel dimensions, and format
@@ -116,31 +140,61 @@ async def _create_image_google(
         ValueError: If generation returns no images (e.g., blocked by safety filters)
     """
     try:
-        from google.genai.types import GenerateImagesConfig
+        from google.genai import types as genai_types
     except ImportError as e:
         raise ImportError("google-genai package is required. Install with: uv add 'sanzaru[google]'") from e
 
     storage = get_storage()
     google_client = get_google_client()
 
-    config = GenerateImagesConfig(
-        number_of_images=1,
-        aspect_ratio=aspect_ratio,
-        output_mime_type="image/png",
+    # Build safety settings from dicts → typed SafetySetting objects
+    raw_safety = safety_settings if safety_settings is not None else _DEFAULT_SAFETY_OFF
+    typed_safety = [
+        genai_types.SafetySetting(
+            category=genai_types.HarmCategory(s["category"]),
+            threshold=genai_types.HarmBlockThreshold(s["threshold"]),
+        )
+        for s in raw_safety
+    ]
+
+    config = genai_types.GenerateContentConfig(
+        response_modalities=["IMAGE", "TEXT"],
+        safety_settings=typed_safety,
+        image_config=genai_types.ImageConfig(
+            aspect_ratio=aspect_ratio,
+            image_size=image_size,
+            output_mime_type="image/png",
+        ),
     )
 
-    logger.info("Generating Nano Banana image: model=%s aspect_ratio=%s", model, aspect_ratio)
+    # Nano Banana 2 (Flash-based) supports thinking for better quality
+    if model in _THINKING_MODELS:
+        config.thinking_config = genai_types.ThinkingConfig(thinking_level=genai_types.ThinkingLevel.HIGH)
+
+    logger.info(
+        "Generating Nano Banana image: model=%s aspect_ratio=%s image_size=%s thinking=%s",
+        model,
+        aspect_ratio,
+        image_size,
+        model in _THINKING_MODELS,
+    )
 
     # Wrap synchronous Google API in thread pool (network I/O — avoids blocking the event loop)
-    def _call_google() -> object:
-        return google_client.models.generate_images(model=model, prompt=prompt, config=config)
+    def _call_google() -> genai_types.GenerateContentResponse:
+        return google_client.models.generate_content(model=model, contents=prompt, config=config)
 
-    response = await anyio.to_thread.run_sync(_call_google)
+    response: genai_types.GenerateContentResponse = await anyio.to_thread.run_sync(_call_google)
 
-    if not response.generated_images:
-        raise ValueError("Google Nano Banana returned no images — prompt may have been blocked by safety filters")
+    # Extract image from response parts (Gemini returns mixed text + image parts)
+    image_bytes: bytes | None = None
+    if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+        for part in response.candidates[0].content.parts:
+            if part.inline_data and part.inline_data.data:
+                image_bytes = part.inline_data.data
+                break
 
-    image_bytes: bytes = response.generated_images[0].image.image_bytes
+    if image_bytes is None:
+        raise ValueError("Google Nano Banana returned no image — prompt may have been blocked by safety filters")
 
     if filename is None:
         filename = generate_filename("nb", "png", use_timestamp=True)
@@ -164,9 +218,11 @@ async def _create_image_google(
 async def create_image(
     prompt: str,
     provider: Literal["openai", "google"] = "openai",
-    model: str | None = None,
-    aspect_ratio: str = "1:1",
+    model: str | GoogleImageModel | None = None,
+    aspect_ratio: GoogleAspectRatio = "1:1",
+    image_size: GoogleImageSize = "1K",
     filename: str | None = None,
+    safety_settings: list[dict[str, str]] | None = None,
     tool_config: ImageGeneration | None = None,
     previous_response_id: str | None = None,
     input_images: list[str] | None = None,
@@ -182,21 +238,20 @@ async def create_image(
             - google: "gemini-3.1-flash-image-preview" (Nano Banana 2, recommended)
               Other Google models: "gemini-3-pro-image-preview" (Nano Banana Pro),
               "gemini-2.5-flash-image" (Nano Banana)
-        aspect_ratio: Image aspect ratio for Google provider ("1:1", "16:9", "9:16", "4:3", "3:4").
-            Ignored for OpenAI (use tool_config.size instead).
-        filename: Output filename for Google provider (auto-generated if None).
-            Ignored for OpenAI (use download_image after polling).
-        tool_config: OpenAI ImageGeneration tool configuration (size, quality, model, moderation, etc.).
-            Only used for OpenAI provider.
-        previous_response_id: Refine a previous OpenAI generation iteratively. Only used for OpenAI.
-        input_images: List of reference image filenames from IMAGE_PATH. Only used for OpenAI.
-        mask_filename: PNG mask with alpha channel for inpainting. Only used for OpenAI.
+        aspect_ratio: Google only — "1:1" (default), "16:9", "9:16", "4:3", "3:4", "auto".
+        image_size: Google only — output resolution "1K" (default), "2K", or "4K".
+        filename: Google only — custom output filename (auto-generated if None).
+        safety_settings: Google only — list of safety setting dicts with "category" and "threshold".
+            Defaults to all categories OFF. Example to enable filtering:
+            [{"category": "HARM_CATEGORY_HARASSMENT", "threshold": "BLOCK_MEDIUM_AND_ABOVE"}]
+        tool_config: OpenAI only — ImageGeneration tool configuration (size, quality, model, etc.).
+        previous_response_id: OpenAI only — refine a previous generation iteratively.
+        input_images: OpenAI only — list of reference image filenames from IMAGE_PATH.
+        mask_filename: OpenAI only — PNG mask with alpha channel for inpainting.
 
     Returns:
-        - OpenAI provider: ImageResponse with {id, status, created_at} — poll with get_image_status,
-          then download with download_image.
-        - Google provider: ImageDownloadResult with {filename, size, format} — image is ready
-          immediately, no polling required.
+        - OpenAI: ImageResponse with {id, status, created_at} — poll then download.
+        - Google: ImageDownloadResult with {filename, size, format} — ready immediately.
 
     Raises:
         RuntimeError: If required API credentials are not set
@@ -216,11 +271,15 @@ async def create_image(
         }
     """
     if provider == "google":
+        # Default to Nano Banana 2; cast is safe — MCP Literal types enforce valid values at the boundary
+        google_model: GoogleImageModel = model or _GOOGLE_DEFAULT_MODEL  # type: ignore[assignment]
         return await _create_image_google(
             prompt=prompt,
-            model=model or _GOOGLE_DEFAULT_MODEL,
+            model=google_model,
             aspect_ratio=aspect_ratio,
+            image_size=image_size,
             filename=filename,
+            safety_settings=safety_settings,
         )
     # OpenAI provider path
     openai_model = model or "gpt-5.2"

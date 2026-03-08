@@ -141,13 +141,17 @@ if check_image_available():
     ):
         return await reference.prepare_reference_image(input_filename, target_size, output_filename, resize_mode)
 
+    from .tools.image import GoogleAspectRatio, GoogleImageModel, GoogleImageSize
+
     @mcp.tool(description=CREATE_IMAGE, annotations=WRITE_OPEN)
     async def create_image(
         prompt: str,
         provider: Literal["openai", "google"] = "openai",
-        model: str | None = None,
-        aspect_ratio: str = "1:1",
+        model: str | GoogleImageModel | None = None,
+        aspect_ratio: GoogleAspectRatio = "1:1",
+        image_size: GoogleImageSize = "1K",
         filename: str | None = None,
+        safety_settings: list[dict[str, str]] | None = None,
         tool_config: ImageGeneration | None = None,
         previous_response_id: str | None = None,
         input_images: list[str] | None = None,
@@ -158,7 +162,9 @@ if check_image_available():
             provider,
             model,
             aspect_ratio,
+            image_size,
             filename,
+            safety_settings,
             tool_config,
             previous_response_id,
             input_images,
