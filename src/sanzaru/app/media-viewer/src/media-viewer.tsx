@@ -5,12 +5,12 @@ import { StrictMode, useCallback, useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "./global.css";
 
-/** Shape of the tool input received via ontoolinput / ontoolresult. */
+/** Shape of the tool input received via ontoolinput (only has tool args). */
 interface MediaToolInput {
   filename: string;
   media_type: "video" | "audio" | "image";
-  size_bytes: number;
-  mime_type: string;
+  size_bytes?: number;
+  mime_type?: string;
 }
 
 /** Shape returned by _get_media_data server tool. */
@@ -51,26 +51,37 @@ function extractJson<T>(result: CallToolResult): T | null {
 
 function MediaViewer() {
   const [mediaInput, setMediaInput] = useState<MediaToolInput | null>(null);
+  const [appError, setAppError] = useState<string | null>(null);
 
   const { app, error } = useApp({
     appInfo: { name: "Sanzaru Media Viewer", version: "1.0.0" },
     capabilities: {},
     onAppCreated: (app) => {
+      // ontoolinput fires first with the tool's input arguments (media_type + filename).
+      // size_bytes and mime_type are not available yet — the MediaPlayer handles that.
       app.ontoolinput = async (input) => {
         const args = input.arguments as unknown as MediaToolInput;
-        setMediaInput(args);
-      };
-      app.ontoolresult = async (result) => {
-        const parsed = extractJson<MediaToolInput>(result);
-        if (parsed?.filename) {
-          setMediaInput(parsed);
+        if (args?.filename && args?.media_type) {
+          setMediaInput(args);
         }
       };
-      app.onerror = console.error;
+      // ontoolresult fires after the tool completes with the full result (includes size_bytes, mime_type).
+      // If ontoolinput didn't fire (e.g., some hosts skip it), this is the fallback.
+      app.ontoolresult = async (result) => {
+        const parsed = extractJson<MediaToolInput>(result);
+        if (parsed?.filename && parsed?.media_type) {
+          setMediaInput((prev) => prev ?? parsed);
+        }
+      };
+      app.onerror = (err) => {
+        console.error(err);
+        setAppError(err instanceof Error ? err.message : String(err));
+      };
     },
   });
 
   if (error) return <div className="media-viewer"><span className="error">Error: {error.message}</span></div>;
+  if (appError) return <div className="media-viewer"><span className="error">Error: {appError}</span></div>;
   if (!app) return <div className="media-viewer"><span className="status">Connecting...</span></div>;
   if (!mediaInput) return <div className="media-viewer"><span className="status">Waiting for media...</span></div>;
 
@@ -85,6 +96,8 @@ interface MediaPlayerProps {
 function MediaPlayer({ app, input }: MediaPlayerProps) {
   const [blobUrl, setBlobUrl] = useState<string | null>(null);
   const [progress, setProgress] = useState(0);
+  const [totalSize, setTotalSize] = useState<number | null>(input.size_bytes ?? null);
+  const [mimeType, setMimeType] = useState<string | null>(input.mime_type ?? null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const blobUrlRef = useRef<string | null>(null);
@@ -104,6 +117,7 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
       const chunks: Uint8Array[] = [];
       let offset = 0;
       let done = false;
+      let resolvedMime: string | null = input.mime_type ?? null;
 
       while (!done) {
         const result = await app.callServerTool({
@@ -119,6 +133,13 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
         const chunk = extractJson<MediaDataChunk>(result);
         if (!chunk?.data) {
           throw new Error("No data received from server");
+        }
+
+        // On first chunk, capture total_size and mime_type from the server
+        if (offset === 0) {
+          setTotalSize(chunk.total_size);
+          setMimeType(chunk.mime_type);
+          resolvedMime = chunk.mime_type;
         }
 
         // Decode base64 chunk
@@ -138,8 +159,8 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
         }
       }
 
-      // Assemble blob
-      const blob = new Blob(chunks, { type: input.mime_type });
+      // Assemble blob using server-reported mime type
+      const blob = new Blob(chunks, { type: resolvedMime ?? "application/octet-stream" });
       const url = URL.createObjectURL(blob);
       blobUrlRef.current = url;
       setBlobUrl(url);
@@ -148,7 +169,7 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
     } finally {
       setLoading(false);
     }
-  }, [app, input.filename, input.media_type, input.mime_type]);
+  }, [app, input.filename, input.media_type]);
 
   useEffect(() => {
     loadMedia();
@@ -169,7 +190,10 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
             <div className="fill" style={{ width: `${progress}%` }} />
           </div>
           <span className="progress-text">
-            Loading... {progress}% ({formatBytes(Math.round(input.size_bytes * progress / 100))} / {formatBytes(input.size_bytes)})
+            {totalSize != null
+              ? `Loading... ${progress}% (${formatBytes(Math.round(totalSize * progress / 100))} / ${formatBytes(totalSize)})`
+              : `Loading... ${progress}%`
+            }
           </span>
         </div>
       )}
