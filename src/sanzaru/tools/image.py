@@ -9,6 +9,7 @@ This module handles image generation operations:
 
 import base64
 import io
+import os
 from typing import Literal
 
 import anyio
@@ -167,14 +168,16 @@ async def create_image_google(
         for s in raw_safety
     ]
 
+    # Build image config — output_mime_type only supported on Vertex AI, not Gemini Developer API
+    use_vertex = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("true", "1")
+    image_cfg = genai_types.ImageConfig(aspect_ratio=aspect_ratio, image_size=image_size)
+    if use_vertex:
+        image_cfg.output_mime_type = "image/png"
+
     config = genai_types.GenerateContentConfig(
         response_modalities=["IMAGE", "TEXT"],
         safety_settings=typed_safety,
-        image_config=genai_types.ImageConfig(
-            aspect_ratio=aspect_ratio,
-            image_size=image_size,
-            output_mime_type="image/png",
-        ),
+        image_config=image_cfg,
     )
 
     # Nano Banana 2 (Flash-based) supports thinking for better quality
