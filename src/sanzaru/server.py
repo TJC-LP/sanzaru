@@ -315,7 +315,6 @@ if check_audio_available():
     meta={
         "ui": {
             "prefersBorder": True,
-            "domain": "https://sanzaru-media-viewer.local",
         }
     },
 )
