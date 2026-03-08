@@ -51,6 +51,7 @@ function extractJson<T>(result: CallToolResult): T | null {
 
 function MediaViewer() {
   const [mediaInput, setMediaInput] = useState<MediaToolInput | null>(null);
+  const [appError, setAppError] = useState<string | null>(null);
 
   const { app, error } = useApp({
     appInfo: { name: "Sanzaru Media Viewer", version: "1.0.0" },
@@ -72,11 +73,15 @@ function MediaViewer() {
           setMediaInput((prev) => prev ?? parsed);
         }
       };
-      app.onerror = console.error;
+      app.onerror = (err) => {
+        console.error(err);
+        setAppError(err instanceof Error ? err.message : String(err));
+      };
     },
   });
 
   if (error) return <div className="media-viewer"><span className="error">Error: {error.message}</span></div>;
+  if (appError) return <div className="media-viewer"><span className="error">Error: {appError}</span></div>;
   if (!app) return <div className="media-viewer"><span className="status">Connecting...</span></div>;
   if (!mediaInput) return <div className="media-viewer"><span className="status">Waiting for media...</span></div>;
 
@@ -164,7 +169,7 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
     } finally {
       setLoading(false);
     }
-  }, [app, input.filename, input.media_type, input.mime_type]);
+  }, [app, input.filename, input.media_type]);
 
   useEffect(() => {
     loadMedia();
