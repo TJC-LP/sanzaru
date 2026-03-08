@@ -39,7 +39,11 @@ mcp = FastMCP("sanzaru")
 READ_ONLY_OPEN = ToolAnnotations(readOnlyHint=True, openWorldHint=True)
 READ_ONLY_CLOSED = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
 WRITE_OPEN = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True)
+WRITE_OPEN_IDEMPOTENT = ToolAnnotations(
+    readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True
+)
 WRITE_CLOSED = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+# delete_video: second call 404s but final state is identical (video absent) — idempotent per MCP spec
 DESTRUCTIVE_OPEN = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=True)
 
 
@@ -70,7 +74,7 @@ if check_video_available():
     async def get_video_status(video_id: str):
         return await video.get_video_status(video_id)
 
-    @mcp.tool(description=DOWNLOAD_VIDEO, annotations=WRITE_CLOSED)
+    @mcp.tool(description=DOWNLOAD_VIDEO, annotations=WRITE_OPEN_IDEMPOTENT)
     async def download_video(
         video_id: str,
         filename: str | None = None,
@@ -152,7 +156,7 @@ if check_image_available():
     async def get_image_status(response_id: str):
         return await image.get_image_status(response_id)
 
-    @mcp.tool(description=DOWNLOAD_IMAGE, annotations=WRITE_CLOSED)
+    @mcp.tool(description=DOWNLOAD_IMAGE, annotations=WRITE_OPEN_IDEMPOTENT)
     async def download_image(response_id: str, filename: str | None = None):
         return await image.download_image(response_id, filename)
 
@@ -258,7 +262,7 @@ if check_audio_available():
     async def compress_audio(input_path: str, max_mb: int = 25):
         return await audio.compress_audio(input_path, max_mb)
 
-    @mcp.tool(description=TRANSCRIBE_AUDIO, annotations=WRITE_OPEN)
+    @mcp.tool(description=TRANSCRIBE_AUDIO, annotations=READ_ONLY_OPEN)
     async def transcribe_audio(
         file_path: str,
         model: AudioModel = "gpt-4o-mini-transcribe",
@@ -268,7 +272,7 @@ if check_audio_available():
     ):
         return await audio.transcribe_audio(file_path, model, response_format, prompt, timestamp_granularities)
 
-    @mcp.tool(description=CHAT_WITH_AUDIO, annotations=WRITE_OPEN)
+    @mcp.tool(description=CHAT_WITH_AUDIO, annotations=READ_ONLY_OPEN)
     async def chat_with_audio(
         file_path: str,
         model: AudioChatModel = "gpt-4o-audio-preview",
@@ -277,7 +281,7 @@ if check_audio_available():
     ):
         return await audio.chat_with_audio(file_path, model, system_prompt, user_prompt)
 
-    @mcp.tool(description=TRANSCRIBE_WITH_ENHANCEMENT, annotations=WRITE_OPEN)
+    @mcp.tool(description=TRANSCRIBE_WITH_ENHANCEMENT, annotations=READ_ONLY_OPEN)
     async def transcribe_with_enhancement(
         file_path: str,
         enhancement_type: EnhancementType = "detailed",
