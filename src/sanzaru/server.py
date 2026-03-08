@@ -312,6 +312,12 @@ if check_audio_available():
 @mcp.resource(
     "ui://sanzaru/media-viewer.html",
     mime_type="text/html;profile=mcp-app",
+    meta={
+        "ui": {
+            "prefersBorder": True,
+            "domain": "https://sanzaru-media-viewer.local",
+        }
+    },
 )
 def media_viewer_html() -> str:
     """Serve the bundled media viewer MCP App HTML."""
@@ -338,6 +344,7 @@ if check_video_available() or check_audio_available() or check_image_available()
     @mcp.tool(
         description="Internal tool used by the MCP App media viewer to fetch base64-encoded chunks of media data. Do not call directly — use view_media instead.",  # noqa: E501
         annotations=READ_ONLY_CLOSED,
+        meta={"ui": {"visibility": ["app"]}},
     )
     async def _get_media_data(
         media_type: Literal["video", "audio", "image"],
