@@ -142,7 +142,10 @@ def check_google_available() -> bool:
         project = os.getenv("GOOGLE_CLOUD_PROJECT")
         api_key = os.getenv("GOOGLE_API_KEY")
         if project and api_key:
-            logger.info("Google Nano Banana available via Vertex AI Express (project=%s, api_key)", project)
+            logger.info(
+                "Google Nano Banana available via Vertex AI Express (api_key takes precedence, project=%s ignored)",
+                project,
+            )
             return True
         if project:
             logger.info("Google Nano Banana available via Vertex AI ADC (project=%s)", project)

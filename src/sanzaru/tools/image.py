@@ -27,7 +27,7 @@ from PIL import Image
 
 from ..config import get_client, get_google_client, logger
 from ..storage import get_storage
-from ..types import ImageDownloadResult, ImageResponse
+from ..types import ImageDownloadResult, ImageResponse, SafetySettingDict
 from ..utils import generate_filename
 
 # Allowed image extensions for reference image validation
@@ -91,8 +91,6 @@ async def _upload_mask_file(data: bytes, filename: str) -> str:
 
 # ==================== GOOGLE NANO BANANA ====================
 
-_GOOGLE_DEFAULT_MODEL = "gemini-3.1-flash-image-preview"  # Nano Banana 2
-
 # Type aliases for Google image generation parameters
 GoogleImageModel = Literal[
     "gemini-3.1-flash-image-preview",  # Nano Banana 2 (default — Flash speed + Pro quality)
@@ -106,7 +104,7 @@ GoogleAspectRatio = Literal["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "
 _THINKING_MODELS: set[str] = {"gemini-3.1-flash-image-preview"}
 
 # Default safety settings — all OFF for maximum creative freedom
-_DEFAULT_SAFETY_OFF = [
+_DEFAULT_SAFETY_OFF: list[SafetySettingDict] = [
     {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "OFF"},
     {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "OFF"},
     {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "OFF"},
@@ -121,7 +119,7 @@ async def create_image_google(
     image_size: GoogleImageSize = "1K",
     filename: str | None = None,
     input_images: list[str] | None = None,
-    safety_settings: list[dict[str, str]] | None = None,
+    safety_settings: list[SafetySettingDict] | None = None,
 ) -> ImageDownloadResult:
     """Generate an image using Google Nano Banana (Gemini image generation models).
 
@@ -245,13 +243,16 @@ async def create_image_google(
     if image_bytes is None:
         raise ValueError("Google Nano Banana returned no image — prompt may have been blocked by safety filters")
 
+    # Rebind so closures below see `bytes` instead of `bytes | None`
+    safe_bytes: bytes = image_bytes
+
     if filename is None:
         filename = generate_filename("nb", "png", use_timestamp=True)
 
-    await storage.write("reference", filename, image_bytes)
+    await storage.write("reference", filename, safe_bytes)
 
     def _get_dimensions() -> tuple[tuple[int, int], str]:
-        img = Image.open(io.BytesIO(image_bytes))
+        img = Image.open(io.BytesIO(safe_bytes))
         return img.size, img.format.lower() if img.format else "png"
 
     size, fmt = await anyio.to_thread.run_sync(_get_dimensions)

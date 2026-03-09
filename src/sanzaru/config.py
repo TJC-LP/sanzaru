@@ -8,14 +8,19 @@ This module handles:
 - Logging setup
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import pathlib
 import sys
 from functools import lru_cache
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from openai import AsyncOpenAI
+
+if TYPE_CHECKING:
+    from google import genai
 
 # ---------- Logging configuration ----------
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -44,7 +49,7 @@ def get_client() -> AsyncOpenAI:
 
 
 # ---------- Google Gen AI client (stateless) ----------
-def get_google_client():
+def get_google_client() -> genai.Client:
     """Get a Google Gen AI client instance.
 
     Supports Vertex AI (ADC or Express mode) and Gemini Developer API via env var auto-detection.

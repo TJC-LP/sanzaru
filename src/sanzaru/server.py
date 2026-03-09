@@ -217,6 +217,7 @@ if check_google_available() and check_image_available():
     from .descriptions import CREATE_IMAGE_GOOGLE
     from .tools import image as _image_google
     from .tools.image import GoogleAspectRatio, GoogleImageModel, GoogleImageSize
+    from .types import SafetySettingDict
 
     @mcp.tool(description=CREATE_IMAGE_GOOGLE, annotations=WRITE_OPEN)
     async def create_image_google(
@@ -226,7 +227,7 @@ if check_google_available() and check_image_available():
         image_size: GoogleImageSize = "1K",
         filename: str | None = None,
         input_images: list[str] | None = None,
-        safety_settings: list[dict[str, str]] | None = None,
+        safety_settings: list[SafetySettingDict] | None = None,
     ):
         return await _image_google.create_image_google(
             prompt,
