@@ -242,7 +242,7 @@ Models:
 Parameters:
 - prompt: Text description (required). When using input_images, describe only the desired edits/transformation.
 - model: Google model ID (default: "gemini-3.1-flash-image-preview")
-- aspect_ratio: "1:1" (default), "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9", "5:4", "4:5", "auto"
+- aspect_ratio: "1:1" (default), "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9", "5:4", "4:5"
 - image_size: Output resolution: "1K" (default), "2K", "4K"
 - filename: Custom output filename (auto-generated if omitted)
 - input_images: List of reference image filenames from IMAGE_PATH (optional, max 14).

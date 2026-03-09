@@ -74,6 +74,7 @@ image = [
 ]
 google = [
   "google-genai>=0.8.0",
+  "pillow>=12.0.0",
 ]
 databricks = []  # httpx already a core dep; extra exists for signaling intent
 all = [

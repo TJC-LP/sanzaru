@@ -100,7 +100,7 @@ GoogleImageModel = Literal[
     "gemini-2.5-flash-image",  # Nano Banana (fastest, high-volume)
 ]
 GoogleImageSize = Literal["1K", "2K", "4K"]
-GoogleAspectRatio = Literal["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "21:9", "5:4", "4:5", "auto"]
+GoogleAspectRatio = Literal["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "21:9", "5:4", "4:5"]
 
 # Models that support thinking_config (Nano Banana 2 / Flash-based)
 _THINKING_MODELS: set[str] = {"gemini-3.1-flash-image-preview"}
