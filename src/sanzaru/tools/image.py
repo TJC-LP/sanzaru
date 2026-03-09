@@ -183,7 +183,7 @@ async def create_image_google(
         config.thinking_config = genai_types.ThinkingConfig(thinking_level=genai_types.ThinkingLevel.HIGH)
 
     # Build contents: text-only or multimodal with reference images
-    contents: str | list[str | Image.Image]
+    contents: str | list[str | Image.Image]  # SDK accepts PIL.Image via PartUnion
     if input_images:
         if len(input_images) > 14:
             raise ValueError(f"Too many input images ({len(input_images)}). Maximum is 14.")
@@ -228,7 +228,7 @@ async def create_image_google(
 
     # Wrap synchronous Google API in thread pool (network I/O — avoids blocking the event loop)
     def _call_google() -> genai_types.GenerateContentResponse:
-        return google_client.models.generate_content(model=model, contents=contents, config=config)
+        return google_client.models.generate_content(model=model, contents=contents, config=config)  # type: ignore[arg-type]
 
     response: genai_types.GenerateContentResponse = await anyio.to_thread.run_sync(_call_google)
 
