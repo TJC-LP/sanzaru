@@ -8,14 +8,19 @@ This module handles:
 - Logging setup
 """
 
+from __future__ import annotations
+
 import logging
 import os
 import pathlib
 import sys
 from functools import lru_cache
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from openai import AsyncOpenAI
+
+if TYPE_CHECKING:
+    from google import genai
 
 # ---------- Logging configuration ----------
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -41,6 +46,69 @@ def get_client() -> AsyncOpenAI:
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not set")
     return AsyncOpenAI(api_key=api_key)
+
+
+# ---------- Google Gen AI client (stateless) ----------
+def get_google_client() -> genai.Client:
+    """Get a Google Gen AI client instance.
+
+    Supports Vertex AI (ADC or Express mode) and Gemini Developer API via env var auto-detection.
+
+    Auth is fully driven by environment variables — no explicit credential loading required.
+
+    Vertex AI (GOOGLE_GENAI_USE_VERTEXAI=True):
+      Standard mode (ADC) — for teams using service accounts, gcloud, or attached SA:
+        GOOGLE_CLOUD_PROJECT=<project>      (required)
+        GOOGLE_CLOUD_LOCATION=<region>      (optional, default: us-central1)
+        GOOGLE_APPLICATION_CREDENTIALS=...  (optional — SA key file, WIF config, etc.)
+
+      Express mode — simplified access for paid-tier projects via API key:
+        GOOGLE_API_KEY=<google-cloud-api-key>
+        GOOGLE_CLOUD_PROJECT=<project>      (optional, but recommended)
+        GOOGLE_CLOUD_LOCATION=<region>      (optional, default: us-central1)
+
+    Gemini Developer API (no GOOGLE_GENAI_USE_VERTEXAI):
+        GOOGLE_API_KEY=<gemini-api-key>
+
+    Returns:
+        Configured Google Gen AI Client
+
+    Raises:
+        ImportError: If google-genai package is not installed
+        RuntimeError: If required environment variables are not set
+    """
+    try:
+        from google import genai
+    except ImportError as e:
+        raise ImportError("google-genai package is required. Install with: uv add 'sanzaru[google]'") from e
+
+    use_vertex = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("true", "1")
+
+    if use_vertex:
+        project = os.getenv("GOOGLE_CLOUD_PROJECT")
+        location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
+        api_key = os.getenv("GOOGLE_API_KEY")
+
+        if not project and not api_key:
+            raise RuntimeError(
+                "Vertex AI requires GOOGLE_CLOUD_PROJECT (ADC/service-account auth) "
+                "or GOOGLE_API_KEY (Express mode) when GOOGLE_GENAI_USE_VERTEXAI=True"
+            )
+
+        # API key and project/location are mutually exclusive in the SDK.
+        # Express mode: api_key only. Standard mode: project + location + ADC.
+        if api_key:
+            return genai.Client(vertexai=True, api_key=api_key)
+        return genai.Client(vertexai=True, project=project, location=location)
+
+    api_key = os.getenv("GOOGLE_API_KEY")
+    if not api_key:
+        raise RuntimeError(
+            "Google credentials not configured. "
+            "Set GOOGLE_GENAI_USE_VERTEXAI=True + GOOGLE_CLOUD_PROJECT (Vertex AI) "
+            "or GOOGLE_API_KEY (Gemini Developer API)"
+        )
+    return genai.Client(api_key=api_key)
 
 
 # ---------- Path configuration (runtime) ----------

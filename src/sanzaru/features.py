@@ -120,6 +120,49 @@ def check_databricks_storage() -> bool:
     return True
 
 
+def check_google_available() -> bool:
+    """Check if Google Nano Banana image generation is available.
+
+    Requires:
+    1. google-genai package installed
+    2. Either:
+       - GOOGLE_GENAI_USE_VERTEXAI=True + GOOGLE_CLOUD_PROJECT (Vertex AI, recommended for teams)
+       - GOOGLE_API_KEY (Gemini Developer API)
+
+    Returns:
+        True if google-genai is installed and credentials are configured, False otherwise
+    """
+    try:
+        import google.genai  # noqa: F401
+    except ImportError:
+        return False
+
+    use_vertex = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("true", "1")
+    if use_vertex:
+        project = os.getenv("GOOGLE_CLOUD_PROJECT")
+        api_key = os.getenv("GOOGLE_API_KEY")
+        if project and api_key:
+            logger.info(
+                "Google Nano Banana available via Vertex AI Express (api_key takes precedence, project=%s ignored)",
+                project,
+            )
+            return True
+        if project:
+            logger.info("Google Nano Banana available via Vertex AI ADC (project=%s)", project)
+            return True
+        if api_key:
+            logger.info("Google Nano Banana available via Vertex AI Express (api_key only)")
+            return True
+        logger.info("GOOGLE_GENAI_USE_VERTEXAI=True but neither GOOGLE_CLOUD_PROJECT nor GOOGLE_API_KEY set")
+        return False
+
+    if os.getenv("GOOGLE_API_KEY"):
+        logger.info("Google Nano Banana available via Gemini Developer API")
+        return True
+
+    return False
+
+
 def get_available_features() -> dict[str, bool]:
     """Get a dictionary of available features.
 
@@ -130,4 +173,5 @@ def get_available_features() -> dict[str, bool]:
         "video": check_video_available(),
         "audio": check_audio_available(),
         "image": check_image_available(),
+        "google": check_google_available(),
     }

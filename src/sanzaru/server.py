@@ -20,7 +20,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from .config import logger
-from .features import check_audio_available, check_image_available, check_video_available
+from .features import check_audio_available, check_google_available, check_image_available, check_video_available
 from .storage.factory import get_storage
 from .tools.media_viewer import MEDIA_TYPE_TO_PATH_TYPE
 
@@ -150,7 +150,14 @@ if check_image_available():
         input_images: list[str] | None = None,
         mask_filename: str | None = None,
     ):
-        return await image.create_image(prompt, model, tool_config, previous_response_id, input_images, mask_filename)
+        return await image.create_image(
+            prompt,
+            model,
+            tool_config,
+            previous_response_id,
+            input_images,
+            mask_filename,
+        )
 
     @mcp.tool(description=GET_IMAGE_STATUS, annotations=READ_ONLY_OPEN)
     async def get_image_status(response_id: str):
@@ -203,6 +210,36 @@ if check_image_available():
         )
 
     logger.info("Image tools registered (7 tools)")
+
+
+# ==================== GOOGLE IMAGE TOOLS (CONDITIONAL) ====================
+if check_google_available() and check_image_available():
+    from .descriptions import CREATE_IMAGE_GOOGLE
+    from .tools import image as _image_google
+    from .tools.image import GoogleAspectRatio, GoogleImageModel, GoogleImageSize
+    from .types import SafetySettingDict
+
+    @mcp.tool(description=CREATE_IMAGE_GOOGLE, annotations=WRITE_OPEN)
+    async def create_image_google(
+        prompt: str,
+        model: GoogleImageModel = "gemini-3.1-flash-image-preview",
+        aspect_ratio: GoogleAspectRatio = "1:1",
+        image_size: GoogleImageSize = "1K",
+        filename: str | None = None,
+        input_images: list[str] | None = None,
+        safety_settings: list[SafetySettingDict] | None = None,
+    ):
+        return await _image_google.create_image_google(
+            prompt,
+            model,
+            aspect_ratio,
+            image_size,
+            filename,
+            input_images,
+            safety_settings,
+        )
+
+    logger.info("Google image tools registered (1 tool)")
 
 
 # ==================== AUDIO TOOLS (CONDITIONAL) ====================

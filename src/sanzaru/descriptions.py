@@ -185,98 +185,100 @@ Example workflow:
 
 # ==================== IMAGE GENERATION TOOL DESCRIPTIONS ====================
 
-CREATE_IMAGE = """Non-blocking async image generation with gpt-image-1.5 support.
+CREATE_IMAGE = """Create an async image generation job via OpenAI Responses API.
 
-Creates images from text prompts OR edits existing images by providing reference images.
-Returns immediately with a response_id - use get_image_status() to poll for completion.
-Supports iterative refinement via previous_response_id.
+Returns immediately with a response_id. Poll with get_image_status() until completed, then download_image().
+Best for: parallel generation (multiple images at once) and iterative refinement chains (previous_response_id).
 
-**Best for:** parallel generation (multiple images at once), iterative refinement chains,
-and workflows where you need to do other work while images generate.
-For simple one-shot generation, generate_image is simpler (no polling needed).
-
-**Text-only generation (no input_images):**
-- Generates image from scratch based on prompt
-
-**Image editing (with input_images):**
-- Modifies existing images based on prompt
-- Combines multiple images into new composition
-- First image receives highest detail preservation
-- Prompt describes desired changes, not what's already in images
+For synchronous one-shot generation (no polling), use generate_image instead.
+For Google Nano Banana generation, use create_image_google.
 
 Parameters:
-- prompt: Text description (required)
-  * Without input_images: Describe what to generate
-  * With input_images: Describe what changes to make
-- model: Mainline model - "gpt-5.2" (default), "gpt-5.1", "gpt-5", etc.
-- tool_config: Optional ImageGeneration configuration object (optional)
-  * Supports all fields: model, size, quality, moderation, input_fidelity, etc.
-  * MCP library handles serialization automatically
-  * See examples below for common configurations
-- previous_response_id: Refine previous image iteratively (optional)
-- input_images: List of filenames from IMAGE_PATH (optional)
-  * Example: ["cat.png"] or ["lotion.jpg", "soap.png", "bomb.jpg"]
-  * Use list_reference_images() to discover available images
-  * Supported formats: JPEG, PNG, WEBP
-- mask_filename: PNG with alpha channel for inpainting (optional)
-  * Defines which region of first input image to edit
-  * Transparent = edit this area, black = keep original
-  * Requires input_images parameter
+- prompt: Text description of image to generate (required)
+- model: OpenAI model ID (default: "gpt-5.2")
+- tool_config: ImageGeneration config object to control the image generation tool:
+  * gpt-image-1.5: STATE-OF-THE-ART (recommended)
+  * gpt-image-1: High quality
+  * gpt-image-1-mini: Fast, cost-effective
+- previous_response_id: Refine a previous generation iteratively (optional)
+- input_images: List of reference image filenames from IMAGE_PATH (optional)
+- mask_filename: PNG with alpha channel for inpainting (optional, requires input_images)
 
-**Image generation models (tool_config.model):**
-- gpt-image-1.5: STATE-OF-THE-ART (RECOMMENDED) - Best quality, better instruction following, improved text rendering
-- gpt-image-1: High quality image generation
-- gpt-image-1-mini: Fast, cost-effective generation
-
-Common tool_config examples:
-
-Best quality with GPT Image 1.5:
-  tool_config={"type": "image_generation", "model": "gpt-image-1.5"}
-
-Fast generation with mini model:
-  tool_config={"type": "image_generation", "model": "gpt-image-1-mini"}
-
-Lower content moderation:
-  tool_config={"type": "image_generation", "moderation": "low"}
-
-High-fidelity with custom settings:
-  tool_config={
-      "type": "image_generation",
-      "model": "gpt-image-1.5",
-      "quality": "high",
-      "input_fidelity": "high",
-      "size": "1536x1024"
-  }
+Returns ImageResponse with {id, status, created_at} — poll then download.
 
 Workflows:
 
-1. Text-only generation (recommended):
+1. Text-only generation:
    create_image("sunset over mountains", tool_config={"type": "image_generation", "model": "gpt-image-1.5"})
 
-2. Single image editing:
+2. Image editing:
    create_image("add a flamingo to the pool", input_images=["lounge.png"])
 
 3. Multi-image composition:
-   create_image("gift basket with all these items", input_images=["lotion.png", "soap.png", "bomb.jpg"])
+   create_image("gift basket with all items", input_images=["lotion.png", "soap.png"])
 
-4. High-fidelity logo placement:
-   create_image(
-       "add logo to woman's shirt",
-       input_images=["woman.jpg", "logo.png"],
-       tool_config={"type": "image_generation", "input_fidelity": "high"}
-   )
-
-5. Masked inpainting:
+4. Masked inpainting:
    create_image("add flamingo", input_images=["pool.png"], mask_filename="pool_mask.png")
 
-6. Fast generation with mini model:
-   create_image("quick sketch of a cat", tool_config={"type": "image_generation", "model": "gpt-image-1-mini"})
-
-7. Iterative refinement:
+5. Iterative refinement:
    resp1 = create_image("a cyberpunk character")
    resp2 = create_image("add neon details", previous_response_id=resp1.id)
 
-Returns ImageResponse with: id, status, created_at"""
+tool_config examples:
+Best quality: {"type": "image_generation", "model": "gpt-image-1.5"}
+Fast: {"type": "image_generation", "model": "gpt-image-1-mini"}
+High-fidelity: {"type": "image_generation", "model": "gpt-image-1.5", "quality": "high", "size": "1536x1024"}"""
+
+CREATE_IMAGE_GOOGLE = """Generate an image using Google Nano Banana (Gemini image models). Synchronous — image ready immediately.
+
+No polling required. Returns the saved filename, dimensions, and format directly.
+Supports reference images for editing, style transfer, and multi-image composition (up to 14 images).
+
+Models:
+- "gemini-3.1-flash-image-preview": Nano Banana 2 (DEFAULT, RECOMMENDED) — Flash speed + Pro quality, thinking-enhanced
+- "gemini-3-pro-image-preview": Nano Banana Pro — max quality, complex instructions, slowest
+- "gemini-2.5-flash-image": Nano Banana — fastest, high-volume generation
+
+Parameters:
+- prompt: Text description (required). When using input_images, describe only the desired edits/transformation.
+- model: Google model ID (default: "gemini-3.1-flash-image-preview")
+- aspect_ratio: "1:1" (default), "16:9", "9:16", "4:3", "3:4", "3:2", "2:3", "21:9", "5:4", "4:5"
+- image_size: Output resolution: "1K" (default), "2K", "4K"
+- filename: Custom output filename (auto-generated if omitted)
+- input_images: List of reference image filenames from IMAGE_PATH (optional, max 14).
+  Supported formats: JPEG, PNG, WEBP. Use list_reference_images to find available images.
+- safety_settings: List of {"category", "threshold"} dicts. All OFF by default.
+  Categories: HARM_CATEGORY_HATE_SPEECH, HARM_CATEGORY_DANGEROUS_CONTENT,
+  HARM_CATEGORY_SEXUALLY_EXPLICIT, HARM_CATEGORY_HARASSMENT
+  Thresholds: "OFF" (default), "BLOCK_LOW_AND_ABOVE", "BLOCK_MEDIUM_AND_ABOVE", "BLOCK_HIGH_AND_ABOVE"
+
+Returns ImageDownloadResult with {filename, size, format} — ready immediately.
+
+Workflows:
+
+1. Text-only generation:
+   create_image_google("a futuristic cityscape at dusk")
+
+2. Landscape with high resolution:
+   create_image_google("mountain vista at golden hour", aspect_ratio="16:9", image_size="4K")
+
+3. Max quality (Nano Banana Pro):
+   create_image_google("detailed product render", model="gemini-3-pro-image-preview")
+
+4. Image editing with reference:
+   create_image_google("make this watercolor style", input_images=["photo.png"])
+
+5. Multi-image composition:
+   create_image_google("combine these into a collage", input_images=["img1.png", "img2.png", "img3.png"])
+
+6. Character consistency (same character, new scene):
+   create_image_google("place this character in a forest", input_images=["character.png"])
+
+7. Style transfer from reference:
+   create_image_google("apply this art style to a cityscape", input_images=["style_ref.png"])
+
+8. Custom filename:
+   create_image_google("a cute robot", filename="robot_concept.png")"""
 
 GET_IMAGE_STATUS = """Check status and progress of image generation.
 

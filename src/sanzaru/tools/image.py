@@ -9,6 +9,8 @@ This module handles image generation operations:
 
 import base64
 import io
+import os
+from typing import Literal
 
 import anyio
 from openai._types import Omit, omit
@@ -23,10 +25,13 @@ from openai.types.responses.response_output_item import ImageGenerationCall
 from openai.types.responses.tool_param import ImageGeneration
 from PIL import Image
 
-from ..config import get_client, logger
+from ..config import get_client, get_google_client, logger
 from ..storage import get_storage
-from ..types import ImageDownloadResult, ImageResponse
+from ..types import ImageDownloadResult, ImageResponse, SafetySettingDict
 from ..utils import generate_filename
+
+# Allowed image extensions for reference image validation
+_ALLOWED_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp"}
 
 # ==================== HELPER FUNCTIONS ====================
 
@@ -84,6 +89,179 @@ async def _upload_mask_file(data: bytes, filename: str) -> str:
         raise ValueError(f"Failed to upload mask file: {e}") from e
 
 
+# ==================== GOOGLE NANO BANANA ====================
+
+# Type aliases for Google image generation parameters
+GoogleImageModel = Literal[
+    "gemini-3.1-flash-image-preview",  # Nano Banana 2 (default — Flash speed + Pro quality)
+    "gemini-3-pro-image-preview",  # Nano Banana Pro (max quality, complex instructions)
+    "gemini-2.5-flash-image",  # Nano Banana (fastest, high-volume)
+]
+GoogleImageSize = Literal["1K", "2K", "4K"]
+GoogleAspectRatio = Literal["1:1", "3:2", "2:3", "4:3", "3:4", "16:9", "9:16", "21:9", "5:4", "4:5"]
+
+# Models that support thinking_config (Nano Banana 2 / Flash-based)
+_THINKING_MODELS: set[str] = {"gemini-3.1-flash-image-preview"}
+
+# Default safety settings — all OFF for maximum creative freedom
+_DEFAULT_SAFETY_OFF: list[SafetySettingDict] = [
+    {"category": "HARM_CATEGORY_HATE_SPEECH", "threshold": "OFF"},
+    {"category": "HARM_CATEGORY_DANGEROUS_CONTENT", "threshold": "OFF"},
+    {"category": "HARM_CATEGORY_SEXUALLY_EXPLICIT", "threshold": "OFF"},
+    {"category": "HARM_CATEGORY_HARASSMENT", "threshold": "OFF"},
+]
+
+
+async def create_image_google(
+    prompt: str,
+    model: GoogleImageModel = "gemini-3.1-flash-image-preview",
+    aspect_ratio: GoogleAspectRatio = "1:1",
+    image_size: GoogleImageSize = "1K",
+    filename: str | None = None,
+    input_images: list[str] | None = None,
+    safety_settings: list[SafetySettingDict] | None = None,
+) -> ImageDownloadResult:
+    """Generate an image using Google Nano Banana (Gemini image generation models).
+
+    Uses generate_content() with IMAGE response modality — Nano Banana models are Gemini
+    models, not Imagen, so they use the content generation API with image output.
+
+    Supports multimodal input: when input_images are provided, they are loaded as PIL.Image
+    objects and passed alongside the text prompt for image editing, style transfer, or
+    multi-image composition (up to 14 reference images).
+
+    Args:
+        prompt: Text description of the image to generate (or edits to apply to input images)
+        model: Google model ID (default: "gemini-3.1-flash-image-preview" for Nano Banana 2)
+        aspect_ratio: Image aspect ratio ("1:1", "16:9", "9:16", "4:3", "3:4", "auto")
+        image_size: Output resolution ("1K", "2K", "4K")
+        filename: Optional custom filename for the saved image (auto-generated if None)
+        input_images: Optional list of reference image filenames from IMAGE_PATH (max 14).
+            Supported formats: JPEG, PNG, WEBP.
+        safety_settings: Optional list of safety settings dicts. Defaults to all OFF.
+
+    Returns:
+        ImageDownloadResult with filename, pixel dimensions, and format
+
+    Raises:
+        ImportError: If google-genai package is not installed
+        RuntimeError: If Google credentials are not configured
+        ValueError: If generation returns no images, invalid image format, or too many images
+    """
+    try:
+        from google.genai import types as genai_types
+    except ImportError as e:
+        raise ImportError("google-genai package is required. Install with: uv add 'sanzaru[google]'") from e
+
+    storage = get_storage()
+    google_client = get_google_client()
+
+    # Build safety settings from dicts → typed SafetySetting objects
+    raw_safety = safety_settings if safety_settings is not None else _DEFAULT_SAFETY_OFF
+    typed_safety = [
+        genai_types.SafetySetting(
+            category=genai_types.HarmCategory(s["category"]),
+            threshold=genai_types.HarmBlockThreshold(s["threshold"]),
+        )
+        for s in raw_safety
+    ]
+
+    # Build image config — output_mime_type only supported on Vertex AI, not Gemini Developer API
+    use_vertex = os.getenv("GOOGLE_GENAI_USE_VERTEXAI", "").lower() in ("true", "1")
+    image_cfg = genai_types.ImageConfig(aspect_ratio=aspect_ratio, image_size=image_size)
+    if use_vertex:
+        image_cfg.output_mime_type = "image/png"
+
+    config = genai_types.GenerateContentConfig(
+        response_modalities=["IMAGE", "TEXT"],
+        safety_settings=typed_safety,
+        image_config=image_cfg,
+    )
+
+    # Nano Banana 2 (Flash-based) supports thinking for better quality
+    if model in _THINKING_MODELS:
+        config.thinking_config = genai_types.ThinkingConfig(thinking_level=genai_types.ThinkingLevel.HIGH)
+
+    # Build contents: text-only or multimodal with reference images
+    contents: str | list[str | Image.Image]  # SDK accepts PIL.Image via PartUnion
+    if input_images:
+        if len(input_images) > 14:
+            raise ValueError(f"Too many input images ({len(input_images)}). Maximum is 14.")
+
+        pil_images: list[Image.Image] = []
+        for img_filename in input_images:
+            # Validate extension
+            ext = ("." + img_filename.rsplit(".", 1)[-1].lower()) if "." in img_filename else ""
+            if ext not in _ALLOWED_IMAGE_EXTENSIONS:
+                raise ValueError(f"Unsupported image format: {img_filename} (use JPEG, PNG, WEBP)")
+
+            # Read via storage backend (handles path validation + security)
+            img_bytes = await storage.read("reference", img_filename)
+
+            # Open as PIL.Image in thread pool (blocking I/O)
+            def _open_image(data: bytes = img_bytes) -> Image.Image:
+                return Image.open(io.BytesIO(data))
+
+            pil_img = await anyio.to_thread.run_sync(_open_image)
+            pil_images.append(pil_img)
+
+        contents = [prompt, *pil_images]
+
+        logger.info(
+            "Generating Nano Banana image with %d reference image(s): model=%s aspect_ratio=%s image_size=%s thinking=%s",
+            len(input_images),
+            model,
+            aspect_ratio,
+            image_size,
+            model in _THINKING_MODELS,
+        )
+    else:
+        contents = prompt
+
+        logger.info(
+            "Generating Nano Banana image: model=%s aspect_ratio=%s image_size=%s thinking=%s",
+            model,
+            aspect_ratio,
+            image_size,
+            model in _THINKING_MODELS,
+        )
+
+    # Wrap synchronous Google API in thread pool (network I/O — avoids blocking the event loop)
+    def _call_google() -> genai_types.GenerateContentResponse:
+        return google_client.models.generate_content(model=model, contents=contents, config=config)  # type: ignore[arg-type]
+
+    response: genai_types.GenerateContentResponse = await anyio.to_thread.run_sync(_call_google)
+
+    # Extract image from response parts (Gemini returns mixed text + image parts)
+    image_bytes: bytes | None = None
+    if response.candidates and response.candidates[0].content and response.candidates[0].content.parts:
+        for part in response.candidates[0].content.parts:
+            if part.inline_data and part.inline_data.data:
+                image_bytes = part.inline_data.data
+                break
+
+    if image_bytes is None:
+        raise ValueError("Google Nano Banana returned no image — prompt may have been blocked by safety filters")
+
+    # Rebind so closures below see `bytes` instead of `bytes | None`
+    safe_bytes: bytes = image_bytes
+
+    if filename is None:
+        filename = generate_filename("nb", "png", use_timestamp=True)
+
+    await storage.write("reference", filename, safe_bytes)
+
+    def _get_dimensions() -> tuple[tuple[int, int], str]:
+        img = Image.open(io.BytesIO(safe_bytes))
+        return img.size, img.format.lower() if img.format else "png"
+
+    size, fmt = await anyio.to_thread.run_sync(_get_dimensions)
+
+    logger.info("Nano Banana image saved: %s (%dx%d, %s)", filename, size[0], size[1], fmt)
+
+    return {"filename": filename, "size": size, "format": fmt}
+
+
 # ==================== PUBLIC API ====================
 
 
@@ -95,21 +273,21 @@ async def create_image(
     input_images: list[str] | None = None,
     mask_filename: str | None = None,
 ) -> ImageResponse:
-    """Create a new image generation job using Responses API.
+    """Create a new image generation job using OpenAI Responses API.
 
     Args:
         prompt: Text description of image to generate (or edits to make if input_images provided)
-        model: Mainline model to use (gpt-5.2, gpt-5.1, gpt-5, etc.) - calls the image generation tool
-        tool_config: Optional ImageGeneration tool configuration (size, quality, model, moderation, etc.)
-        previous_response_id: Optional ID to refine previous generation
-        input_images: Optional list of reference image filenames from IMAGE_PATH
-        mask_filename: Optional PNG mask with alpha channel for inpainting
+        model: OpenAI model ID (default: "gpt-5.2")
+        tool_config: ImageGeneration tool configuration (size, quality, model, etc.).
+        previous_response_id: Refine a previous generation iteratively.
+        input_images: List of reference image filenames from IMAGE_PATH.
+        mask_filename: PNG mask with alpha channel for inpainting.
 
     Returns:
-        ImageResponse with response ID, status, and creation timestamp
+        ImageResponse with {id, status, created_at} — poll with get_image_status, then download_image.
 
     Raises:
-        RuntimeError: If OPENAI_API_KEY not set or IMAGE_PATH not configured
+        RuntimeError: If OPENAI_API_KEY not set
         ValueError: If invalid filename, path traversal, or mask without input_images
 
     Example tool_config:
@@ -157,18 +335,18 @@ async def create_image(
         # Structured input with images
         content_items: ResponseInputMessageContentListParam = [ResponseInputTextParam(type="input_text", text=prompt)]
 
-        for filename in input_images:
+        for img_filename in input_images:
             # Validate file extension
-            ext = ("." + filename.rsplit(".", 1)[-1].lower()) if "." in filename else ""
-            if ext not in {".jpg", ".jpeg", ".png", ".webp"}:
-                raise ValueError(f"Unsupported image format: {filename} (use JPEG, PNG, WEBP)")
+            ext = ("." + img_filename.rsplit(".", 1)[-1].lower()) if "." in img_filename else ""
+            if ext not in _ALLOWED_IMAGE_EXTENSIONS:
+                raise ValueError(f"Unsupported image format: {img_filename} (use JPEG, PNG, WEBP)")
 
             # Read image via storage backend (handles path validation + security)
-            img_bytes = await storage.read("reference", filename)
+            img_bytes = await storage.read("reference", img_filename)
 
             # Encode to base64 (in thread pool to avoid blocking event loop)
             base64_data = await anyio.to_thread.run_sync(_encode_image_base64, img_bytes)
-            mime_type = _get_mime_type(filename)
+            mime_type = _get_mime_type(img_filename)
 
             # Add to content items
             image_item: ResponseInputImageParam = {
