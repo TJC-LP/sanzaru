@@ -8,30 +8,35 @@ Generate high-quality images for use with Sora video generation or standalone us
 
 | API | Tool | Best For |
 |-----|------|----------|
-| **Images API** | `generate_image`, `edit_image` | New generation with gpt-image-1.5 (RECOMMENDED) |
+| **Images API** | `generate_image`, `edit_image` | New generation with gpt-image-2 (RECOMMENDED) |
 | **Responses API** | `create_image` | Iterative refinement with `previous_response_id` |
 
 **Choose Images API when:**
 - Creating new images from scratch
 - Editing existing images
-- You want gpt-image-1.5 (state-of-the-art quality, 20% cheaper)
+- You want gpt-image-2 (state-of-the-art quality, up to 4K output)
 - You want synchronous results (no polling)
 
 **Choose Responses API when:**
 - Building iterative refinement chains with `previous_response_id`
 - Working with GPT-5.2's conversational image generation
+- You want to leverage the `action` field to force generate vs. edit
 
 ---
 
-## Images API with gpt-image-1.5 (Recommended)
+## Images API with gpt-image-2 (Recommended)
 
-The Images API provides synchronous image generation with OpenAI's latest gpt-image-1.5 model. **This is the recommended path for new image generation.**
+The Images API provides synchronous image generation with OpenAI's newest gpt-image-2 model. **This is the recommended path for new image generation.**
 
 ### Key Advantages
 - **Synchronous**: Returns immediately (no polling required)
-- **gpt-image-1.5**: State-of-the-art quality, better instruction following, improved text rendering
+- **gpt-image-2**: State-of-the-art quality, ~99% text accuracy, up to 4K output, accepts thousands of valid resolutions
 - **Token usage tracking**: Monitor costs with detailed token counts
-- **20% cheaper**: More cost-effective than Responses API
+- **Faster**: ~3s single-pass generation vs. multi-pass legacy models
+
+### When to use gpt-image-1.5 instead
+- You need **transparent backgrounds** (gpt-image-2 does not support `background="transparent"`)
+- You need explicit **`input_fidelity`** control (gpt-image-2 always processes inputs at high fidelity)
 
 ### Basic Generation
 
@@ -114,7 +119,7 @@ video = create_video(
 
 Use the Responses API when you need iterative refinement with `previous_response_id`. This creates a conversational workflow where each image builds on the previous.
 
-**Tip:** gpt-image-1.5 is supported via `tool_config={"type": "image_generation", "model": "gpt-image-1.5"}` for best quality.
+**Tip:** gpt-image-2 is supported via `tool_config={"type": "image_generation", "model": "gpt-image-2"}` for best quality. Use `"gpt-image-1.5"` when you need transparent backgrounds.
 
 ## Basic Workflow
 
@@ -217,12 +222,12 @@ from openai.types.responses.tool_param import ImageGeneration
 
 config = ImageGeneration(
     type="image_generation",
-    model="gpt-image-1",              # Image model
+    model="gpt-image-2",              # Image model (state-of-the-art)
     size="1536x1024",                 # Image dimensions
     quality="high",                   # Quality level
     output_format="png",              # Format
-    background="transparent",         # Background
-    moderation="auto"                 # Content moderation
+    moderation="auto",                # Content moderation
+    action="auto",                    # auto | generate | edit
 )
 
 resp = create_image(
@@ -233,12 +238,15 @@ resp = create_image(
 ```
 
 **tool_config fields:**
-- **model**: `"gpt-image-1"` (high quality) or `"gpt-image-1-mini"` (fast)
-- **size**: `"auto"`, `"1024x1024"`, `"1024x1536"`, `"1536x1024"`
+- **model**: `"gpt-image-2"` (state-of-the-art), `"gpt-image-1.5"` (supports transparent), `"gpt-image-1"`, `"gpt-image-1-mini"`
+- **size**: `"auto"`, `"1024x1024"`, `"1024x1536"`, `"1536x1024"`, plus `"2048x2048"`/`"3840x2160"` and any valid resolution on gpt-image-2
 - **quality**: `"auto"`, `"low"`, `"medium"`, `"high"`
 - **output_format**: `"png"`, `"jpeg"`, `"webp"`
-- **background**: `"auto"`, `"transparent"`, `"opaque"`
+- **background**: `"auto"`, `"transparent"` (gpt-image-1/1.5 only), `"opaque"`
+- **input_fidelity**: `"high"`, `"low"` (gpt-image-1/1.5 only — gpt-image-2 is always high)
 - **moderation**: `"auto"` (default), `"low"` (more permissive)
+- **action**: `"auto"` (default), `"generate"` (force new image), `"edit"` (force edit of in-context image)
+- **partial_images**: `0`-`3` — stream partial images during generation
 
 ## Image Editing
 
@@ -452,7 +460,7 @@ create_image(prompt="wide shot of city skyline, rule of thirds composition, suns
 ```python
 config = ImageGeneration(
     type="image_generation",
-    model="gpt-image-1",     # Not mini
+    model="gpt-image-2",     # State-of-the-art
     quality="high",
     output_format="png"      # Lossless
 )

@@ -73,7 +73,7 @@ src/sanzaru/
 │   ├── video.py        # 7 video tools
 │   ├── reference.py    # 2 reference image tools
 │   ├── image.py        # 3 image generation tools (Responses API)
-│   ├── images_api.py   # 2 image tools (Images API, gpt-image-1.5)
+│   ├── images_api.py   # 2 image tools (Images API, gpt-image-2)
 │   ├── audio.py        # 9 audio tools (list, transcribe, TTS, chat)
 │   ├── podcast.py      # 1 podcast generation tool
 │   └── media_viewer.py # 2 media viewer tools (MCP App)
@@ -428,34 +428,46 @@ app = CORSMiddleware(app, allow_origins=["*"], expose_headers=["Mcp-Session-Id"]
 | `create_image` | Responses API | Parallel generation, iterative refinement chains |
 | `edit_image` | Images API | Editing existing images |
 
-All three support gpt-image-1.5 via model selection.
+All three default to gpt-image-2 via model selection.
 
 **Image generation models:**
-- **gpt-image-1.5**: STATE-OF-THE-ART (RECOMMENDED) - best quality, better instruction following, improved text rendering
-- **gpt-image-1**: High quality image generation
-- **gpt-image-1-mini**: Fast, cost-effective generation
+- **gpt-image-2**: STATE-OF-THE-ART (RECOMMENDED, DEFAULT) — ~99% text accuracy, up to 4K output, any valid resolution
+- **gpt-image-1.5**: Previous gen — needed for transparent backgrounds or explicit `input_fidelity`
+- **gpt-image-1**: High quality
+- **gpt-image-1-mini**: Fast, cost-effective
 - **dall-e-3**: Legacy DALL-E 3
 - **dall-e-2**: Legacy DALL-E 2
 
-**Supported image sizes:** `1024x1024`, `1024x1536`, `1536x1024`, `auto`
+**Supported image sizes:**
+- Common: `1024x1024`, `1024x1536`, `1536x1024`, `auto`
+- gpt-image-2 also: `2048x2048`, `2048x1152`, `3840x2160`, `2160x3840`, plus any resolution with
+  max edge ≤3840px, multiples of 16, ratio ≤3:1, and 655,360 ≤ pixels ≤ 8,294,400.
+
+**gpt-image-2 quirks:**
+- Does NOT support `background="transparent"` — use gpt-image-1.5 for transparent output
+- Ignores `input_fidelity` (always high fidelity on inputs) — silently stripped by our wrappers
 
 **Example with generate_image (recommended default — synchronous):**
 ```python
 # Images API - blocks until done, returns token usage
 generate_image(
     prompt="a futuristic cityscape at sunset",
-    model="gpt-image-1.5",
     size="1536x1024",
-    quality="high"
-)
+    quality="high",
+)  # defaults to model="gpt-image-2"
 ```
 
 **Example with create_image (parallel/refinement workflows):**
 ```python
-# Responses API - async, supports iterative refinement
+# Responses API - async, supports iterative refinement and action field
 resp = create_image(
     prompt="a futuristic cityscape at sunset",
-    tool_config={"type": "image_generation", "model": "gpt-image-1.5", "quality": "high", "size": "1536x1024"}
+    tool_config={
+        "type": "image_generation",
+        "model": "gpt-image-2",
+        "quality": "high",
+        "size": "1536x1024",
+    },
 )
 # poll with get_image_status(resp.id), then download_image(resp.id)
 ```

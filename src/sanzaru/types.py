@@ -24,7 +24,7 @@ class VideoSummary(TypedDict):
     id: str
     status: Literal["queued", "in_progress", "completed", "failed"]
     created_at: int
-    seconds: VideoSeconds
+    seconds: str | VideoSeconds
     size: VideoSize
     model: VideoModel
     progress: int

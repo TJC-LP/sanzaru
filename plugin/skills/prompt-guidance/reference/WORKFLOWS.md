@@ -158,9 +158,10 @@ create_video(
 - Use concrete verbs and nouns, not vague adjectives
 
 **For best image quality:**
-- Use `generate_image` with `model="gpt-image-1.5"` + `quality="high"`
-- Use `size="1536x1024"` for landscape detail
+- Use `generate_image` (defaults to `model="gpt-image-2"`) + `quality="high"`
+- Use `size="1536x1024"` for landscape detail, or `"3840x2160"` for 4K
 - Add style references: "photorealistic," "cinematic," "studio lighting"
+- Switch to `model="gpt-image-1.5"` only when you need a transparent background
 
 **For speed/cost:**
 - Use `sora-2` (not pro), `gpt-image-1-mini`, `generate_image` (synchronous)

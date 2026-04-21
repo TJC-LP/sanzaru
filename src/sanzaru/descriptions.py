@@ -197,19 +197,32 @@ Parameters:
 - prompt: Text description of image to generate (required)
 - model: OpenAI model ID (default: "gpt-5.2")
 - tool_config: ImageGeneration config object to control the image generation tool:
-  * gpt-image-1.5: STATE-OF-THE-ART (recommended)
+  * gpt-image-2: STATE-OF-THE-ART (recommended) — best quality, ~99% text accuracy, up to 4K
+  * gpt-image-1.5: Previous gen — use when you need transparent backgrounds or input_fidelity control
   * gpt-image-1: High quality
   * gpt-image-1-mini: Fast, cost-effective
 - previous_response_id: Refine a previous generation iteratively (optional)
 - input_images: List of reference image filenames from IMAGE_PATH (optional)
 - mask_filename: PNG with alpha channel for inpainting (optional, requires input_images)
 
+tool_config fields (all optional):
+- model: one of the models above
+- size: "1024x1024", "1536x1024", "1024x1536", "2048x2048", "3840x2160", etc., or "auto"
+  gpt-image-2 accepts any resolution satisfying: max edge 3840px, multiples of 16,
+  long:short ratio ≤ 3:1, 655,360 ≤ pixels ≤ 8,294,400.
+- quality: "low", "medium", "high", or "auto"
+- moderation: "auto" (default) or "low"
+- background: "auto", "opaque", or "transparent" (transparent NOT supported on gpt-image-2)
+- input_fidelity: "high" or "low" (gpt-image-1/1.5 only — ignored/rejected by gpt-image-2)
+- output_format: "png", "jpeg", or "webp"
+- action: "auto" (default), "generate", or "edit" — force a mode when an image is in context
+
 Returns ImageResponse with {id, status, created_at} — poll then download.
 
 Workflows:
 
 1. Text-only generation:
-   create_image("sunset over mountains", tool_config={"type": "image_generation", "model": "gpt-image-1.5"})
+   create_image("sunset over mountains", tool_config={"type": "image_generation", "model": "gpt-image-2"})
 
 2. Image editing:
    create_image("add a flamingo to the pool", input_images=["lounge.png"])
@@ -224,10 +237,15 @@ Workflows:
    resp1 = create_image("a cyberpunk character")
    resp2 = create_image("add neon details", previous_response_id=resp1.id)
 
+6. Force a fresh image even with a prior response in context:
+   create_image("a new cat", previous_response_id=prev.id,
+                tool_config={"type": "image_generation", "action": "generate"})
+
 tool_config examples:
-Best quality: {"type": "image_generation", "model": "gpt-image-1.5"}
-Fast: {"type": "image_generation", "model": "gpt-image-1-mini"}
-High-fidelity: {"type": "image_generation", "model": "gpt-image-1.5", "quality": "high", "size": "1536x1024"}"""
+Best quality: {"type": "image_generation", "model": "gpt-image-2", "quality": "high"}
+4K landscape: {"type": "image_generation", "model": "gpt-image-2", "size": "3840x2160"}
+Transparent PNG: {"type": "image_generation", "model": "gpt-image-1.5", "background": "transparent"}
+Fast draft: {"type": "image_generation", "model": "gpt-image-1-mini", "quality": "low"}"""
 
 CREATE_IMAGE_GOOGLE = """Generate an image using Google Nano Banana (Gemini image models). Synchronous — image ready immediately.
 
@@ -312,18 +330,23 @@ use create_image instead (async with previous_response_id support).
 
 Parameters:
 - prompt: Text description of the image (required, max 32k chars)
-- model: Image model to use. Default: "gpt-image-1.5"
-  * gpt-image-1.5: STATE-OF-THE-ART - best quality, improved text rendering
+- model: Image model to use. Default: "gpt-image-2"
+  * gpt-image-2: STATE-OF-THE-ART (default) — best quality, ~99% text accuracy, up to 4K output
+  * gpt-image-1.5: Previous gen — use when you need transparent backgrounds
   * gpt-image-1: High quality
   * gpt-image-1-mini: Fast, cost-effective
   * dall-e-3: Legacy DALL-E 3
   * dall-e-2: Legacy DALL-E 2
 - size: Image dimensions. Default: "auto"
-  * "auto", "1024x1024", "1536x1024" (landscape), "1024x1536" (portrait)
+  * "auto", "1024x1024", "1536x1024", "1024x1536"
+  * gpt-image-2 also supports 2K+: "2048x2048", "2048x1152", "3840x2160", "2160x3840"
+  * gpt-image-2 accepts any resolution with max edge ≤3840px, multiples of 16,
+    ratio ≤3:1, and 655,360 ≤ pixels ≤ 8,294,400.
 - quality: Generation quality. Default: "auto"
   * "auto", "low", "medium", "high"
 - background: Background type. Default: "auto"
   * "auto", "transparent", "opaque"
+  * NOTE: gpt-image-2 does NOT support transparent — use gpt-image-1.5 for that
 - output_format: Output format. Default: "png"
   * "png", "jpeg", "webp"
 - moderation: Content moderation. Default: "auto"
@@ -334,19 +357,19 @@ Returns ImageGenerateResult with: filename, size, format, model, usage
 
 Example workflows:
 
-1. Basic generation:
+1. Basic generation (gpt-image-2):
    generate_image("a sunset over mountains")
 
-2. High quality portrait:
-   generate_image("professional headshot", size="1024x1536", quality="high")
+2. High quality 4K landscape:
+   generate_image("mountain vista at golden hour", size="3840x2160", quality="high")
 
-3. Transparent background:
-   generate_image("product icon", background="transparent", output_format="png")
+3. Transparent background (falls back to gpt-image-1.5):
+   generate_image("product icon", model="gpt-image-1.5", background="transparent")
 
-4. Fast generation with mini model:
-   generate_image("quick sketch", model="gpt-image-1-mini")"""
+4. Fast draft:
+   generate_image("quick sketch", quality="low")"""
 
-EDIT_IMAGE = """Edit images using OpenAI's Images API with gpt-image-1.5.
+EDIT_IMAGE = """Edit images using OpenAI's Images API with gpt-image-2 (default).
 
 Modify existing images based on a prompt. Supports up to 16 input images.
 Returns immediately with the edited image (no polling required).
@@ -354,15 +377,21 @@ Returns immediately with the edited image (no polling required).
 Parameters:
 - prompt: Text description of desired edits (required, max 32k chars)
 - input_images: List of image filenames from IMAGE_PATH (required, max 16 images)
-- model: Image model. Default: "gpt-image-1.5"
+- model: Image model. Default: "gpt-image-2"
+  * gpt-image-2 always processes inputs at high fidelity (no input_fidelity knob).
+    Doesn't support transparent background.
+  * gpt-image-1.5: Previous gen — needed for transparent backgrounds or explicit
+    input_fidelity control.
 - mask_filename: PNG mask with alpha channel for inpainting (optional)
   * Transparent areas = edit these regions
   * Opaque areas = preserve original
-- size: Output dimensions. Default: "auto"
+- size: Output dimensions. Default: "auto". gpt-image-2 also supports
+  2K/4K sizes like "2048x2048", "3840x2160".
 - quality: Generation quality. Default: "auto"
-- background: Background type. Default: "auto"
+- background: Background type. Default: "auto" (transparent unsupported on gpt-image-2)
 - output_format: Output format. Default: "png"
-- input_fidelity: Control fidelity to input (gpt-image-1 only). Default: None
+- input_fidelity: Control fidelity to input (gpt-image-1/gpt-image-1.5 only).
+  Silently ignored for gpt-image-2 (always high).
   * "high" - better face/style preservation
   * "low" - more creative freedom
 - filename: Custom output filename (optional)
@@ -371,7 +400,7 @@ Returns ImageGenerateResult with: filename, size, format, model, usage
 
 Example workflows:
 
-1. Simple edit:
+1. Simple edit (gpt-image-2):
    edit_image("add a hat", input_images=["person.png"])
 
 2. Multi-image composition:
@@ -380,8 +409,9 @@ Example workflows:
 3. Inpainting with mask:
    edit_image("add flamingo", input_images=["pool.png"], mask_filename="pool_mask.png")
 
-4. High-fidelity face edit:
-   edit_image("change hair color to red", input_images=["portrait.jpg"], input_fidelity="high")"""
+4. High-fidelity face edit on gpt-image-1.5:
+   edit_image("change hair color to red", input_images=["portrait.jpg"],
+              model="gpt-image-1.5", input_fidelity="high")"""
 
 
 # ==================== AUDIO TOOL DESCRIPTIONS ====================
