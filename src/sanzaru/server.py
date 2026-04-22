@@ -109,8 +109,6 @@ if check_video_available():
 
 # ==================== IMAGE TOOLS (CONDITIONAL) ====================
 if check_image_available():
-    from openai.types import ImageModel
-
     from .descriptions import (
         CREATE_IMAGE,
         DOWNLOAD_IMAGE,
@@ -160,12 +158,24 @@ if check_image_available():
     async def download_image(response_id: str, filename: str | None = None):
         return await image.download_image(response_id, filename)
 
-    # Images API tools (synchronous, blocks until done)
+    # Images API tools (synchronous, blocks until done). `model` is typed as str
+    # so callers can pass new models (like gpt-image-2) ahead of SDK type updates.
+    _ImageSize = Literal[
+        "auto",
+        "1024x1024",
+        "1536x1024",
+        "1024x1536",
+        "2048x2048",
+        "2048x1152",
+        "3840x2160",
+        "2160x3840",
+    ]
+
     @mcp.tool(description=GENERATE_IMAGE, annotations=WRITE_OPEN)
     async def generate_image(
         prompt: str,
-        model: ImageModel = "gpt-image-1.5",
-        size: Literal["auto", "1024x1024", "1536x1024", "1024x1536"] = "auto",
+        model: str = "gpt-image-2",
+        size: _ImageSize = "auto",
         quality: Literal["auto", "low", "medium", "high"] = "auto",
         background: Literal["auto", "transparent", "opaque"] = "auto",
         output_format: Literal["png", "jpeg", "webp"] = "png",
@@ -180,9 +190,9 @@ if check_image_available():
     async def edit_image(
         prompt: str,
         input_images: list[str],
-        model: ImageModel = "gpt-image-1.5",
+        model: str = "gpt-image-2",
         mask_filename: str | None = None,
-        size: Literal["auto", "1024x1024", "1536x1024", "1024x1536"] = "auto",
+        size: _ImageSize = "auto",
         quality: Literal["auto", "low", "medium", "high"] = "auto",
         background: Literal["auto", "transparent", "opaque"] = "auto",
         output_format: Literal["png", "jpeg", "webp"] = "png",

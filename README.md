@@ -21,7 +21,7 @@ A **stateless**, lightweight **MCP** server that wraps **OpenAI's Sora Video API
 - Download variants (video, thumbnail, spritesheet)
 
 ### Image Generation
-- Generate images with gpt-image-1.5 (recommended) or GPT-5
+- Generate images with gpt-image-2 (recommended), gpt-image-1.5, or GPT-5
 - Edit and compose images with up to 16 inputs
 - Iterative refinement via Responses API
 - Automatic resizing for Sora compatibility
@@ -174,7 +174,7 @@ uv run sanzaru --transport http --port 8000
 | Category | Tools | Description |
 |----------|-------|-------------|
 | **Video** | `create_video`, `get_video_status`, `download_video`, `list_videos`, `list_local_videos`, `delete_video`, `remix_video` | Generate and manage Sora videos with optional reference images |
-| **Image** | `generate_image`, `edit_image`, `create_image`, `get_image_status`, `download_image` | Generate with gpt-image-1.5 (sync) or GPT-5 (polling) |
+| **Image** | `generate_image`, `edit_image`, `create_image`, `get_image_status`, `download_image` | Generate with gpt-image-2 (default, sync) or GPT-5 (polling) |
 | **Reference** | `list_reference_images`, `prepare_reference_image` | Manage and resize images for Sora compatibility |
 | **Audio** | `transcribe_audio`, `chat_with_audio`, `create_audio`, `convert_audio`, `compress_audio`, `list_audio_files`, `get_latest_audio`, `transcribe_with_enhancement` | Transcription, analysis, TTS, and file management |
 | **Podcast** | `generate_podcast` | Multi-voice podcast generation with parallel TTS and audio stitching |
@@ -203,7 +203,7 @@ download_video(video.id, filename="mountain_sunrise.mp4")
 
 ### Generate with Reference Image
 ```python
-# 1. Generate reference image (gpt-image-1.5, synchronous)
+# 1. Generate reference image (gpt-image-2, synchronous)
 generate_image(
     prompt="futuristic pilot in mech cockpit",
     size="1536x1024",

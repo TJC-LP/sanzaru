@@ -41,7 +41,8 @@ description: "Read the entirety of @docs/sora2-prompting-guide.md and await furt
 | `edit_image` | Images API | Editing existing images, composition |
 | `create_image` | Responses API | Iterative refinement with `previous_response_id` |
 
-- **gpt-image-1.5**: STATE-OF-THE-ART (recommended default)
+- **gpt-image-2**: STATE-OF-THE-ART (recommended default, up to 4K)
+- **gpt-image-1.5**: Previous gen — use for transparent backgrounds
 - **gpt-image-1-mini**: Fast, cost-effective for iteration
 
 ### Audio (TTS)

@@ -198,6 +198,78 @@ async def test_generate_image_no_b64_error(mocker, tmp_reference_path):
 
 
 # =============================================================================
+# generate_image Tests - gpt-image-2
+# =============================================================================
+
+
+@pytest.mark.integration
+async def test_generate_image_defaults_to_gpt_image_2(mocker, tmp_reference_path):
+    """Default model should be gpt-image-2."""
+    mock_response = mocker.MagicMock()
+    mock_data = mocker.MagicMock()
+    mock_data.b64_json = base64.b64encode(b"fake png data").decode()
+    mock_response.data = [mock_data]
+    mock_response.usage = None
+
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
+    mock_get_client = mocker.patch("sanzaru.tools.images_api.get_client")
+    mock_get_client.return_value.images.generate = mocker.AsyncMock(return_value=mock_response)
+
+    mock_img = mocker.MagicMock(size=(1024, 1024), format="PNG")
+    mocker.patch("sanzaru.tools.images_api.Image.open", return_value=mock_img)
+
+    result = await generate_image(prompt="a cat")
+
+    assert result.model == "gpt-image-2"
+    call_kwargs = mock_get_client.return_value.images.generate.call_args.kwargs
+    assert call_kwargs["model"] == "gpt-image-2"
+
+
+@pytest.mark.integration
+async def test_generate_image_gpt_image_2_4k_size(mocker, tmp_reference_path):
+    """gpt-image-2 accepts 4K landscape sizes."""
+    mock_response = mocker.MagicMock()
+    mock_data = mocker.MagicMock()
+    mock_data.b64_json = base64.b64encode(b"fake png data").decode()
+    mock_response.data = [mock_data]
+    mock_response.usage = None
+
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
+    mock_get_client = mocker.patch("sanzaru.tools.images_api.get_client")
+    mock_get_client.return_value.images.generate = mocker.AsyncMock(return_value=mock_response)
+
+    mock_img = mocker.MagicMock(size=(3840, 2160), format="PNG")
+    mocker.patch("sanzaru.tools.images_api.Image.open", return_value=mock_img)
+
+    await generate_image(prompt="vista", size="3840x2160")
+
+    call_kwargs = mock_get_client.return_value.images.generate.call_args.kwargs
+    assert call_kwargs["size"] == "3840x2160"
+
+
+@pytest.mark.integration
+async def test_generate_image_gpt_image_2_rejects_transparent(mocker, tmp_reference_path):
+    """gpt-image-2 + background=transparent raises ValueError before hitting API."""
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
+    mock_get_client = mocker.patch("sanzaru.tools.images_api.get_client")
+    mock_get_client.return_value.images.generate = mocker.AsyncMock()
+
+    with pytest.raises(ValueError, match="gpt-image-2 does not support transparent"):
+        await generate_image(prompt="icon", background="transparent")
+
+    mock_get_client.return_value.images.generate.assert_not_called()
+
+
+# =============================================================================
 # edit_image Tests - Success Paths
 # =============================================================================
 
@@ -228,7 +300,8 @@ async def test_edit_image_single_input(mocker, tmp_reference_path):
 
     result = await edit_image(prompt="add a hat", input_images=["input.png"])
 
-    assert result.model == "gpt-image-1.5"
+    # Default model is now gpt-image-2
+    assert result.model == "gpt-image-2"
     assert result.size == (1024, 1024)
 
     # Verify API call - single image passed as tuple, not list
@@ -268,7 +341,7 @@ async def test_edit_image_multiple_inputs(mocker, tmp_reference_path):
         input_images=["img0.png", "img1.png", "img2.png"],
     )
 
-    assert result.model == "gpt-image-1.5"
+    assert result.model == "gpt-image-2"
 
     # Verify API call - multiple images passed as list of tuples
     call_kwargs = mock_get_client.return_value.images.edit.call_args.kwargs
@@ -311,7 +384,7 @@ async def test_edit_image_with_mask(mocker, tmp_reference_path):
         mask_filename="mask.png",
     )
 
-    assert result.model == "gpt-image-1.5"
+    assert result.model == "gpt-image-2"
 
     # Verify mask was passed
     call_kwargs = mock_get_client.return_value.images.edit.call_args.kwargs
@@ -323,7 +396,7 @@ async def test_edit_image_with_mask(mocker, tmp_reference_path):
 
 @pytest.mark.integration
 async def test_edit_image_with_input_fidelity(mocker, tmp_reference_path):
-    """Test input_fidelity parameter."""
+    """Test input_fidelity parameter is forwarded for gpt-image-1.5."""
     input_file = tmp_reference_path / "face.png"
     Image.new("RGB", (100, 100)).save(input_file, "PNG")
 
@@ -346,11 +419,13 @@ async def test_edit_image_with_input_fidelity(mocker, tmp_reference_path):
     await edit_image(
         prompt="change hair color",
         input_images=["face.png"],
+        model="gpt-image-1.5",
         input_fidelity="high",
     )
 
     call_kwargs = mock_get_client.return_value.images.edit.call_args.kwargs
     assert call_kwargs["input_fidelity"] == "high"
+    assert call_kwargs["model"] == "gpt-image-1.5"
 
 
 @pytest.mark.integration
@@ -389,6 +464,68 @@ async def test_edit_image_mime_types(mocker, tmp_reference_path):
         call_kwargs = mock_get_client.return_value.images.edit.call_args.kwargs
         image_tuple = call_kwargs["image"]
         assert image_tuple[2] == expected_mime, f"Expected {expected_mime} for {filename}"
+
+
+# =============================================================================
+# edit_image Tests - gpt-image-2
+# =============================================================================
+
+
+@pytest.mark.integration
+async def test_edit_image_gpt_image_2_drops_input_fidelity(mocker, tmp_reference_path):
+    """gpt-image-2 silently drops input_fidelity — it always processes at high fidelity."""
+    input_file = tmp_reference_path / "face.png"
+    Image.new("RGB", (100, 100)).save(input_file, "PNG")
+
+    mock_response = mocker.MagicMock()
+    mock_data = mocker.MagicMock()
+    mock_data.b64_json = base64.b64encode(b"fake png").decode()
+    mock_response.data = [mock_data]
+    mock_response.usage = None
+
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
+    mock_get_client = mocker.patch("sanzaru.tools.images_api.get_client")
+    mock_get_client.return_value.images.edit = mocker.AsyncMock(return_value=mock_response)
+
+    mock_img = mocker.MagicMock(size=(1024, 1024), format="PNG")
+    mocker.patch("sanzaru.tools.images_api.Image.open", return_value=mock_img)
+
+    await edit_image(
+        prompt="change hair color",
+        input_images=["face.png"],
+        model="gpt-image-2",
+        input_fidelity="high",
+    )
+
+    call_kwargs = mock_get_client.return_value.images.edit.call_args.kwargs
+    assert call_kwargs["model"] == "gpt-image-2"
+    assert "input_fidelity" not in call_kwargs
+
+
+@pytest.mark.integration
+async def test_edit_image_gpt_image_2_rejects_transparent(mocker, tmp_reference_path):
+    """gpt-image-2 + background=transparent raises ValueError before hitting API."""
+    input_file = tmp_reference_path / "input.png"
+    Image.new("RGB", (100, 100)).save(input_file, "PNG")
+
+    mocker.patch(
+        "sanzaru.tools.images_api.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
+    mock_get_client = mocker.patch("sanzaru.tools.images_api.get_client")
+    mock_get_client.return_value.images.edit = mocker.AsyncMock()
+
+    with pytest.raises(ValueError, match="gpt-image-2 does not support transparent"):
+        await edit_image(
+            prompt="edit",
+            input_images=["input.png"],
+            background="transparent",
+        )
+
+    mock_get_client.return_value.images.edit.assert_not_called()
 
 
 # =============================================================================
