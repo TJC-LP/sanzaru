@@ -81,13 +81,6 @@ class ImageDownloadResult(TypedDict):
     format: str
 
 
-class SafetySettingDict(TypedDict):
-    """Google safety setting with category and threshold."""
-
-    category: str
-    threshold: str
-
-
 class ImageGenerateResult(BaseModel):
     """Result from generating an image via Images API."""
 
