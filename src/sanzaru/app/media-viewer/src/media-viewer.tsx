@@ -142,10 +142,14 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
           resolvedMime = chunk.mime_type;
         }
 
-        // Decode the base64 chunk off the main thread by routing through the
-        // browser's native data-URL parser. This avoids per-chunk atob() +
-        // Uint8Array fill (synchronous, main-thread-blocking on 25MB+ files)
-        // and skips holding two copies of each chunk (Uint8Array + Blob).
+        // Route the base64 chunk through a data: URL fetch instead of
+        // decoding it ourselves with atob()+Uint8Array. The primary win is
+        // not "decode off the main thread" — the engine is free to decode
+        // on-thread — but the `await` yields the JS event loop between
+        // chunks, so host timers (WebSocket heartbeats, etc.) get a turn.
+        // That's what previously starved under a 25MB+ synchronous atop
+        // loop. Secondary win: we hold one Blob per chunk instead of
+        // (Uint8Array + Blob) pair, cutting peak memory roughly in half.
         const chunkBlob = await (
           await fetch(`data:application/octet-stream;base64,${chunk.data}`)
         ).blob();
@@ -210,7 +214,7 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
             <audio src={blobUrl} controls />
           )}
           {input.media_type === "image" && (
-            <img src={blobUrl} alt={input.filename} decoding="async" loading="lazy" />
+            <img src={blobUrl} alt={input.filename} decoding="async" />
           )}
         </div>
       )}
