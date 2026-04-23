@@ -119,6 +119,7 @@ if check_image_available():
         PREPARE_REFERENCE_IMAGE,
     )
     from .tools import image, images_api, reference
+    from .tools.images_api import ImageSize
 
     @mcp.tool(description=LIST_REFERENCE_IMAGES, annotations=READ_ONLY_CLOSED)
     async def list_reference_images(
@@ -158,24 +159,16 @@ if check_image_available():
     async def download_image(response_id: str, filename: str | None = None):
         return await image.download_image(response_id, filename)
 
-    # Images API tools (synchronous, blocks until done). `model` is typed as str
-    # so callers can pass new models (like gpt-image-2) ahead of SDK type updates.
-    _ImageSize = Literal[
-        "auto",
-        "1024x1024",
-        "1536x1024",
-        "1024x1536",
-        "2048x2048",
-        "2048x1152",
-        "3840x2160",
-        "2160x3840",
-    ]
+    # Images API tools (synchronous, blocks until done). `model` is typed as
+    # str so callers can pass new models (like gpt-image-2) ahead of SDK type
+    # updates. Size options live in `ImageSize` (imported above) — single
+    # source of truth in `tools/images_api.py`.
 
     @mcp.tool(description=GENERATE_IMAGE, annotations=WRITE_OPEN)
     async def generate_image(
         prompt: str,
         model: str = "gpt-image-2",
-        size: _ImageSize = "auto",
+        size: ImageSize = "auto",
         quality: Literal["auto", "low", "medium", "high"] = "auto",
         background: Literal["auto", "transparent", "opaque"] = "auto",
         output_format: Literal["png", "jpeg", "webp"] = "png",
@@ -192,7 +185,7 @@ if check_image_available():
         input_images: list[str],
         model: str = "gpt-image-2",
         mask_filename: str | None = None,
-        size: _ImageSize = "auto",
+        size: ImageSize = "auto",
         quality: Literal["auto", "low", "medium", "high"] = "auto",
         background: Literal["auto", "transparent", "opaque"] = "auto",
         output_format: Literal["png", "jpeg", "webp"] = "png",

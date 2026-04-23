@@ -23,14 +23,21 @@ from ..storage import get_storage
 from ..types import ImageGenerateResult
 from ..utils import generate_filename
 
-# SDK size Literal still reflects the pre-gpt-image-2 world. We accept the
-# newer 2K/4K sizes on the public `ImageSize` alias and cast them through
-# this narrower alias when calling into the SDK.
+# SDK (openai 2.32) size Literal still reflects the pre-gpt-image-2 world and
+# omits every 2K and 4K option. We accept the broader set on the public
+# `ImageSize` alias below and cast through this narrower alias when calling
+# into the SDK. Drop both the alias and the casts once the SDK ships an
+# `ImageGenerateParams` that includes gpt-image-2's documented sizes.
 _SDKImageSize = Literal["1024x1024", "1024x1536", "1536x1024", "auto"]
 
-# Type aliases for clarity. `size` covers the popular documented sizes for
-# gpt-image-2; the API actually accepts any resolution that satisfies its
-# constraints (max edge 3840px, multiples of 16px, ratio ≤3:1, 655k-8.3M pixels).
+# Public size alias. Covers the "popular sizes" documented in OpenAI's
+# gpt-image-2 cookbook (April 2026). The API actually accepts any resolution
+# that satisfies: max edge 3840px, multiples of 16px, ratio ≤3:1,
+# 655,360 ≤ pixels ≤ 8,294,400.
+#
+# OpenAI's own guidance: 2560x1440 is the reliability ceiling; anything above
+# that (3840x2160 and friends) should be treated as experimental — results
+# get more variable and the client cost (memory, decode time) climbs fast.
 ImageSize = Literal[
     "auto",
     "1024x1024",
@@ -38,6 +45,8 @@ ImageSize = Literal[
     "1024x1536",
     "2048x2048",
     "2048x1152",
+    "2560x1440",
+    "1440x2560",
     "3840x2160",
     "2160x3840",
 ]
@@ -94,9 +103,10 @@ async def generate_image(
 
     logger.info("Generating image with %s (size=%s, quality=%s)", model, size, quality)
 
-    # `model` is typed `str` to allow newer models (like gpt-image-2) that may
-    # not yet appear in the SDK's ImageModel Literal. `size` is similarly cast
-    # because the SDK Literal doesn't yet include gpt-image-2's 2K/4K sizes.
+    # SDK 2.32's `ImageModel` Literal does not yet include `gpt-image-2` and
+    # its `size` Literal does not include any 2K/4K option. The API accepts
+    # both at runtime; the casts here satisfy the type checker. Drop them
+    # once a newer SDK widens `ImageModel` and `ImageGenerateParams.size`.
     response = await client.images.generate(
         prompt=prompt,
         model=cast(ImageModel, model),
@@ -246,8 +256,9 @@ async def edit_image(
     image_arg = image_files[0] if len(image_files) == 1 else image_files
 
     # Build kwargs, omitting None values (SDK doesn't accept None for optional params).
-    # `model` is cast to ImageModel to accept newer models (like gpt-image-2) that
-    # may not yet appear in the SDK's ImageModel Literal.
+    # SDK 2.32's `ImageModel` Literal omits `gpt-image-2` and its size Literal
+    # omits 2K/4K options. The API accepts both at runtime; drop the casts
+    # once a newer SDK catches up.
     edit_kwargs: dict = {
         "image": image_arg,
         "prompt": prompt,
