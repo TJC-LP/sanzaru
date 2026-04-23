@@ -114,7 +114,7 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
     }
 
     try {
-      const chunks: Uint8Array[] = [];
+      const chunks: Blob[] = [];
       let offset = 0;
       let done = false;
       let resolvedMime: string | null = input.mime_type ?? null;
@@ -142,13 +142,14 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
           resolvedMime = chunk.mime_type;
         }
 
-        // Decode base64 chunk
-        const binary = atob(chunk.data);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) {
-          bytes[i] = binary.charCodeAt(i);
-        }
-        chunks.push(bytes);
+        // Decode the base64 chunk off the main thread by routing through the
+        // browser's native data-URL parser. This avoids per-chunk atob() +
+        // Uint8Array fill (synchronous, main-thread-blocking on 25MB+ files)
+        // and skips holding two copies of each chunk (Uint8Array + Blob).
+        const chunkBlob = await (
+          await fetch(`data:application/octet-stream;base64,${chunk.data}`)
+        ).blob();
+        chunks.push(chunkBlob);
 
         offset += chunk.chunk_size;
         done = chunk.is_last;
@@ -209,7 +210,7 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
             <audio src={blobUrl} controls />
           )}
           {input.media_type === "image" && (
-            <img src={blobUrl} alt={input.filename} />
+            <img src={blobUrl} alt={input.filename} decoding="async" loading="lazy" />
           )}
         </div>
       )}
