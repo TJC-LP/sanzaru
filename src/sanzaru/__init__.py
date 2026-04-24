@@ -1,2 +1,8 @@
+from importlib.metadata import PackageNotFoundError, version
+
 __all__ = ["__version__"]
-__version__ = "0.6.1"
+
+try:
+    __version__ = version("sanzaru")
+except PackageNotFoundError:
+    __version__ = "unknown"
