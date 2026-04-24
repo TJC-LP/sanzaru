@@ -82,4 +82,4 @@ __all__ = [
     "TTSResult",
 ]
 
-__version__ = "0.4.5"
+__version__ = "0.6.1"
