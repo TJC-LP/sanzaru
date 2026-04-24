@@ -185,7 +185,33 @@ Example workflow:
 
 # ==================== IMAGE GENERATION TOOL DESCRIPTIONS ====================
 
-CREATE_IMAGE = """Non-blocking async image generation with gpt-image-1.5 support.
+# Shared fragments referenced by CREATE_IMAGE, GENERATE_IMAGE, and EDIT_IMAGE
+# below to avoid repeating the same model list and size guidance three times.
+
+_IMAGE_MODELS_SUMMARY = """**Image generation models:**
+- gpt-image-2: STATE-OF-THE-ART (default) — best quality, ~99% text accuracy.
+  Always processes inputs at high fidelity (no input_fidelity knob).
+  Does not support transparent backgrounds.
+- gpt-image-1.5: Previous gen — use when you need transparent backgrounds or
+  explicit input_fidelity control.
+- gpt-image-1: High quality (legacy).
+- gpt-image-1-mini: Fast, cost-effective drafts."""
+
+_IMAGE_SIZE_GUIDANCE = """**Sizes (gpt-image-2):**
+Recommended (reliable results): "1024x1024", "1024x1536" / "1536x1024"
+(portrait / landscape), "2048x2048", "2560x1440" / "1440x2560" (2K — OpenAI's
+upper reliability ceiling).
+Experimental: "3840x2160" / "2160x3840" (4K). Results more variable and the
+client memory / decode cost climbs fast. Prefer 2K or smaller unless the user
+explicitly asks for 4K.
+
+gpt-image-2 also accepts any resolution that satisfies all of: max edge
+≤ 3840px, both edges multiples of 16, long:short ratio ≤ 3:1, and
+655,360 ≤ total pixels ≤ 8,294,400. Pass "auto" to let the model pick."""
+
+
+CREATE_IMAGE = (
+    """Non-blocking async image generation with gpt-image-1.5 support.
 
 Creates images from text prompts OR edits existing images by providing reference images.
 Returns immediately with a response_id - use get_image_status() to poll for completion.
@@ -223,17 +249,13 @@ Parameters:
   * Transparent = edit this area, black = keep original
   * Requires input_images parameter
 
-**Image generation models (tool_config.model):**
-- gpt-image-2: STATE-OF-THE-ART (RECOMMENDED) — best quality, ~99% text accuracy, up to 4K output
-- gpt-image-1.5: Previous gen — use when you need transparent backgrounds or explicit input_fidelity control
-- gpt-image-1: High quality image generation
-- gpt-image-1-mini: Fast, cost-effective generation
+"""
+    + _IMAGE_MODELS_SUMMARY
+    + "\n\n"
+    + _IMAGE_SIZE_GUIDANCE
+    + """
 
-**tool_config fields (all optional):**
-- model: one of the models above
-- size: "1024x1024", "1536x1024", "1024x1536", "2048x2048", "3840x2160", etc., or "auto"
-  gpt-image-2 accepts any resolution satisfying: max edge 3840px, multiples of 16,
-  long:short ratio ≤ 3:1, 655,360 ≤ pixels ≤ 8,294,400.
+**Other tool_config fields (all optional):**
 - quality: "low", "medium", "high", or "auto"
 - moderation: "auto" (default) or "low"
 - background: "auto", "opaque", or "transparent" (transparent NOT supported on gpt-image-2)
@@ -247,8 +269,8 @@ Common tool_config examples:
 Best quality with gpt-image-2:
   tool_config={"type": "image_generation", "model": "gpt-image-2", "quality": "high"}
 
-4K landscape:
-  tool_config={"type": "image_generation", "model": "gpt-image-2", "size": "3840x2160"}
+2K landscape:
+  tool_config={"type": "image_generation", "model": "gpt-image-2", "size": "2560x1440"}
 
 Transparent PNG (falls back to gpt-image-1.5):
   tool_config={"type": "image_generation", "model": "gpt-image-1.5", "background": "transparent"}
@@ -295,6 +317,7 @@ Workflows:
                 tool_config={"type": "image_generation", "action": "generate"})
 
 Returns ImageResponse with: id, status, created_at"""
+)
 
 GET_IMAGE_STATUS = """Check status and progress of image generation.
 
@@ -318,7 +341,8 @@ Returns ImageDownloadResult with: filename, size, format"""
 
 # ==================== IMAGES API TOOL DESCRIPTIONS ====================
 
-GENERATE_IMAGE = """RECOMMENDED default image generation tool. Synchronous — returns the finished image directly.
+GENERATE_IMAGE = (
+    """RECOMMENDED default image generation tool. Synchronous — returns the finished image directly.
 
 No polling needed. Blocks until the image is ready and saves it to disk in one step.
 Provides token usage for cost tracking.
@@ -328,18 +352,9 @@ use create_image instead (async with previous_response_id support).
 
 Parameters:
 - prompt: Text description of the image (required, max 32k chars)
-- model: Image model to use. Default: "gpt-image-2"
-  * gpt-image-2: STATE-OF-THE-ART (default) — best quality, ~99% text accuracy, up to 4K output
-  * gpt-image-1.5: Previous gen — use when you need transparent backgrounds
-  * gpt-image-1: High quality
-  * gpt-image-1-mini: Fast, cost-effective
-  * dall-e-3: Legacy DALL-E 3
-  * dall-e-2: Legacy DALL-E 2
-- size: Image dimensions. Default: "auto"
-  * "auto", "1024x1024", "1536x1024", "1024x1536"
-  * gpt-image-2 also supports 2K+: "2048x2048", "2048x1152", "3840x2160", "2160x3840"
-  * gpt-image-2 accepts any resolution with max edge ≤3840px, multiples of 16,
-    ratio ≤3:1, and 655,360 ≤ pixels ≤ 8,294,400.
+- model: Image model to use. Default: "gpt-image-2". Also accepts legacy
+  "dall-e-3" and "dall-e-2". See model summary below.
+- size: Image dimensions. Default: "auto". See size guidance below.
 - quality: Generation quality. Default: "auto"
   * "auto", "low", "medium", "high"
 - background: Background type. Default: "auto"
@@ -351,6 +366,12 @@ Parameters:
   * "auto", "low"
 - filename: Custom output filename (optional)
 
+"""
+    + _IMAGE_MODELS_SUMMARY
+    + "\n\n"
+    + _IMAGE_SIZE_GUIDANCE
+    + """
+
 Returns ImageGenerateResult with: filename, size, format, model, usage
 
 Example workflows:
@@ -358,16 +379,18 @@ Example workflows:
 1. Basic generation (gpt-image-2):
    generate_image("a sunset over mountains")
 
-2. High quality 4K landscape:
-   generate_image("mountain vista at golden hour", size="3840x2160", quality="high")
+2. High quality 2K landscape:
+   generate_image("mountain vista at golden hour", size="2560x1440", quality="high")
 
 3. Transparent background (falls back to gpt-image-1.5):
    generate_image("product icon", model="gpt-image-1.5", background="transparent")
 
 4. Fast draft:
    generate_image("quick sketch", quality="low")"""
+)
 
-EDIT_IMAGE = """Edit images using OpenAI's Images API with gpt-image-2 (default).
+EDIT_IMAGE = (
+    """Edit images using OpenAI's Images API with gpt-image-2 (default).
 
 Modify existing images based on a prompt. Supports up to 16 input images.
 Returns immediately with the edited image (no polling required).
@@ -375,16 +398,11 @@ Returns immediately with the edited image (no polling required).
 Parameters:
 - prompt: Text description of desired edits (required, max 32k chars)
 - input_images: List of image filenames from IMAGE_PATH (required, max 16 images)
-- model: Image model. Default: "gpt-image-2"
-  * gpt-image-2 always processes inputs at high fidelity (no input_fidelity knob).
-    Doesn't support transparent background.
-  * gpt-image-1.5: Previous gen — needed for transparent backgrounds or explicit
-    input_fidelity control.
+- model: Image model. Default: "gpt-image-2". See model summary below.
 - mask_filename: PNG mask with alpha channel for inpainting (optional)
   * Transparent areas = edit these regions
   * Opaque areas = preserve original
-- size: Output dimensions. Default: "auto". gpt-image-2 also supports
-  2K/4K sizes like "2048x2048", "3840x2160".
+- size: Output dimensions. Default: "auto". See size guidance below.
 - quality: Generation quality. Default: "auto"
 - background: Background type. Default: "auto" (transparent unsupported on gpt-image-2)
 - output_format: Output format. Default: "png"
@@ -393,6 +411,12 @@ Parameters:
   * "high" - better face/style preservation
   * "low" - more creative freedom
 - filename: Custom output filename (optional)
+
+"""
+    + _IMAGE_MODELS_SUMMARY
+    + "\n\n"
+    + _IMAGE_SIZE_GUIDANCE
+    + """
 
 Returns ImageGenerateResult with: filename, size, format, model, usage
 
@@ -410,6 +434,7 @@ Example workflows:
 4. High-fidelity face edit on gpt-image-1.5:
    edit_image("change hair color to red", input_images=["portrait.jpg"],
               model="gpt-image-1.5", input_fidelity="high")"""
+)
 
 
 # ==================== AUDIO TOOL DESCRIPTIONS ====================

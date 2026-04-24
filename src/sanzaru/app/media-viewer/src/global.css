@@ -96,6 +96,13 @@ html, body {
   border-radius: var(--border-radius-md);
 }
 
+.media-container img {
+  max-height: 480px;
+  object-fit: contain;
+  height: auto;
+  width: auto;
+}
+
 .media-container video {
   background: #000;
 }

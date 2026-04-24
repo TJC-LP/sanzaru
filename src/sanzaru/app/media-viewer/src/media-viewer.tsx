@@ -114,7 +114,7 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
     }
 
     try {
-      const chunks: Uint8Array[] = [];
+      const chunks: Blob[] = [];
       let offset = 0;
       let done = false;
       let resolvedMime: string | null = input.mime_type ?? null;
@@ -142,13 +142,18 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
           resolvedMime = chunk.mime_type;
         }
 
-        // Decode base64 chunk
-        const binary = atob(chunk.data);
-        const bytes = new Uint8Array(binary.length);
-        for (let i = 0; i < binary.length; i++) {
-          bytes[i] = binary.charCodeAt(i);
-        }
-        chunks.push(bytes);
+        // Route the base64 chunk through a data: URL fetch instead of
+        // decoding it ourselves with atob()+Uint8Array. The primary win is
+        // not "decode off the main thread" — the engine is free to decode
+        // on-thread — but the `await` yields the JS event loop between
+        // chunks, so host timers (WebSocket heartbeats, etc.) get a turn.
+        // That's what previously starved under a 25MB+ synchronous atop
+        // loop. Secondary win: we hold one Blob per chunk instead of
+        // (Uint8Array + Blob) pair, cutting peak memory roughly in half.
+        const chunkBlob = await (
+          await fetch(`data:application/octet-stream;base64,${chunk.data}`)
+        ).blob();
+        chunks.push(chunkBlob);
 
         offset += chunk.chunk_size;
         done = chunk.is_last;
@@ -209,7 +214,7 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
             <audio src={blobUrl} controls />
           )}
           {input.media_type === "image" && (
-            <img src={blobUrl} alt={input.filename} />
+            <img src={blobUrl} alt={input.filename} decoding="async" />
           )}
         </div>
       )}
