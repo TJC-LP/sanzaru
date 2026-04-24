@@ -81,5 +81,3 @@ __all__ = [
     "ChatResult",
     "TTSResult",
 ]
-
-__version__ = "0.4.5"

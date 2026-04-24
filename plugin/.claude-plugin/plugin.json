@@ -1,7 +1,7 @@
 {
   "name": "sanzaru",
   "description": "MCP server for OpenAI multimodal APIs (Sora video, image generation, audio). Provides prompting guidance and workflow patterns for effective tool usage.",
-  "version": "0.4.5",
+  "version": "0.6.1",
   "author": {
     "name": "TJC L.P.",
     "url": "https://github.com/TJC-LP"
