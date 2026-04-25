@@ -318,20 +318,11 @@ if check_audio_available():
     meta={
         "ui": {
             "prefersBorder": True,
-            # Declare the iframe's network requirements via the MCP Apps
-            # protocol so any host that honors `meta.ui.csp` builds a CSP
-            # that lets the viewer run.
-            #
-            # The chunk-pull loop in `app/media-viewer/src/media-viewer.tsx`
-            # decodes each base64 chunk by `await fetch('data:application/
-            # octet-stream;base64,...')` — this avoids blocking the JS event
-            # loop (which previously starved the host's WebSocket heartbeat
-            # under a 25MB+ synchronous atob loop). CSP routes those fetches
-            # through `connect-src`, so hosts that pin `connect-src 'self'`
-            # without this declaration block every chunk and the viewer
-            # never renders.
+            # Declare the iframe's resource requirements via the MCP Apps
+            # protocol so hosts that honor `meta.ui.csp` allow the Blob URL
+            # rendered by the viewer's <video>, <audio>, and <img> elements.
             "csp": {
-                "connectDomains": ["data:"],
+                "resourceDomains": ["blob:"],
             },
         }
     },
