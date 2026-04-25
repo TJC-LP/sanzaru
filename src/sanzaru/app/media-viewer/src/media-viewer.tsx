@@ -24,11 +24,38 @@ interface MediaDataChunk {
 }
 
 const CHUNK_SIZE = 2 * 1024 * 1024; // 2 MB
+const BASE64_DECODE_SLICE_SIZE = 256 * 1024; // Must stay divisible by 4
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function yieldToHost(): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function decodeBase64Blob(data: string): Promise<Blob> {
+  const parts: BlobPart[] = [];
+
+  for (let start = 0; start < data.length; start += BASE64_DECODE_SLICE_SIZE) {
+    const slice = data.slice(start, Math.min(start + BASE64_DECODE_SLICE_SIZE, data.length));
+    const binary = atob(slice);
+    const bytes = new Uint8Array(binary.length);
+
+    for (let i = 0; i < binary.length; i++) {
+      bytes[i] = binary.charCodeAt(i);
+    }
+
+    parts.push(bytes);
+
+    if (start + BASE64_DECODE_SLICE_SIZE < data.length) {
+      await yieldToHost();
+    }
+  }
+
+  return new Blob(parts);
 }
 
 /** Extract parsed JSON from a CallToolResult — tries structuredContent first, then text content. */
@@ -142,17 +169,10 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
           resolvedMime = chunk.mime_type;
         }
 
-        // Route the base64 chunk through a data: URL fetch instead of
-        // decoding it ourselves with atob()+Uint8Array. The primary win is
-        // not "decode off the main thread" — the engine is free to decode
-        // on-thread — but the `await` yields the JS event loop between
-        // chunks, so host timers (WebSocket heartbeats, etc.) get a turn.
-        // That's what previously starved under a 25MB+ synchronous atop
-        // loop. Secondary win: we hold one Blob per chunk instead of
-        // (Uint8Array + Blob) pair, cutting peak memory roughly in half.
-        const chunkBlob = await (
-          await fetch(`data:application/octet-stream;base64,${chunk.data}`)
-        ).blob();
+        // Decode in small slices so host timers and message handlers get
+        // turns during large media loads. Using fetch(data:...) would also
+        // yield, but strict MCP App CSP hosts can block it via connect-src.
+        const chunkBlob = await decodeBase64Blob(chunk.data);
         chunks.push(chunkBlob);
 
         offset += chunk.chunk_size;

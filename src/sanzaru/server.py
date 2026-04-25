@@ -318,6 +318,12 @@ if check_audio_available():
     meta={
         "ui": {
             "prefersBorder": True,
+            # Declare the iframe's resource requirements via the MCP Apps
+            # protocol so hosts that honor `meta.ui.csp` allow the Blob URL
+            # rendered by the viewer's <video>, <audio>, and <img> elements.
+            "csp": {
+                "resourceDomains": ["blob:"],
+            },
         }
     },
 )
