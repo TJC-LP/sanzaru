@@ -31,6 +31,25 @@ class TestMediaTypeMapping:
 
 
 @pytest.mark.unit
+class TestMediaViewerResourceMeta:
+    """The MCP App media-viewer resource must declare its CSP needs.
+
+    The viewer's chunk-pull loop fetches `data:application/octet-stream;base64,...`
+    URLs to decode each chunk off the JS event loop. CSP routes those fetches
+    through `connect-src`, so any host that pins `connect-src 'self'` without
+    knowing about this requirement blocks every chunk.
+    """
+
+    def test_resource_declares_data_connect_domain(self):
+        from sanzaru.server import mcp
+
+        resources = mcp._resource_manager._resources
+        media_viewer = resources["ui://sanzaru/media-viewer.html"]
+        connect_domains = media_viewer.meta["ui"]["csp"]["connectDomains"]
+        assert "data:" in connect_domains
+
+
+@pytest.mark.unit
 class TestResolvePathType:
     """Test _resolve_path_type helper."""
 
