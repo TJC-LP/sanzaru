@@ -8,7 +8,7 @@
     "watch": "cross-env NODE_ENV=production INPUT=mcp-app.html vite build --watch"
   },
   "dependencies": {
-    "@modelcontextprotocol/ext-apps": "^1.0.0",
+    "@modelcontextprotocol/ext-apps": "^1.7.0",
     "react": "^19.2.0",
     "react-dom": "^19.2.0"
   },
