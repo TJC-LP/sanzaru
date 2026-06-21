@@ -12,23 +12,15 @@ For non-blocking generation, prefer create_image (Responses API) instead.
 
 import base64
 import io
-from typing import Literal, cast
+from typing import Literal
 
 import anyio
-from openai.types import ImageModel
 from PIL import Image
 
 from ..config import get_client, logger
 from ..storage import get_storage
 from ..types import ImageGenerateResult
 from ..utils import generate_filename
-
-# SDK (openai 2.32) size Literal still reflects the pre-gpt-image-2 world and
-# omits every 2K and 4K option. We accept the broader set on the public
-# `ImageSize` alias below and cast through this narrower alias when calling
-# into the SDK. Drop both the alias and the casts once the SDK ships an
-# `ImageGenerateParams` that includes gpt-image-2's documented sizes.
-_SDKImageSize = Literal["1024x1024", "1024x1536", "1536x1024", "auto"]
 
 # Public size alias. Covers the "popular sizes" documented in OpenAI's
 # gpt-image-2 cookbook (April 2026). The API actually accepts any resolution
@@ -103,14 +95,10 @@ async def generate_image(
 
     logger.info("Generating image with %s (size=%s, quality=%s)", model, size, quality)
 
-    # SDK 2.32's `ImageModel` Literal does not yet include `gpt-image-2` and
-    # its `size` Literal does not include any 2K/4K option. The API accepts
-    # both at runtime; the casts here satisfy the type checker. Drop them
-    # once a newer SDK widens `ImageModel` and `ImageGenerateParams.size`.
     response = await client.images.generate(
         prompt=prompt,
-        model=cast(ImageModel, model),
-        size=cast(_SDKImageSize, size),
+        model=model,
+        size=size,
         quality=quality,
         background=background,
         output_format=output_format,
@@ -256,14 +244,11 @@ async def edit_image(
     image_arg = image_files[0] if len(image_files) == 1 else image_files
 
     # Build kwargs, omitting None values (SDK doesn't accept None for optional params).
-    # SDK 2.32's `ImageModel` Literal omits `gpt-image-2` and its size Literal
-    # omits 2K/4K options. The API accepts both at runtime; drop the casts
-    # once a newer SDK catches up.
     edit_kwargs: dict = {
         "image": image_arg,
         "prompt": prompt,
-        "model": cast(ImageModel, model),
-        "size": cast(_SDKImageSize, size),
+        "model": model,
+        "size": size,
         "quality": quality,
         "background": background,
         "output_format": output_format,

@@ -41,6 +41,48 @@ async def test_image_create(mocker, tmp_reference_path):
 
 
 @pytest.mark.integration
+async def test_image_create_defaults_to_gpt_image_2(mocker, tmp_reference_path):
+    """create_image injects model=gpt-image-2 into the tool config when the caller omits it."""
+    mock_response = mocker.MagicMock()
+    mock_response.id = "resp_default"
+    mock_response.status = "queued"
+    mock_response.created_at = 1234567890.0
+
+    storage = LocalStorageBackend(path_overrides={"reference": tmp_reference_path})
+    mocker.patch("sanzaru.tools.image.get_storage", return_value=storage)
+    mock_get_client = mocker.patch("sanzaru.tools.image.get_client")
+    mock_get_client.return_value.responses.create = mocker.AsyncMock(return_value=mock_response)
+
+    await create_image(prompt="a cat")
+
+    tools = mock_get_client.return_value.responses.create.call_args.kwargs["tools"]
+    assert tools[0]["type"] == "image_generation"
+    assert tools[0]["model"] == "gpt-image-2"
+
+
+@pytest.mark.integration
+async def test_image_create_preserves_explicit_model(mocker, tmp_reference_path):
+    """create_image keeps a caller-specified image model instead of overriding it."""
+    mock_response = mocker.MagicMock()
+    mock_response.id = "resp_explicit"
+    mock_response.status = "queued"
+    mock_response.created_at = 1234567890.0
+
+    storage = LocalStorageBackend(path_overrides={"reference": tmp_reference_path})
+    mocker.patch("sanzaru.tools.image.get_storage", return_value=storage)
+    mock_get_client = mocker.patch("sanzaru.tools.image.get_client")
+    mock_get_client.return_value.responses.create = mocker.AsyncMock(return_value=mock_response)
+
+    await create_image(
+        prompt="a cat",
+        tool_config={"type": "image_generation", "model": "gpt-image-1.5", "background": "transparent"},
+    )
+
+    tools = mock_get_client.return_value.responses.create.call_args.kwargs["tools"]
+    assert tools[0]["model"] == "gpt-image-1.5"
+
+
+@pytest.mark.integration
 async def test_image_get_status(mocker):
     """Test image generation status retrieval."""
     mock_response = mocker.MagicMock()

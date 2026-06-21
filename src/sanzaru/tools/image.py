@@ -99,8 +99,10 @@ async def create_image(
 
     Args:
         prompt: Text description of image to generate (or edits to make if input_images provided)
-        model: Mainline model to use (gpt-5.2, gpt-5.1, gpt-5, etc.) - calls the image generation tool
-        tool_config: Optional ImageGeneration tool configuration (size, quality, model, moderation, etc.)
+        model: Mainline model that invokes the image tool (gpt-5.2 default, gpt-5.1, gpt-5).
+            This is NOT the image model — set that via tool_config["model"].
+        tool_config: Optional ImageGeneration tool configuration (size, quality, model, moderation, etc.).
+            The image model defaults to gpt-image-2 when "model" is not set here.
         previous_response_id: Optional ID to refine previous generation
         input_images: Optional list of reference image filenames from IMAGE_PATH
         mask_filename: Optional PNG mask with alpha channel for inpainting
@@ -115,14 +117,13 @@ async def create_image(
     Example tool_config:
         {
             "type": "image_generation",
-            "model": "gpt-image-1.5",  # recommended (or "gpt-image-1", "gpt-image-1-mini")
+            "model": "gpt-image-2",  # default when omitted (also: gpt-image-1.5, gpt-image-1, gpt-image-1-mini)
             "size": "1024x1024",
             "quality": "high",
             "moderation": "low",  # or "auto"
-            "input_fidelity": "high",  # or "low"
             "output_format": "png",
-            "background": "transparent"
         }
+        # gpt-image-1.5 only: "input_fidelity": "high"/"low", "background": "transparent"
     """
     client = get_client()
     storage = get_storage()
@@ -133,6 +134,12 @@ async def create_image(
 
     # Build or use provided tool configuration
     config: ImageGeneration = tool_config if tool_config else {"type": "image_generation"}
+
+    # Default the image model to gpt-image-2 (state-of-the-art) when the caller
+    # hasn't pinned one. The Responses API image_generation tool selects the
+    # image model via this field; the top-level `model` arg stays a mainline model.
+    if "model" not in config:
+        config["model"] = "gpt-image-2"
 
     # Handle mask upload if provided
     if mask_filename:
