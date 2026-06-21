@@ -259,7 +259,7 @@ Parameters:
 **Other tool_config fields (all optional):**
 - quality: "low", "medium", "high", or "auto"
 - moderation: "auto" (default) or "low"
-- background: "auto", "opaque", or "transparent" (transparent NOT supported on gpt-image-2)
+- background: "auto", "opaque", or "transparent" (transparent NOT supported on gpt-image-2 — raises; use gpt-image-1.5)
 - input_fidelity: "high" or "low" (gpt-image-1/1.5 only — ignored by gpt-image-2)
 - output_format: "png", "jpeg", or "webp"
 - action: "auto" (default), "generate", or "edit" — force a mode when an image is in context

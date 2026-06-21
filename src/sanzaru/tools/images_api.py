@@ -17,7 +17,7 @@ from typing import Literal
 import anyio
 from PIL import Image
 
-from ..config import get_client, logger
+from ..config import DEFAULT_IMAGE_MODEL, get_client, logger
 from ..storage import get_storage
 from ..types import ImageGenerateResult
 from ..utils import generate_filename
@@ -46,15 +46,10 @@ ImageQuality = Literal["auto", "low", "medium", "high"]
 ImageBackground = Literal["auto", "transparent", "opaque"]
 ImageOutputFormat = Literal["png", "jpeg", "webp"]
 
-# Models that restrict some parameters. gpt-image-2 processes inputs at high
-# fidelity automatically (no `input_fidelity` knob) and does not support
-# transparent backgrounds.
-_GPT_IMAGE_2 = "gpt-image-2"
-
 
 async def generate_image(
     prompt: str,
-    model: str = _GPT_IMAGE_2,
+    model: str = DEFAULT_IMAGE_MODEL,
     size: ImageSize = "auto",
     quality: ImageQuality = "auto",
     background: ImageBackground = "auto",
@@ -85,7 +80,7 @@ async def generate_image(
         ValueError: If API returns error, invalid filename, or transparent background
             is requested with gpt-image-2 (unsupported — use gpt-image-1.5)
     """
-    if model == _GPT_IMAGE_2 and background == "transparent":
+    if model == DEFAULT_IMAGE_MODEL and background == "transparent":
         raise ValueError(
             "gpt-image-2 does not support transparent backgrounds. Use gpt-image-1.5 for transparent output."
         )
@@ -152,7 +147,7 @@ async def generate_image(
 async def edit_image(
     prompt: str,
     input_images: list[str],
-    model: str = _GPT_IMAGE_2,
+    model: str = DEFAULT_IMAGE_MODEL,
     mask_filename: str | None = None,
     size: ImageSize = "auto",
     quality: ImageQuality = "auto",
@@ -187,7 +182,7 @@ async def edit_image(
         ValueError: If API returns error, invalid filename, image not found, or
             transparent background is requested with gpt-image-2.
     """
-    if model == _GPT_IMAGE_2 and background == "transparent":
+    if model == DEFAULT_IMAGE_MODEL and background == "transparent":
         raise ValueError(
             "gpt-image-2 does not support transparent backgrounds. Use gpt-image-1.5 for transparent output."
         )
@@ -258,7 +253,7 @@ async def edit_image(
         edit_kwargs["mask"] = mask_file
     if input_fidelity:
         # gpt-image-2 always processes inputs at high fidelity and rejects the flag.
-        if model == _GPT_IMAGE_2:
+        if model == DEFAULT_IMAGE_MODEL:
             logger.debug("Ignoring input_fidelity=%s for gpt-image-2 (always high)", input_fidelity)
         else:
             edit_kwargs["input_fidelity"] = input_fidelity

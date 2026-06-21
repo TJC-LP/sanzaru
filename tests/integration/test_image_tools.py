@@ -75,11 +75,87 @@ async def test_image_create_preserves_explicit_model(mocker, tmp_reference_path)
 
     await create_image(
         prompt="a cat",
+        tool_config={"type": "image_generation", "model": "gpt-image-1-mini", "quality": "low"},
+    )
+
+    tools = mock_get_client.return_value.responses.create.call_args.kwargs["tools"]
+    assert tools[0]["model"] == "gpt-image-1-mini"
+
+
+@pytest.mark.integration
+async def test_image_create_transparent_without_model_raises(mocker, tmp_reference_path):
+    """create_image rejects transparent background when gpt-image-2 is the injected default."""
+    storage = LocalStorageBackend(path_overrides={"reference": tmp_reference_path})
+    mocker.patch("sanzaru.tools.image.get_storage", return_value=storage)
+    mock_get_client = mocker.patch("sanzaru.tools.image.get_client")
+    mock_get_client.return_value.responses.create = mocker.AsyncMock()
+
+    with pytest.raises(ValueError, match="gpt-image-1.5"):
+        await create_image(
+            prompt="a logo",
+            tool_config={"type": "image_generation", "background": "transparent"},
+        )
+
+    mock_get_client.return_value.responses.create.assert_not_called()
+
+
+@pytest.mark.integration
+async def test_image_create_transparent_explicit_gpt_image_2_raises(mocker, tmp_reference_path):
+    """The transparent guard also fires when gpt-image-2 is passed explicitly."""
+    storage = LocalStorageBackend(path_overrides={"reference": tmp_reference_path})
+    mocker.patch("sanzaru.tools.image.get_storage", return_value=storage)
+    mock_get_client = mocker.patch("sanzaru.tools.image.get_client")
+    mock_get_client.return_value.responses.create = mocker.AsyncMock()
+
+    with pytest.raises(ValueError, match="transparent"):
+        await create_image(
+            prompt="a logo",
+            tool_config={"type": "image_generation", "model": "gpt-image-2", "background": "transparent"},
+        )
+
+
+@pytest.mark.integration
+async def test_image_create_transparent_with_gpt_image_1_5_allowed(mocker, tmp_reference_path):
+    """gpt-image-1.5 supports transparent, so it must not be blocked by the guard."""
+    mock_response = mocker.MagicMock()
+    mock_response.id = "resp_t"
+    mock_response.status = "queued"
+    mock_response.created_at = 1234567890.0
+
+    storage = LocalStorageBackend(path_overrides={"reference": tmp_reference_path})
+    mocker.patch("sanzaru.tools.image.get_storage", return_value=storage)
+    mock_get_client = mocker.patch("sanzaru.tools.image.get_client")
+    mock_get_client.return_value.responses.create = mocker.AsyncMock(return_value=mock_response)
+
+    await create_image(
+        prompt="a logo",
         tool_config={"type": "image_generation", "model": "gpt-image-1.5", "background": "transparent"},
     )
 
     tools = mock_get_client.return_value.responses.create.call_args.kwargs["tools"]
     assert tools[0]["model"] == "gpt-image-1.5"
+    assert tools[0]["background"] == "transparent"
+
+
+@pytest.mark.integration
+async def test_image_create_does_not_mutate_caller_tool_config(mocker, tmp_reference_path):
+    """create_image injects the default model into a copy, never the caller's dict."""
+    mock_response = mocker.MagicMock()
+    mock_response.id = "resp_m"
+    mock_response.status = "queued"
+    mock_response.created_at = 1234567890.0
+
+    storage = LocalStorageBackend(path_overrides={"reference": tmp_reference_path})
+    mocker.patch("sanzaru.tools.image.get_storage", return_value=storage)
+    mock_get_client = mocker.patch("sanzaru.tools.image.get_client")
+    mock_get_client.return_value.responses.create = mocker.AsyncMock(return_value=mock_response)
+
+    caller_config = {"type": "image_generation", "quality": "high"}
+    await create_image(prompt="a cat", tool_config=caller_config)
+
+    assert "model" not in caller_config  # caller's dict stays clean
+    tools = mock_get_client.return_value.responses.create.call_args.kwargs["tools"]
+    assert tools[0]["model"] == "gpt-image-2"
 
 
 @pytest.mark.integration
