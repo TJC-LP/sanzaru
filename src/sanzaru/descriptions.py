@@ -211,7 +211,7 @@ gpt-image-2 also accepts any resolution that satisfies all of: max edge
 
 
 CREATE_IMAGE = (
-    """Non-blocking async image generation with gpt-image-1.5 support.
+    """Non-blocking async image generation (gpt-image-2 by default).
 
 Creates images from text prompts OR edits existing images by providing reference images.
 Returns immediately with a response_id - use get_image_status() to poll for completion.
@@ -236,6 +236,7 @@ Parameters:
   * With input_images: Describe what changes to make
 - model: Mainline model - "gpt-5.2" (default), "gpt-5.1", "gpt-5", etc.
 - tool_config: Optional ImageGeneration configuration object (optional)
+  * Image model defaults to gpt-image-2 when "model" is omitted
   * Supports all fields: model, size, quality, moderation, input_fidelity, action, etc.
   * MCP library handles serialization automatically
   * See examples below for common configurations
@@ -258,7 +259,7 @@ Parameters:
 **Other tool_config fields (all optional):**
 - quality: "low", "medium", "high", or "auto"
 - moderation: "auto" (default) or "low"
-- background: "auto", "opaque", or "transparent" (transparent NOT supported on gpt-image-2)
+- background: "auto", "opaque", or "transparent" (transparent NOT supported on gpt-image-2 — raises; use gpt-image-1.5)
 - input_fidelity: "high" or "low" (gpt-image-1/1.5 only — ignored by gpt-image-2)
 - output_format: "png", "jpeg", or "webp"
 - action: "auto" (default), "generate", or "edit" — force a mode when an image is in context

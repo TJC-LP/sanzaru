@@ -171,6 +171,7 @@ All async operations maintain the same error handling guarantees as sync code:
 ✅ Fully backward compatible - all existing tool calls work identically
 
 ## See Also
+- [Async Task Tracking](async-task-tracking.md) - MCP Tasks status and sync vs. async image generation
 - [Async Optimization Spec](roadmap/async-optimization-spec.md) - Original implementation plan
 - [Benchmark Script](benchmarks/async_benchmark.py) - Performance measurement tool
 - [CLAUDE.md](../CLAUDE.md) - Full project architecture

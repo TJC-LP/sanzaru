@@ -12,23 +12,15 @@ For non-blocking generation, prefer create_image (Responses API) instead.
 
 import base64
 import io
-from typing import Literal, cast
+from typing import Literal
 
 import anyio
-from openai.types import ImageModel
 from PIL import Image
 
-from ..config import get_client, logger
+from ..config import DEFAULT_IMAGE_MODEL, get_client, logger
 from ..storage import get_storage
 from ..types import ImageGenerateResult
 from ..utils import generate_filename
-
-# SDK (openai 2.32) size Literal still reflects the pre-gpt-image-2 world and
-# omits every 2K and 4K option. We accept the broader set on the public
-# `ImageSize` alias below and cast through this narrower alias when calling
-# into the SDK. Drop both the alias and the casts once the SDK ships an
-# `ImageGenerateParams` that includes gpt-image-2's documented sizes.
-_SDKImageSize = Literal["1024x1024", "1024x1536", "1536x1024", "auto"]
 
 # Public size alias. Covers the "popular sizes" documented in OpenAI's
 # gpt-image-2 cookbook (April 2026). The API actually accepts any resolution
@@ -54,15 +46,10 @@ ImageQuality = Literal["auto", "low", "medium", "high"]
 ImageBackground = Literal["auto", "transparent", "opaque"]
 ImageOutputFormat = Literal["png", "jpeg", "webp"]
 
-# Models that restrict some parameters. gpt-image-2 processes inputs at high
-# fidelity automatically (no `input_fidelity` knob) and does not support
-# transparent backgrounds.
-_GPT_IMAGE_2 = "gpt-image-2"
-
 
 async def generate_image(
     prompt: str,
-    model: str = _GPT_IMAGE_2,
+    model: str = DEFAULT_IMAGE_MODEL,
     size: ImageSize = "auto",
     quality: ImageQuality = "auto",
     background: ImageBackground = "auto",
@@ -93,7 +80,7 @@ async def generate_image(
         ValueError: If API returns error, invalid filename, or transparent background
             is requested with gpt-image-2 (unsupported — use gpt-image-1.5)
     """
-    if model == _GPT_IMAGE_2 and background == "transparent":
+    if model == DEFAULT_IMAGE_MODEL and background == "transparent":
         raise ValueError(
             "gpt-image-2 does not support transparent backgrounds. Use gpt-image-1.5 for transparent output."
         )
@@ -103,14 +90,10 @@ async def generate_image(
 
     logger.info("Generating image with %s (size=%s, quality=%s)", model, size, quality)
 
-    # SDK 2.32's `ImageModel` Literal does not yet include `gpt-image-2` and
-    # its `size` Literal does not include any 2K/4K option. The API accepts
-    # both at runtime; the casts here satisfy the type checker. Drop them
-    # once a newer SDK widens `ImageModel` and `ImageGenerateParams.size`.
     response = await client.images.generate(
         prompt=prompt,
-        model=cast(ImageModel, model),
-        size=cast(_SDKImageSize, size),
+        model=model,
+        size=size,
         quality=quality,
         background=background,
         output_format=output_format,
@@ -164,7 +147,7 @@ async def generate_image(
 async def edit_image(
     prompt: str,
     input_images: list[str],
-    model: str = _GPT_IMAGE_2,
+    model: str = DEFAULT_IMAGE_MODEL,
     mask_filename: str | None = None,
     size: ImageSize = "auto",
     quality: ImageQuality = "auto",
@@ -199,7 +182,7 @@ async def edit_image(
         ValueError: If API returns error, invalid filename, image not found, or
             transparent background is requested with gpt-image-2.
     """
-    if model == _GPT_IMAGE_2 and background == "transparent":
+    if model == DEFAULT_IMAGE_MODEL and background == "transparent":
         raise ValueError(
             "gpt-image-2 does not support transparent backgrounds. Use gpt-image-1.5 for transparent output."
         )
@@ -256,14 +239,11 @@ async def edit_image(
     image_arg = image_files[0] if len(image_files) == 1 else image_files
 
     # Build kwargs, omitting None values (SDK doesn't accept None for optional params).
-    # SDK 2.32's `ImageModel` Literal omits `gpt-image-2` and its size Literal
-    # omits 2K/4K options. The API accepts both at runtime; drop the casts
-    # once a newer SDK catches up.
     edit_kwargs: dict = {
         "image": image_arg,
         "prompt": prompt,
-        "model": cast(ImageModel, model),
-        "size": cast(_SDKImageSize, size),
+        "model": model,
+        "size": size,
         "quality": quality,
         "background": background,
         "output_format": output_format,
@@ -273,7 +253,7 @@ async def edit_image(
         edit_kwargs["mask"] = mask_file
     if input_fidelity:
         # gpt-image-2 always processes inputs at high fidelity and rejects the flag.
-        if model == _GPT_IMAGE_2:
+        if model == DEFAULT_IMAGE_MODEL:
             logger.debug("Ignoring input_fidelity=%s for gpt-image-2 (always high)", input_fidelity)
         else:
             edit_kwargs["input_fidelity"] = input_fidelity

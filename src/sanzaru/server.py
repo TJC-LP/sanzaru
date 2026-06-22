@@ -19,7 +19,7 @@ from openai.types.responses.tool_param import ImageGeneration
 from starlette.requests import Request
 from starlette.responses import Response
 
-from .config import logger
+from .config import DEFAULT_IMAGE_MODEL, logger
 from .features import check_audio_available, check_image_available, check_video_available
 from .storage.factory import get_storage
 from .tools.media_viewer import MEDIA_TYPE_TO_PATH_TYPE
@@ -167,7 +167,7 @@ if check_image_available():
     @mcp.tool(description=GENERATE_IMAGE, annotations=WRITE_OPEN)
     async def generate_image(
         prompt: str,
-        model: str = "gpt-image-2",
+        model: str = DEFAULT_IMAGE_MODEL,
         size: ImageSize = "auto",
         quality: Literal["auto", "low", "medium", "high"] = "auto",
         background: Literal["auto", "transparent", "opaque"] = "auto",
@@ -183,7 +183,7 @@ if check_image_available():
     async def edit_image(
         prompt: str,
         input_images: list[str],
-        model: str = "gpt-image-2",
+        model: str = DEFAULT_IMAGE_MODEL,
         mask_filename: str | None = None,
         size: ImageSize = "auto",
         quality: Literal["auto", "low", "medium", "high"] = "auto",

@@ -16,6 +16,7 @@ from functools import lru_cache
 from typing import Literal
 
 from openai import AsyncOpenAI
+from openai.types import ImageModel
 
 # ---------- Logging configuration ----------
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -25,6 +26,14 @@ logging.basicConfig(
     stream=sys.stderr,  # Log to stderr to avoid interfering with stdio MCP transport
 )
 logger = logging.getLogger("sanzaru")
+
+
+# ---------- Image generation defaults ----------
+# Single source of truth for the default image model. create_image injects it
+# into the Responses API image_generation tool config; generate_image/edit_image
+# use it as their `model` default. Typed with the SDK's ImageModel so the value
+# is validated against the models the installed openai SDK knows about.
+DEFAULT_IMAGE_MODEL: ImageModel = "gpt-image-2"
 
 
 # ---------- OpenAI client (stateless) ----------

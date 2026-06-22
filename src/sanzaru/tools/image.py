@@ -23,7 +23,7 @@ from openai.types.responses.response_output_item import ImageGenerationCall
 from openai.types.responses.tool_param import ImageGeneration
 from PIL import Image
 
-from ..config import get_client, logger
+from ..config import DEFAULT_IMAGE_MODEL, get_client, logger
 from ..storage import get_storage
 from ..types import ImageDownloadResult, ImageResponse
 from ..utils import generate_filename
@@ -99,8 +99,10 @@ async def create_image(
 
     Args:
         prompt: Text description of image to generate (or edits to make if input_images provided)
-        model: Mainline model to use (gpt-5.2, gpt-5.1, gpt-5, etc.) - calls the image generation tool
-        tool_config: Optional ImageGeneration tool configuration (size, quality, model, moderation, etc.)
+        model: Mainline model that invokes the image tool (gpt-5.2 default, gpt-5.1, gpt-5).
+            This is NOT the image model — set that via tool_config["model"].
+        tool_config: Optional ImageGeneration tool configuration (size, quality, model, moderation, etc.).
+            The image model defaults to gpt-image-2 when "model" is not set here.
         previous_response_id: Optional ID to refine previous generation
         input_images: Optional list of reference image filenames from IMAGE_PATH
         mask_filename: Optional PNG mask with alpha channel for inpainting
@@ -110,19 +112,19 @@ async def create_image(
 
     Raises:
         RuntimeError: If OPENAI_API_KEY not set or IMAGE_PATH not configured
-        ValueError: If invalid filename, path traversal, or mask without input_images
+        ValueError: If invalid filename, path traversal, mask without input_images,
+            or background="transparent" with gpt-image-2 (use gpt-image-1.5 instead)
 
     Example tool_config:
         {
             "type": "image_generation",
-            "model": "gpt-image-1.5",  # recommended (or "gpt-image-1", "gpt-image-1-mini")
+            "model": "gpt-image-2",  # default when omitted (also: gpt-image-1.5, gpt-image-1, gpt-image-1-mini)
             "size": "1024x1024",
             "quality": "high",
             "moderation": "low",  # or "auto"
-            "input_fidelity": "high",  # or "low"
             "output_format": "png",
-            "background": "transparent"
         }
+        # gpt-image-1.5 only: "input_fidelity": "high"/"low", "background": "transparent"
     """
     client = get_client()
     storage = get_storage()
@@ -131,8 +133,24 @@ async def create_image(
     if mask_filename and not input_images:
         raise ValueError("mask_filename requires input_images parameter")
 
-    # Build or use provided tool configuration
-    config: ImageGeneration = tool_config if tool_config else {"type": "image_generation"}
+    # Build the tool configuration. Copy the caller's dict so we never mutate it
+    # (we may add "model" and "input_image_mask" below).
+    config: ImageGeneration = tool_config.copy() if tool_config else {"type": "image_generation"}
+
+    # Default the image model to gpt-image-2 (state-of-the-art) when the caller
+    # hasn't pinned one. The Responses API image_generation tool selects the
+    # image model via this field; the top-level `model` arg stays a mainline model.
+    if "model" not in config:
+        config["model"] = DEFAULT_IMAGE_MODEL
+
+    # gpt-image-2 cannot produce transparent backgrounds. Mirror the guard in
+    # generate_image/edit_image so this fails with a clear, early error instead
+    # of an opaque API rejection — whether gpt-image-2 was injected as the
+    # default above or passed explicitly in tool_config.
+    if config.get("model") == DEFAULT_IMAGE_MODEL and config.get("background") == "transparent":
+        raise ValueError(
+            "gpt-image-2 does not support transparent backgrounds. Use gpt-image-1.5 for transparent output."
+        )
 
     # Handle mask upload if provided
     if mask_filename:
