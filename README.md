@@ -10,7 +10,7 @@
   [![PyPI downloads](https://img.shields.io/pypi/dm/sanzaru)](https://pypi.org/project/sanzaru/)
 </div>
 
-A **stateless**, lightweight **MCP** server that wraps **OpenAI's Sora Video API, Whisper, GPT-4o Audio, and TTS APIs** via the OpenAI Python SDK.
+A **stateless**, lightweight **MCP** server **and agent CLI** that wraps **OpenAI's Sora Video API, Whisper, GPT-4o Audio, and TTS APIs** via the OpenAI Python SDK.
 
 ## Features
 
@@ -36,6 +36,13 @@ A **stateless**, lightweight **MCP** server that wraps **OpenAI's Sora Video API
 - Multi-voice podcasts with up to 4 speakers and 10 TTS voices
 - Parallel segment generation with configurable pacing
 - MP3/WAV output with loudness normalization
+
+### Agent CLI
+- Every capability as a shell command: `sanzaru video create`, `sanzaru image generate`, ...
+- One-shot async workflows: `create ... -o out.mp4` submits, polls, downloads in one command
+- JSON envelopes on stdout, progress on stderr, deterministic exit codes, resumable waits
+- Concurrent fan-out (multi-prompt image batches, multi-job `wait`) and arbitrary `-o` output paths
+- See [`docs/cli.md`](docs/cli.md) — bare `sanzaru` still runs the MCP server (nothing breaks)
 
 > **Note:** Content guardrails are enforced by OpenAI. This server does not run local moderation.
 
@@ -79,6 +86,23 @@ Features are auto-detected based on configured paths. Set only what you need.
    ```
 
 That's it! Claude Code will automatically connect and you can start generating videos, images, and processing audio.
+
+### Or skip MCP entirely — the agent CLI
+
+```bash
+uv tool install sanzaru && export OPENAI_API_KEY=sk-...
+
+# One command: submit Sora job → poll → download → print the file path
+sanzaru video create "a tabby cat stretches on a windowsill" --seconds 4 -o ./cat.mp4 | jq -r .result.file.path
+
+# Synchronous image generation (gpt-image-2), batch fan-out, JSONL output
+sanzaru image generate "app icon" "hero banner" --quality high -o ./art/
+
+sanzaru capabilities   # machine-readable: what's enabled here
+```
+
+JSON envelopes on stdout, progress on stderr, exit 4 = still-running-and-resumable. Full
+reference: [`docs/cli.md`](docs/cli.md).
 
 ## Installation
 

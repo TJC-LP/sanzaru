@@ -389,8 +389,8 @@ async def serve_media(request: Request) -> Response:
 
 
 # ==================== SERVER ENTRYPOINT ====================
-def main():
-    """Run the MCP server.
+def run_server(transport: Literal["stdio", "http"] = "stdio", host: str = "127.0.0.1", port: int = 8000) -> None:
+    """Start the MCP server on the given transport.
 
     Tools are registered conditionally based on installed optional dependencies:
     - video: Sora video generation (no extra deps, always available)
@@ -401,12 +401,46 @@ def main():
 
     Paths are validated lazily at runtime when tools are called.
 
-    Environment variables should be set explicitly in .mcp.json or passed via the calling environment.
-    For local development with .env files, install python-dotenv: uv add --dev python-dotenv
-
     Transport options:
     - stdio (default): Standard I/O for Claude Desktop and MCP clients
     - http: Stateless HTTP streaming for web clients and remote access
+    """
+    # Log enabled features
+    enabled = []
+    if check_video_available():
+        enabled.append("video")
+    if check_audio_available():
+        enabled.append("audio")
+    if check_image_available():
+        enabled.append("image")
+
+    if enabled:
+        logger.info(f"Enabled features: {', '.join(enabled)}")
+    else:
+        logger.warning("No features enabled - install optional dependencies with: uv add 'sanzaru[all]'")
+
+    # Run server with selected transport
+    if transport == "http":
+        logger.info(f"Starting sanzaru MCP server over HTTP at http://{host}:{port}/mcp")
+        # Configure for stateless HTTP (no session IDs needed - all state in OpenAI cloud)
+        mcp.settings.stateless_http = True
+        mcp.settings.host = host
+        mcp.settings.port = port
+        mcp.run(transport="streamable-http")
+    else:
+        logger.info("Starting sanzaru MCP server over stdio")
+        mcp.run()
+
+
+def main():
+    """Run the MCP server (argparse entrypoint).
+
+    Kept for direct importers and `python -m sanzaru.server`; the installed
+    `sanzaru` console script routes through sanzaru.cli:main, which delegates
+    here-equivalent behavior to run_server().
+
+    Environment variables should be set explicitly in .mcp.json or passed via the calling environment.
+    For local development with .env files, install python-dotenv: uv add --dev python-dotenv
     """
     # Parse CLI arguments
     parser = argparse.ArgumentParser(description="Sanzaru MCP Server")
@@ -434,31 +468,7 @@ def main():
         load_dotenv()
         logger.debug("Loaded environment variables from .env file")
 
-    # Log enabled features
-    enabled = []
-    if check_video_available():
-        enabled.append("video")
-    if check_audio_available():
-        enabled.append("audio")
-    if check_image_available():
-        enabled.append("image")
-
-    if enabled:
-        logger.info(f"Enabled features: {', '.join(enabled)}")
-    else:
-        logger.warning("No features enabled - install optional dependencies with: uv add 'sanzaru[all]'")
-
-    # Run server with selected transport
-    if args.transport == "http":
-        logger.info(f"Starting sanzaru MCP server over HTTP at http://{args.host}:{args.port}/mcp")
-        # Configure for stateless HTTP (no session IDs needed - all state in OpenAI cloud)
-        mcp.settings.stateless_http = True
-        mcp.settings.host = args.host
-        mcp.settings.port = args.port
-        mcp.run(transport="streamable-http")
-    else:
-        logger.info("Starting sanzaru MCP server over stdio")
-        mcp.run()
+    run_server(transport=args.transport, host=args.host, port=args.port)
 
 
 if __name__ == "__main__":
