@@ -96,11 +96,16 @@ def cli(
 
 
 def _register_commands() -> None:
+    from .image import image
+    from .misc import capabilities, wait_command
     from .serve import serve
     from .video import video
 
     cli.add_command(serve)
     cli.add_command(video)
+    cli.add_command(image)
+    cli.add_command(wait_command)
+    cli.add_command(capabilities)
 
 
 _register_commands()
