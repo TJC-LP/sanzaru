@@ -100,10 +100,14 @@ async def _wait_until_terminal(
         if remaining <= 0:
             raise WaitTimeoutError(f"{describe} still running after {timeout:.0f}s", last)
 
-        jittered = delay * (1.0 + random.uniform(-_JITTER, _JITTER))
-        await anyio.sleep(min(jittered, remaining))
+        # A caller-fixed interval is used verbatim; jitter and backoff growth
+        # apply only to the adaptive schedule.
         if interval is None:
+            sleep_for = delay * (1.0 + random.uniform(-_JITTER, _JITTER))
             delay = min(delay * _BACKOFF_FACTOR, max_interval)
+        else:
+            sleep_for = interval
+        await anyio.sleep(min(sleep_for, remaining))
 
 
 async def wait_for_video(

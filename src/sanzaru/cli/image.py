@@ -29,9 +29,9 @@ from ._io import (
 )
 from ._output import (
     EXIT_JOB_FAILED,
-    EXIT_PARTIAL,
     EXIT_TIMEOUT,
     EXIT_USAGE,
+    aggregate_exit_code,
     emit,
     emit_line,
     error_envelope,
@@ -364,11 +364,7 @@ async def image_wait(
         for rid in response_ids:
             tg.start_soon(worker, rid)
 
-    if all(code == 0 for code in codes):
-        return 0
-    if any(code == 0 for code in codes):
-        return EXIT_PARTIAL
-    return codes[0]
+    return aggregate_exit_code(codes)
 
 
 @image.command("download")
@@ -496,11 +492,7 @@ async def image_generate(
         for index, (prompt, _) in enumerate(jobs):
             tg.start_soon(worker, index, prompt)
 
-    if all(code == 0 for code in codes):
-        return 0
-    if any(code == 0 for code in codes):
-        return EXIT_PARTIAL
-    return codes[0]
+    return aggregate_exit_code(codes)
 
 
 @image.command("edit")

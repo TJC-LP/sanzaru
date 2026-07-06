@@ -101,3 +101,19 @@ def emit_line(envelope: dict[str, object]) -> None:
 def note(message: str) -> None:
     """Write a human-readable diagnostic line to stderr."""
     click.echo(f"sanzaru: {message}", err=True)
+
+
+def aggregate_exit_code(codes: list[int]) -> int:
+    """Deterministic fan-out exit code.
+
+    0 when everything succeeded; 6 (partial) on a mix of success and failure.
+    When every input failed: 4 if any input timed out — resumable work remains,
+    which is the actionable signal — otherwise the highest per-input code.
+    """
+    if not codes or all(code == 0 for code in codes):
+        return EXIT_OK
+    if any(code == 0 for code in codes):
+        return EXIT_PARTIAL
+    if EXIT_TIMEOUT in codes:
+        return EXIT_TIMEOUT
+    return max(codes)

@@ -29,9 +29,9 @@ from ._io import (
 )
 from ._output import (
     EXIT_JOB_FAILED,
-    EXIT_PARTIAL,
     EXIT_TIMEOUT,
     EXIT_USAGE,
+    aggregate_exit_code,
     emit,
     emit_line,
     error_envelope,
@@ -379,11 +379,7 @@ async def video_wait(
         for vid in video_ids:
             tg.start_soon(worker, vid)
 
-    if all(code == 0 for code in codes):
-        return 0
-    if any(code == 0 for code in codes):
-        return EXIT_PARTIAL
-    return codes[0]
+    return aggregate_exit_code(codes)
 
 
 @video.command("download")

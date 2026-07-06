@@ -68,8 +68,10 @@ async def podcast_generate(ctx: click.Context, script: str, model: str, output: 
         import pathlib
         import shutil
 
+        import anyio
+
         target = pathlib.Path(final_path).with_name(plan.filename)
-        shutil.move(final_path, str(target))
+        await anyio.to_thread.run_sync(shutil.move, final_path, str(target))
         final_path = str(target)
     payload: dict[str, object] = result.model_dump(mode="json")
     payload["file"] = {"path": final_path}

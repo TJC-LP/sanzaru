@@ -7,7 +7,7 @@ import pathlib
 import pydantic
 import pytest
 
-from sanzaru.cli._output import error_envelope, render, success_envelope
+from sanzaru.cli._output import aggregate_exit_code, error_envelope, render, success_envelope
 
 
 class _Usage(pydantic.BaseModel):
@@ -62,6 +62,23 @@ def test_error_envelope_carries_resume_and_extra():
     assert parsed["resume"] == "sanzaru video wait video_x --download"
     assert parsed["id"] == "video_x"
     assert parsed["last_status"] == "in_progress"
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("codes", "expected"),
+    [
+        ([], 0),
+        ([0, 0], 0),
+        ([0, 5], 6),  # partial
+        ([5, 4], 4),  # all failed, any timeout → resumable signal wins
+        ([1, 5], 5),  # all failed, no timeout → highest code, deterministic
+        ([5, 1], 5),  # ...regardless of completion order
+        ([1, 1], 1),
+    ],
+)
+def test_aggregate_exit_code(codes, expected):
+    assert aggregate_exit_code(codes) == expected
 
 
 @pytest.mark.unit

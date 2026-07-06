@@ -9,7 +9,7 @@ import anyio
 import click
 
 from ._io import OutputPlan, PathSession, install_overrides, plan_output
-from ._output import EXIT_PARTIAL, EXIT_USAGE, emit, emit_line, success_envelope
+from ._output import EXIT_USAGE, aggregate_exit_code, emit, emit_line, success_envelope
 from ._runtime import CLIError, get_state, parse_duration, run_async
 
 DEFAULT_TIMEOUT_S = 1800.0  # generous cross-type default (Sora pace)
@@ -53,6 +53,8 @@ async def wait_command(
 
     Type is inferred from the id prefix (video_* → video, resp_* → image);
     one JSONL envelope per job in completion order. Idempotent and resumable.
+    One lightweight poll loop per id (a few requests/minute each) — dozens of
+    ids in one call are fine.
     """
     from .image import wait_one_image
     from .video import _wait_one as wait_one_video
@@ -121,11 +123,7 @@ async def wait_command(
         for job_id in job_ids:
             tg.start_soon(worker, job_id)
 
-    if all(code == 0 for code in codes):
-        return 0
-    if any(code == 0 for code in codes):
-        return EXIT_PARTIAL
-    return codes[0]
+    return aggregate_exit_code(codes)
 
 
 @click.command("capabilities")

@@ -179,22 +179,27 @@ def install_overrides(session: PathSession) -> None:
 
 async def finalize_output(session: PathSession, plan: OutputPlan, written_filename: str) -> str:
     """Relocate the written artifact if needed; return its final absolute path/URI."""
+    import anyio
+
     from ..storage import get_storage
 
     storage = get_storage()
 
     if plan.via_default_backend:
         # Copy bytes out of the (possibly remote) default backend to the target.
+        # Buffers the full artifact in memory — same caveat as the Databricks
+        # write_stream limitation documented in CLAUDE.md.
         assert plan.final_dir is not None
         data = await storage.read(plan.path_type, written_filename)
         final = plan.final_dir / (plan.final_name or written_filename)
-        final.write_bytes(data)
+        await anyio.to_thread.run_sync(final.write_bytes, data)
         return str(final)
 
     if plan.final_dir is not None:
+        # shutil.move degrades to a full copy across devices — keep it off the loop.
         source_dir = session.overrides[plan.path_type]
         final = plan.final_dir / (plan.final_name or written_filename)
-        shutil.move(str(source_dir / written_filename), str(final))
+        await anyio.to_thread.run_sync(shutil.move, str(source_dir / written_filename), str(final))
         return str(final)
 
     return storage.resolve_display_path(plan.path_type, written_filename)

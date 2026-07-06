@@ -15,7 +15,7 @@ import anyio
 import click
 
 from ._io import PathSession, finalize_output, install_overrides, plan_output, read_content_arg, resolve_input
-from ._output import EXIT_CONFIG, EXIT_PARTIAL, EXIT_USAGE, emit, emit_line, error_envelope, success_envelope
+from ._output import EXIT_CONFIG, EXIT_USAGE, aggregate_exit_code, emit, emit_line, error_envelope, success_envelope
 from ._runtime import CLIError, _classify, get_state, run_async
 
 _AUDIO_DEP_MESSAGE = "audio commands require optional dependencies — install with: uv pip install 'sanzaru[audio]'"
@@ -135,11 +135,7 @@ async def audio_transcribe(
         for index, name in enumerate(names):
             tg.start_soon(worker, index, name)
 
-    if all(code == 0 for code in codes):
-        return 0
-    if any(code == 0 for code in codes):
-        return EXIT_PARTIAL
-    return codes[0]
+    return aggregate_exit_code(codes)
 
 
 @audio.command("chat")

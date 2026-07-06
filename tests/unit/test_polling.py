@@ -93,6 +93,22 @@ async def test_wait_for_video_fixed_interval_disables_backoff(mocker, fake_clock
 
 
 @pytest.mark.unit
+async def test_fixed_interval_ignores_jitter_but_adaptive_applies_it(mocker, fake_clock):
+    """Jitter perturbs only the adaptive schedule — a fixed interval is exact."""
+    mocker.patch("sanzaru.polling.random.uniform", return_value=0.1)  # override fixture's 0.0
+
+    states = [_video(mocker, "queued"), _video(mocker, "completed")]
+    mocker.patch("sanzaru.tools.video.get_video_status", mocker.AsyncMock(side_effect=states))
+    await wait_for_video("video_x", interval=3.0)
+    assert fake_clock.sleeps == [3.0]  # verbatim, no ±10%
+
+    states = [_video(mocker, "queued"), _video(mocker, "completed")]
+    mocker.patch("sanzaru.tools.video.get_video_status", mocker.AsyncMock(side_effect=states))
+    await wait_for_video("video_x")
+    assert fake_clock.sleeps[-1] == pytest.approx(5.0 * 1.1)  # adaptive start 5s +10% jitter
+
+
+@pytest.mark.unit
 async def test_wait_for_video_returns_failed_job(mocker, fake_clock):
     """A server-side failure is a terminal result, not an exception."""
     failed = _video(mocker, "failed")

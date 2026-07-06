@@ -44,6 +44,10 @@ whenever a follow-up command recovers the situation.
 | 6 | Partial batch failure (fan-out with ≥1 success and ≥1 failure) |
 | 130 | Interrupted (Ctrl-C) — job keeps running; resume hint on stderr |
 
+When **every** input of a fan-out fails, the exit code is deterministic: 4 if any input timed out
+(resumable work remains), otherwise the highest per-input code. Per-line envelopes carry the
+detail either way.
+
 ### Global flags
 
 `--json` (accepted no-op — output is always JSON) · `-q/--quiet` (suppress stderr progress) ·
