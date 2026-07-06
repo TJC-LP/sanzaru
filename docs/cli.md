@@ -161,7 +161,9 @@ usage error pointing to gpt-image-1.5.
 ### `sanzaru podcast`
 `generate SCRIPT` renders a multi-voice podcast from a PodcastScript JSON
 (`{"title", "speakers": [...], "segments": [...], "config": {...}}`); segments TTS in parallel
-internally. The envelope includes the full transcript — pipe to a file for long episodes.
+internally. `config` **requires** `default_pause_ms` (int), `normalize_loudness` (bool), and
+`output_format` (`"mp3"|"wav"`); optional: `intro_silence_ms`, `outro_silence_ms`,
+`output_bitrate`. The envelope includes the full transcript — pipe to a file for long episodes.
 
 ### Top-level
 `wait ID...` (mixed-type poller) · `capabilities` (version, per-feature availability with

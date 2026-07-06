@@ -33,10 +33,15 @@ async def podcast_generate(ctx: click.Context, script: str, model: str, output: 
     """Render a podcast from a PodcastScript JSON. SCRIPT is inline JSON, @file, or - (stdin).
 
     \b
-    Script shape: {"title", "speakers": [{id, name, voice, speed, instructions}],
-    "segments": [{speaker, text, ...}], "config": {...}}. Segments TTS in
-    parallel internally; the transcript is included in the result envelope.
-    Example: sanzaru podcast generate - < episode.json -o ./out/episode.mp3
+    Script shape:
+      {"title": str,
+       "speakers": [{id, name, voice, speed, instructions}],   (1-4 speakers)
+       "segments": [{speaker, text, pause_after?, speed_override?}],
+       "config": {"default_pause_ms": int, "normalize_loudness": bool,
+                  "output_format": "mp3"|"wav",                 (all three REQUIRED)
+                  "intro_silence_ms"?, "outro_silence_ms"?, "output_bitrate"?}}
+    Segments TTS in parallel internally; the transcript is included in the
+    result envelope. Example: sanzaru podcast generate - < episode.json -o ep.mp3
     """
     try:
         from ..tools import podcast as podcast_tools
