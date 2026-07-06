@@ -108,6 +108,11 @@ def _resolve_media_path(path_type: Literal["video", "reference", "audio"]) -> tu
     return None, env_var, False
 
 
+def is_path_configured(path_type: Literal["video", "reference", "audio"]) -> bool:
+    """True when a media directory is configured for path_type (env present; not validated)."""
+    return _resolve_media_path(path_type)[0] is not None
+
+
 @lru_cache(maxsize=3)
 def get_path(path_type: Literal["video", "reference", "audio"]) -> pathlib.Path:
     """Get and validate a configured path from environment.
