@@ -21,11 +21,17 @@ uv sync
 
 # Run the MCP server (stdio mode - default)
 uv run sanzaru
+uv run sanzaru serve            # explicit alias
 
 # Run the MCP server (HTTP mode - stateless)
 uv run sanzaru --transport http
 uv run sanzaru --transport http --port 3000
 uv run sanzaru --transport http --host 0.0.0.0 --port 8080
+
+# Agent CLI (same tools as shell commands — see docs/cli.md)
+uv run sanzaru capabilities
+uv run sanzaru video create "a cat stretches" --seconds 4 -o ./out/cat.mp4
+uv run sanzaru image generate "an icon" --quality high -o ./art/icon.png
 
 # Lint and format code
 ruff check .
@@ -48,9 +54,21 @@ The server is organized into focused modules for maintainability and code reuse:
 
 ```
 src/sanzaru/
-├── server.py           # FastMCP initialization & tool registration
+├── server.py           # FastMCP initialization & tool registration (run_server + argparse main shim)
+├── polling.py          # wait_for_video/wait_for_image (neutral async wait loops, used by the CLI)
+├── cli/                # Agent CLI (click): root group runs the server when no subcommand given
+│   ├── __init__.py     # `sanzaru` entry point (console script → sanzaru.cli:main)
+│   ├── _runtime.py     # run_async bridge, CLIError → envelope/exit-code mapping, client lifecycle
+│   ├── _output.py      # JSON envelope contract (stdout) + exit-code constants
+│   ├── _io.py          # -o/input path resolution onto storage path_overrides; @file/- content args
+│   ├── video.py        # video create/remix/status/wait/download/list/delete/files
+│   ├── image.py        # image generate/edit (sync) + create/status/wait/download (async) + prepare/files
+│   ├── audio.py        # audio transcribe/chat/speak/convert/compress/files
+│   ├── podcast.py      # podcast generate
+│   ├── misc.py         # top-level `wait` (mixed job types) + `capabilities`
+│   └── serve.py        # explicit `sanzaru serve`
 ├── types.py            # TypedDict definitions
-├── config.py           # OpenAI client + path configuration
+├── config.py           # OpenAI client + path configuration (get_client/set_client, get_path)
 ├── security.py         # File security utilities
 ├── utils.py            # Shared helpers
 ├── features.py         # Feature detection (optional deps + env vars)
@@ -58,7 +76,7 @@ src/sanzaru/
 ├── user_context.py     # Per-request user context (multi-tenant support)
 ├── storage/            # Pluggable file I/O
 │   ├── protocol.py     # StorageBackend protocol + FileInfo
-│   ├── factory.py      # get_storage() singleton factory
+│   ├── factory.py      # get_storage() factory (+ set_storage_backend override used by the CLI)
 │   ├── local.py        # Local filesystem backend
 │   └── databricks.py   # Databricks Unity Catalog Volumes backend
 ├── infrastructure/     # Shared infrastructure
@@ -87,6 +105,27 @@ src/sanzaru/
 **security.py** provides reusable functions: `validate_safe_path()`, `check_not_symlink()`, `safe_open_file()`
 **utils.py** provides helpers: `suffix_for_variant()`, `generate_filename()`
 **tools/*.py** contain the actual tool implementations as plain async functions
+
+### Agent CLI
+
+`sanzaru <group> <verb>` wraps the same `tools/*.py` functions for shell/agent use (thin
+wrappers, exactly like `server.py` does for MCP). Bare `sanzaru` still starts the MCP server —
+back-compat for every existing config is guarded by tests. Key design points:
+
+- **Contract**: stdout = one JSON envelope per input (JSONL for fan-out, completion order);
+  stderr = progress/hints. Exit codes: 0 ok · 1 runtime · 2 usage · 3 config · 4 timeout
+  (job still running — envelopes carry a `resume` command) · 5 job failed · 6 partial batch ·
+  130 interrupted. See `docs/cli.md`.
+- **One-shots**: `-o` ⇒ `--download` ⇒ `--wait`; `polling.py` owns the wait loops (adaptive
+  backoff, transient-error retry, `WaitTimeoutError` carries last-seen state).
+- **Override seams** (CLI-only; the MCP server never touches them, reset in `finally`):
+  `config.set_client()` shares one `AsyncOpenAI` per invocation across poll loops;
+  `storage.set_storage_backend()` maps `-o`/path inputs onto
+  `LocalStorageBackend(path_overrides=...)` while `validate_safe_path` still sanitizes basenames.
+- **Lazy imports**: command bodies import `sanzaru.tools.*` at call time so `sanzaru --help`
+  never pays the openai/FastMCP import cost (enforced by a startup-weight test); missing
+  optional extras surface as `config` envelopes (exit 3) with the install command.
+- CLI tests live in `tests/cli/` (CliRunner; mock at the `sanzaru.tools.*` layer).
 
 ### Runtime Path Configuration
 Paths are validated lazily via the `get_path()` function when tools are called:
