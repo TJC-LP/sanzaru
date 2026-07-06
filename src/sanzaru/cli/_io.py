@@ -28,10 +28,15 @@ import pathlib
 import shutil
 import sys
 from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
 
-from ..storage.protocol import PathType
 from ._output import EXIT_USAGE, note
 from ._runtime import CLIError
+
+if TYPE_CHECKING:
+    # Runtime import would chain storage → local → config → openai, defeating
+    # the lightweight `sanzaru --help` path (guarded by a test).
+    from ..storage.protocol import PathType
 
 
 def read_content_arg(value: str, arg_name: str) -> str:

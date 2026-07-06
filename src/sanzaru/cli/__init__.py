@@ -97,8 +97,10 @@ def cli(
 
 def _register_commands() -> None:
     from .serve import serve
+    from .video import video
 
     cli.add_command(serve)
+    cli.add_command(video)
 
 
 _register_commands()

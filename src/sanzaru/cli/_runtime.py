@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import functools
 import os
+import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
 from typing import ParamSpec
@@ -153,3 +154,43 @@ def get_state(ctx: click.Context) -> CLIState:
     """Fetch the root CLIState regardless of nesting depth."""
     state = ctx.find_object(CLIState)
     return state if state is not None else CLIState()
+
+
+def parse_duration(value: str | None, flag: str) -> float | None:
+    """Parse a duration flag: plain seconds, or `s`/`m` suffix ("90", "90s", "5m")."""
+    if value is None:
+        return None
+    v = value.strip().lower()
+    try:
+        if v.endswith("m"):
+            return float(v[:-1]) * 60.0
+        if v.endswith("s"):
+            return float(v[:-1])
+        return float(v)
+    except ValueError:
+        raise CLIError(
+            "usage", f"{flag}: invalid duration {value!r} (use e.g. 90, 90s, or 5m)", exit_code=EXIT_USAGE
+        ) from None
+
+
+def make_progress_printer(label: str, *, quiet: bool, heartbeat_s: float = 30.0) -> Callable[[str, int | None], None]:
+    """Build a stderr progress reporter: one line per state change plus a heartbeat.
+
+    Output is greppable and line-based (works identically for TTYs and captured
+    agent transcripts): `sanzaru: video_x in_progress 42% t=95s`.
+    """
+    start = time.monotonic()
+    last_status: str | None = None
+    last_emit = start
+
+    def printer(status: str, progress: int | None) -> None:
+        nonlocal last_status, last_emit
+        if quiet:
+            return
+        now = time.monotonic()
+        if status != last_status or (now - last_emit) >= heartbeat_s:
+            pct = f" {progress}%" if progress is not None else ""
+            note(f"{label} {status}{pct} t={int(now - start)}s")
+            last_status, last_emit = status, now
+
+    return printer
