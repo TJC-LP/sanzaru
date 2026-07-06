@@ -37,15 +37,31 @@ DEFAULT_IMAGE_MODEL: ImageModel = "gpt-image-2"
 
 
 # ---------- OpenAI client (stateless) ----------
+_client_override: AsyncOpenAI | None = None
+
+
+def set_client(client: AsyncOpenAI | None) -> None:
+    """Install a process-wide AsyncOpenAI override; None restores default resolution.
+
+    Used by the CLI runtime so one client (and its connection pool) is reused
+    across every API call in an invocation — e.g. a poll loop — instead of
+    re-instantiating per call. The MCP server never sets this.
+    """
+    global _client_override
+    _client_override = client
+
+
 def get_client() -> AsyncOpenAI:
     """Get an OpenAI async client instance.
 
     Returns:
-        Configured AsyncOpenAI client
+        The installed override (see set_client), or a new client per call
 
     Raises:
         RuntimeError: If OPENAI_API_KEY environment variable is not set
     """
+    if _client_override is not None:
+        return _client_override
     api_key = os.getenv("OPENAI_API_KEY")
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not set")

@@ -18,9 +18,33 @@ from .protocol import StorageBackend
 logger = logging.getLogger("sanzaru")
 
 
-@lru_cache(maxsize=1)
+_backend_override: StorageBackend | None = None
+
+
+def set_storage_backend(backend: StorageBackend | None) -> None:
+    """Install a process-wide backend override; None restores default resolution.
+
+    Used by the CLI to redirect file I/O to caller-chosen directories via
+    ``LocalStorageBackend(path_overrides=...)``. The MCP server never sets this.
+    """
+    global _backend_override
+    _backend_override = backend
+
+
 def get_storage() -> StorageBackend:
-    """Return the configured :class:`StorageBackend` (cached singleton).
+    """Return the configured :class:`StorageBackend`.
+
+    Returns the installed override (see :func:`set_storage_backend`) when one
+    is active; otherwise the env-configured cached singleton.
+    """
+    if _backend_override is not None:
+        return _backend_override
+    return _default_storage()
+
+
+@lru_cache(maxsize=1)
+def _default_storage() -> StorageBackend:
+    """Build the env-configured backend (cached singleton).
 
     The httpx client used by remote backends (e.g. Databricks) is closed
     automatically at process exit via :func:`atexit`.
