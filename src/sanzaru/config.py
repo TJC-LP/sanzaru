@@ -13,10 +13,13 @@ import os
 import pathlib
 import sys
 from functools import lru_cache
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 from openai import AsyncOpenAI
 from openai.types import ImageModel
+
+if TYPE_CHECKING:
+    from elevenlabs.client import AsyncElevenLabs
 
 # ---------- Logging configuration ----------
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
@@ -66,6 +69,75 @@ def get_client() -> AsyncOpenAI:
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not set")
     return AsyncOpenAI(api_key=api_key)
+
+
+# ---------- ElevenLabs client (optional TTS provider) ----------
+# Mirrors the OpenAI seam above, with one deliberate difference: the client is
+# built lazily and cached rather than installed eagerly by the CLI runtime, so
+# `sanzaru <cmd> --help` never pays the elevenlabs import. The SDK is an optional
+# extra, so every import of it is function-local.
+_elevenlabs_override: "AsyncElevenLabs | None" = None
+_elevenlabs_cached: "AsyncElevenLabs | None" = None
+
+_ELEVENLABS_INSTALL_HINT = (
+    "provider='elevenlabs' requires the optional extra — install with: uv pip install 'sanzaru[elevenlabs]'"
+)
+
+
+def set_elevenlabs_client(client: "AsyncElevenLabs | None") -> None:
+    """Install a process-wide AsyncElevenLabs override; None restores default resolution.
+
+    Used by tests and by callers that want to supply a pre-configured client.
+    Also drops the lazily-built cache so the next get_elevenlabs_client() re-resolves.
+    """
+    global _elevenlabs_override, _elevenlabs_cached
+    _elevenlabs_override = client
+    _elevenlabs_cached = None
+
+
+def get_elevenlabs_client() -> "AsyncElevenLabs":
+    """Get an ElevenLabs async client, reusing one connection pool per process.
+
+    Returns:
+        The installed override (see set_elevenlabs_client), else a cached client
+
+    Raises:
+        ImportError: If the `elevenlabs` extra is not installed
+        RuntimeError: If ELEVENLABS_API_KEY is not set
+    """
+    global _elevenlabs_cached
+    if _elevenlabs_override is not None:
+        return _elevenlabs_override
+    if _elevenlabs_cached is not None:
+        return _elevenlabs_cached
+
+    api_key = os.getenv("ELEVENLABS_API_KEY")
+    if not api_key:
+        raise RuntimeError("ELEVENLABS_API_KEY is not set (required for provider='elevenlabs')")
+
+    try:
+        from elevenlabs.client import AsyncElevenLabs
+    except ImportError as exc:  # pragma: no cover - exercised via monkeypatched import
+        raise ImportError(_ELEVENLABS_INSTALL_HINT) from exc
+
+    _elevenlabs_cached = AsyncElevenLabs(api_key=api_key)
+    return _elevenlabs_cached
+
+
+async def close_elevenlabs_client() -> None:
+    """Close the lazily-built ElevenLabs client, if one was ever created.
+
+    A no-op when the provider was never used, so unrelated CLI commands pay
+    nothing (not even the import).
+    """
+    global _elevenlabs_cached
+    client = _elevenlabs_cached
+    _elevenlabs_cached = None
+    if client is None:
+        return
+    aclose = getattr(client, "aclose", None)
+    if aclose is not None:
+        await aclose()
 
 
 # ---------- Path configuration (runtime) ----------

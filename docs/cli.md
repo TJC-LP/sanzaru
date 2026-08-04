@@ -153,17 +153,42 @@ usage error pointing to gpt-image-1.5.
 |---------|---------|
 | `transcribe FILE...` | Whisper/GPT-4o transcription; `--enhance detailed\|storytelling\|professional\|analytical`, `--format`, `--timestamps`; multi-file fan-out |
 | `chat FILE` | Ask questions about audio content (`--prompt`, `--system`) |
-| `speak TEXT` | TTS (`--voice`, `--instructions`, `--speed`); long text auto-chunks |
+| `speak TEXT` | TTS (`--provider`, `--model`, `--voice`, `--instructions`, `--speed`, `--voice-settings`); long text auto-chunks |
 | `convert FILE` | To mp3/wav (`--to`) |
 | `compress FILE` | Fit a size budget (`--max-mb`, default 25) |
 | `files` | List with filters (`--pattern/--format/--min-duration/...`); `--latest` prints only the newest |
 
+### TTS providers
+
+`audio speak` and `podcast generate` both take `--provider openai|elevenlabs` (default `openai`).
+
+| | `openai` | `elevenlabs` |
+|---|---|---|
+| `--model` | `gpt-4o-mini-tts` (default), `tts-1`, `tts-1-hd` | `eleven_v3` (default), `eleven_multilingual_v2`, `eleven_flash_v2_5`, `eleven_turbo_v2_5` |
+| `--voice` | named voice (default `alloy`) | a voice id from your library — **required** |
+| `--instructions` | style direction | ignored; use inline `[audio tags]` in the text with `eleven_v3` |
+| `--speed` | 0.25–4.0 | 0.7–1.2, and `eleven_v3` rejects any change |
+| `--voice-settings` | rejected | JSON: `stability`, `similarity_boost`, `style`, `use_speaker_boost`, `speed` |
+
+ElevenLabs needs `ELEVENLABS_API_KEY` and `uv pip install 'sanzaru[elevenlabs]'`; either missing is
+a config error (exit 3). Set `SANZARU_ELEVENLABS_MAX_CONCURRENCY` if you hit HTTP 429 — their cap
+is per subscription tier.
+
+```bash
+sanzaru audio speak "[excited] You will not believe this." \
+  --provider elevenlabs --voice 21m00Tcm4TlvDq8ikWAM \
+  --voice-settings '{"stability":0.4,"similarity_boost":0.85}' -o hook.mp3
+```
+
 ### `sanzaru podcast`
 `generate SCRIPT` renders a multi-voice podcast from a PodcastScript JSON
 (`{"title", "speakers": [...], "segments": [...], "config": {...}}`); segments TTS in parallel
-internally. `config` **requires** `default_pause_ms` (int), `normalize_loudness` (bool), and
-`output_format` (`"mp3"|"wav"`); optional: `intro_silence_ms`, `outro_silence_ms`,
-`output_bitrate`. The envelope includes the full transcript — pipe to a file for long episodes.
+internally, bounded per provider. `config` **requires** `default_pause_ms` (int),
+`normalize_loudness` (bool), and `output_format` (`"mp3"|"wav"`); optional: `intro_silence_ms`,
+`outro_silence_ms`, `output_bitrate`, `provider`, `max_concurrency`. Speakers accept optional
+`provider`, `model`, and `voice_settings`, resolved as
+`speaker.provider > config.provider > --provider` — so one episode can mix OpenAI and ElevenLabs
+voices. The envelope includes the full transcript — pipe to a file for long episodes.
 
 ### Top-level
 `wait ID...` (mixed-type poller) · `capabilities` (version, per-feature availability with

@@ -3,10 +3,14 @@
 
 Generates a multi-voice podcast from a structured script by:
 1. Validating the PodcastScript schema
-2. Generating each segment via the OpenAI TTS API (sequentially)
+2. Generating every segment in parallel via the configured TTS provider(s),
+   bounded by a per-provider concurrency limiter
 3. Stitching segments with configurable silence gaps using pydub
 4. Optionally peak-normalizing each segment for consistent loudness
 5. Writing the final audio to the audio storage backend
+
+Speakers choose their provider independently, so a single episode can mix
+OpenAI and ElevenLabs voices — the stitch path is mp3-in, mp3-out.
 """
 
 import time
@@ -15,15 +19,31 @@ from typing import Literal, NotRequired, TypedDict
 
 import anyio
 from aioresult import ResultCapture  # type: ignore[import-untyped]
-from openai._types import Omit, omit
 from openai.types.audio.speech_model import SpeechModel
 from pydantic import BaseModel
 from pydub import AudioSegment  # type: ignore[import-untyped]
 from pydub.effects import normalize as pydub_normalize  # type: ignore[import-untyped]
 
-from ..audio.processor import AudioProcessor
-from ..config import get_client, logger
-from ..infrastructure import FileSystemRepository, split_text_for_tts
+from ..audio.constants import (
+    ELEVENLABS_SPEED_RANGE,
+    OPENAI_SPEED_RANGE,
+    PODCAST_TARGET_FRAME_RATE,
+    ElevenLabsModel,
+    TTSProviderName,
+)
+from ..audio.providers import (
+    VOICE_SETTINGS_BOOL_KEYS,
+    VOICE_SETTINGS_FLOAT_KEYS,
+    VOICE_SETTINGS_KEYS,
+    SpeechRequest,
+    TTSProvider,
+    VoiceSettingsDict,
+    get_provider,
+    synthesize_speech,
+    validate_provider_name,
+)
+from ..config import logger
+from ..infrastructure import FileSystemRepository
 
 
 class Speaker(TypedDict):
@@ -33,6 +53,9 @@ class Speaker(TypedDict):
     speed: float
     instructions: str
     role: NotRequired[str]
+    provider: NotRequired[TTSProviderName]
+    model: NotRequired[str]
+    voice_settings: NotRequired[VoiceSettingsDict]
 
 
 class Segment(TypedDict):
@@ -50,6 +73,8 @@ class PodcastConfig(TypedDict):
     normalize_loudness: bool
     output_format: Literal["mp3", "wav"]
     output_bitrate: NotRequired[str]
+    provider: NotRequired[TTSProviderName]
+    max_concurrency: NotRequired[int]
 
 
 class PodcastScript(TypedDict):
@@ -71,7 +96,52 @@ class PodcastResult(BaseModel):
     transcript: str
 
 
-def _validate_script(script: PodcastScript) -> tuple[str, list[Speaker], list[Segment], PodcastConfig]:
+def _resolve_provider_name(
+    speaker: Speaker,
+    config: PodcastConfig,
+    default: TTSProviderName,
+) -> TTSProviderName:
+    """Provider for a speaker: speaker override > episode default > tool default."""
+    return speaker.get("provider") or config.get("provider") or default
+
+
+def _resolve_model(speaker: Speaker, provider: TTSProvider, openai_model: str) -> str:
+    """Model for a speaker.
+
+    A per-speaker `model` always wins. Otherwise the tool's `model` argument
+    applies to OpenAI speakers (it names an OpenAI model), and ElevenLabs
+    speakers fall back to the provider default.
+    """
+    if "model" in speaker:
+        return provider.resolve_model(speaker["model"])
+    return provider.resolve_model(openai_model if provider.name == "openai" else None)
+
+
+def _speed_range(provider_name: TTSProviderName) -> tuple[float, float]:
+    return ELEVENLABS_SPEED_RANGE if provider_name == "elevenlabs" else OPENAI_SPEED_RANGE
+
+
+def _validate_voice_settings(settings: VoiceSettingsDict, context: str) -> None:
+    """Validate a per-speaker voice_settings mapping."""
+    if not isinstance(settings, dict):
+        raise ValueError(f"{context} voice_settings must be an object")
+    for key in settings:
+        if key not in VOICE_SETTINGS_KEYS:
+            raise ValueError(
+                f"{context} voice_settings has unknown key '{key}'; expected: {', '.join(VOICE_SETTINGS_KEYS)}"
+            )
+    for key in VOICE_SETTINGS_FLOAT_KEYS:
+        if key in settings and not isinstance(settings[key], int | float):  # type: ignore[literal-required]
+            raise ValueError(f"{context} voice_settings['{key}'] must be a number")
+    for key in VOICE_SETTINGS_BOOL_KEYS:
+        if key in settings and not isinstance(settings[key], bool):  # type: ignore[literal-required]
+            raise ValueError(f"{context} voice_settings['{key}'] must be a boolean")
+
+
+def _validate_script(
+    script: PodcastScript,
+    default_provider: TTSProviderName = "openai",
+) -> tuple[str, list[Speaker], list[Segment], PodcastConfig]:
     """Validate PodcastScript structure and return its components.
 
     Raises ValueError if the script is invalid.
@@ -90,14 +160,63 @@ def _validate_script(script: PodcastScript) -> tuple[str, list[Speaker], list[Se
     if len(speakers) > 4:
         raise ValueError("PodcastScript supports at most 4 speakers")
 
+    config = script["config"]
+    for key in ("default_pause_ms", "normalize_loudness", "output_format"):
+        if key not in config:
+            raise ValueError(f"PodcastConfig missing required field: '{key}'")
+
+    if config["output_format"] not in ("mp3", "wav"):
+        raise ValueError("PodcastConfig 'output_format' must be 'mp3' or 'wav'")
+
+    if "provider" in config:
+        validate_provider_name(config["provider"], "PodcastConfig 'provider'")
+    if "max_concurrency" in config and (
+        not isinstance(config["max_concurrency"], int) or config["max_concurrency"] < 1
+    ):
+        raise ValueError(f"PodcastConfig 'max_concurrency' must be a positive integer, got {config['max_concurrency']}")
+
     speaker_ids: set[str] = set()
+    # provider name per speaker id, so segment-level checks below know which
+    # speed range applies.
+    speaker_providers: dict[str, TTSProviderName] = {}
+
     for i, speaker in enumerate(speakers):
         for field in ("id", "name", "voice", "speed", "instructions"):
             if field not in speaker:
                 raise ValueError(f"Speaker {i} missing required field: '{field}'")
-        if not (0.25 <= speaker["speed"] <= 4.0):
-            raise ValueError(f"Speaker {i} speed must be between 0.25 and 4.0, got {speaker['speed']}")
+
+        if "provider" in speaker:
+            validate_provider_name(speaker["provider"], f"Speaker {i} 'provider'")
+        provider_name = _resolve_provider_name(speaker, config, default_provider)
+
+        low, high = _speed_range(provider_name)
+        if not low <= speaker["speed"] <= high:
+            raise ValueError(
+                f"Speaker {i} speed must be between {low} and {high} for provider='{provider_name}', "
+                f"got {speaker['speed']}"
+            )
+
+        if "voice_settings" in speaker:
+            _validate_voice_settings(speaker["voice_settings"], f"Speaker {i}")
+
+        # Fail before spending a single API call: this resolves the model,
+        # rejects cross-provider model names, and applies provider-specific
+        # rules (eleven_v3 has no speed, ElevenLabs needs a voice id).
+        provider = get_provider(provider_name)
+        model = _resolve_model(speaker, provider, "gpt-4o-mini-tts")
+        provider.validate(
+            SpeechRequest(
+                text="validation probe",
+                voice=provider.resolve_voice(speaker["voice"]),
+                model=model,
+                speed=speaker["speed"],
+                instructions=speaker["instructions"],
+                voice_settings=speaker.get("voice_settings"),
+            )
+        )
+
         speaker_ids.add(speaker["id"])
+        speaker_providers[speaker["id"]] = provider_name
 
     segments = script["segments"]
     if not segments:
@@ -114,18 +233,15 @@ def _validate_script(script: PodcastScript) -> tuple[str, list[Speaker], list[Se
             raise ValueError(f"Segment {i} text must not be empty")
         if len(segment["text"]) > 40000:
             raise ValueError(f"Segment {i} text exceeds 40000 characters")
-        if "speed_override" in segment and not (0.25 <= segment["speed_override"] <= 4.0):
-            raise ValueError(
-                f"Segment {i} speed_override must be between 0.25 and 4.0, got {segment['speed_override']}"
-            )
-
-    config = script["config"]
-    for key in ("default_pause_ms", "normalize_loudness", "output_format"):
-        if key not in config:
-            raise ValueError(f"PodcastConfig missing required field: '{key}'")
-
-    if config["output_format"] not in ("mp3", "wav"):
-        raise ValueError("PodcastConfig 'output_format' must be 'mp3' or 'wav'")
+        if "speed_override" in segment:
+            # Checked against the owning speaker's provider range, which is why
+            # this runs after the speaker pass.
+            low, high = _speed_range(speaker_providers[segment["speaker"]])
+            if not low <= segment["speed_override"] <= high:
+                raise ValueError(
+                    f"Segment {i} speed_override must be between {low} and {high} for "
+                    f"provider='{speaker_providers[segment['speaker']]}', got {segment['speed_override']}"
+                )
 
     return title, speakers, segments, config
 
@@ -147,56 +263,6 @@ def _estimate_duration(segments: list[Segment], speakers: list[Speaker], config:
     outro_ms = int(config.get("outro_silence_ms") or 0)
 
     return speech_seconds + (total_pause_ms + intro_ms + outro_ms) / 1000.0
-
-
-async def _generate_tts_bytes(
-    text: str,
-    voice: str,
-    speed: float,
-    model: SpeechModel = "gpt-4o-mini-tts",
-    instructions: str | None = None,
-) -> bytes:
-    """Generate TTS audio bytes for a single text block.
-
-    Handles texts longer than the 4096-character API limit by splitting
-    into chunks and concatenating. Chunk-level generation is parallelised
-    for long segments.
-    """
-    client = get_client()
-    text_chunks = split_text_for_tts(text)
-    instr_param: str | Omit = omit if instructions is None else instructions
-
-    if len(text_chunks) == 1:
-        response = await client.audio.speech.create(
-            input=text_chunks[0],
-            model=model,
-            voice=voice,  # type: ignore[arg-type]
-            speed=speed,
-            instructions=instr_param,
-            response_format="mp3",
-        )
-        return response.content
-
-    # Multiple chunks — parallel generation, then concatenate
-    logger.debug(f"Segment split into {len(text_chunks)} TTS chunks")
-
-    async def _gen_chunk(chunk_text: str) -> bytes:
-        r = await client.audio.speech.create(
-            input=chunk_text,
-            model=model,
-            voice=voice,  # type: ignore[arg-type]
-            speed=speed,
-            instructions=instr_param,
-            response_format="mp3",
-        )
-        return r.content
-
-    async with anyio.create_task_group() as tg:
-        captures = [ResultCapture.start_soon(tg, _gen_chunk, chunk) for chunk in text_chunks]
-
-    audio_chunks = [c.result() for c in captures]
-    processor = AudioProcessor()
-    return await processor.concatenate_audio_segments(audio_chunks)
 
 
 def _stitch_audio(
@@ -227,8 +293,12 @@ def _stitch_audio(
     combined = AudioSegment.silent(duration=intro_ms) if intro_ms > 0 else AudioSegment.empty()
 
     for raw_bytes, pause_ms in zip(segment_bytes_list, pause_ms_list, strict=True):
-        # TTS calls explicitly request response_format="mp3" — keep in sync
+        # Every provider is asked for mp3 — keep in sync with the TTS providers.
         seg = AudioSegment.from_mp3(BytesIO(raw_bytes))
+        # Providers differ in native rate (OpenAI 24kHz, ElevenLabs 44.1kHz).
+        # pydub would resample on concatenation anyway, but pinning it here makes
+        # a mixed-provider episode deterministic regardless of segment order.
+        seg = seg.set_frame_rate(PODCAST_TARGET_FRAME_RATE).set_channels(1)
         if normalize_loudness:
             seg = pydub_normalize(seg)
         combined += seg
@@ -252,12 +322,24 @@ def _safe_title(title: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in title).strip("_") or "podcast"
 
 
-async def generate_podcast(script: PodcastScript, model: SpeechModel = "gpt-4o-mini-tts") -> PodcastResult:
+async def generate_podcast(
+    script: PodcastScript,
+    model: SpeechModel | ElevenLabsModel = "gpt-4o-mini-tts",
+    provider: TTSProviderName = "openai",
+) -> PodcastResult:
     """Generate a multi-voice podcast from a structured PodcastScript.
+
+    Args:
+        script: The podcast script. Speakers may each pick their own provider,
+            so one episode can mix OpenAI and ElevenLabs voices.
+        model: Default model for OpenAI speakers. ElevenLabs speakers fall back to
+            that provider's default unless they set their own `model`.
+        provider: Episode-wide default provider, itself overridden by
+            `config.provider` and then by each speaker's `provider`.
 
     Raises ValueError if the script fails validation.
     """
-    title, speakers, segments, config = _validate_script(script)
+    title, speakers, segments, config = _validate_script(script, default_provider=provider)
     speaker_map: dict[str, Speaker] = {s["id"]: s for s in speakers}
 
     estimated_duration = _estimate_duration(segments, speakers, config)
@@ -265,20 +347,57 @@ async def generate_podcast(script: PodcastScript, model: SpeechModel = "gpt-4o-m
         f"Podcast '{title}': {len(segments)} segments, {len(speakers)} speakers, ~{estimated_duration:.0f}s estimated"
     )
 
-    # Generate all TTS segments in parallel
+    # Resolve each speaker's provider and model once, up front.
+    providers: dict[str, TTSProvider] = {}
+    models: dict[str, str] = {}
+    for speaker in speakers:
+        speaker_provider = get_provider(_resolve_provider_name(speaker, config, provider))
+        providers[speaker["id"]] = speaker_provider
+        models[speaker["id"]] = _resolve_model(speaker, speaker_provider, model)
+
+    # One limiter per provider, built here because CapacityLimiter binds to the
+    # running event loop. The same limiter is passed down into synthesize_speech
+    # so segment-level and chunk-level parallelism share one budget — which is
+    # what ElevenLabs' concurrency cap actually counts. OpenAI's limit is 0
+    # (unbounded) by default, preserving the historical behavior exactly.
+    limiters: dict[str, anyio.CapacityLimiter | None] = {}
+    for speaker_id, speaker_provider in providers.items():
+        if speaker_provider.name in limiters:
+            continue
+        limit = config.get("max_concurrency") or speaker_provider.max_concurrency(models[speaker_id])
+        limiters[speaker_provider.name] = anyio.CapacityLimiter(limit) if limit else None
+        if limit:
+            logger.info("Limiting %s to %d concurrent TTS requests", speaker_provider.name, limit)
+
     async def _gen_segment(i: int, segment: Segment) -> bytes:
+        """Render one segment. Independent of the others, so #35's verify pass
+        can re-invoke this for just the segments that failed QC."""
         speaker = speaker_map[segment["speaker"]]
-        voice = speaker["voice"]
+        speaker_provider = providers[speaker["id"]]
         speed = segment["speed_override"] if "speed_override" in segment else speaker["speed"]
-        instructions = segment.get("instruction_override") or speaker["instructions"]
-        logger.info(f"Generating segment {i + 1}/{len(segments)} [{speaker['name']} / {voice}]")
-        return await _generate_tts_bytes(
-            text=segment["text"], voice=voice, speed=speed, model=model, instructions=instructions
+        # `in`-check rather than `or`: an intentional empty-string override must
+        # not silently fall back to the speaker's instructions.
+        instructions = segment["instruction_override"] if "instruction_override" in segment else speaker["instructions"]
+        logger.info(
+            f"Generating segment {i + 1}/{len(segments)} "
+            f"[{speaker['name']} / {speaker['voice']} / {speaker_provider.name}]"
         )
+        request = SpeechRequest(
+            text=segment["text"],
+            voice=speaker_provider.resolve_voice(speaker["voice"]),
+            model=models[speaker["id"]],
+            speed=speed,
+            # instructions is OpenAI-only; _validate_script already warned once
+            # per ElevenLabs speaker that carries one.
+            instructions=instructions if speaker_provider.name == "openai" else None,
+            voice_settings=speaker.get("voice_settings"),
+        )
+        return await synthesize_speech(speaker_provider, request, limiter=limiters[speaker_provider.name])
 
     async with anyio.create_task_group() as tg:
         captures = [ResultCapture.start_soon(tg, _gen_segment, i, seg) for i, seg in enumerate(segments)]
 
+    # Read by index, not completion order — the limiter only delays task entry.
     segment_bytes_list = [c.result() for c in captures]
 
     default_pause_ms = config.get("default_pause_ms", 600)

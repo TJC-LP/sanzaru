@@ -8,6 +8,7 @@ from enum import Enum
 from typing import Literal
 
 from openai.types import AudioModel
+from openai.types.audio.speech_model import SpeechModel
 
 # Type Aliases
 SupportedChatWithAudioFormat = Literal["mp3", "wav"]
@@ -21,6 +22,56 @@ AudioChatModel = Literal[
 ]
 EnhancementType = Literal["detailed", "storytelling", "professional", "analytical"]
 TTSVoice = Literal["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"]
+
+# ---------- TTS providers ----------
+TTSProviderName = Literal["openai", "elevenlabs"]
+ElevenLabsModel = Literal["eleven_v3", "eleven_multilingual_v2", "eleven_flash_v2_5", "eleven_turbo_v2_5"]
+
+DEFAULT_TTS_PROVIDER: TTSProviderName = "openai"
+DEFAULT_OPENAI_TTS_MODEL: SpeechModel = "gpt-4o-mini-tts"
+DEFAULT_OPENAI_VOICE: TTSVoice = "alloy"
+DEFAULT_ELEVENLABS_MODEL: ElevenLabsModel = "eleven_v3"
+
+OPENAI_TTS_MODELS: list[SpeechModel] = ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"]
+ELEVENLABS_MODELS: list[ElevenLabsModel] = [
+    "eleven_v3",
+    "eleven_multilingual_v2",
+    "eleven_flash_v2_5",
+    "eleven_turbo_v2_5",
+]
+
+# Per-request text budget. Ours are deliberately conservative: the split is only
+# an upper bound, and over-long requests fail the whole segment.
+ELEVENLABS_MAX_CHARS: dict[ElevenLabsModel, int] = {
+    "eleven_v3": 3000,
+    "eleven_multilingual_v2": 10000,
+    "eleven_flash_v2_5": 40000,
+    "eleven_turbo_v2_5": 40000,
+}
+
+# Concurrent requests allowed in parallel. ElevenLabs caps this per subscription
+# tier (Flash/Turbo 4→30, other models 2→15); these are Free-tier-safe floors,
+# overridable with SANZARU_ELEVENLABS_MAX_CONCURRENCY.
+ELEVENLABS_DEFAULT_CONCURRENCY: dict[ElevenLabsModel, int] = {
+    "eleven_v3": 3,
+    "eleven_multilingual_v2": 3,
+    "eleven_flash_v2_5": 4,
+    "eleven_turbo_v2_5": 4,
+}
+
+# 44.1kHz/128kbps mp3 is available on every tier (192k requires Creator+), and
+# mp3 keeps the podcast stitch path's AudioSegment.from_mp3 contract intact.
+ELEVENLABS_OUTPUT_FORMAT = "mp3_44100_128"
+
+# ElevenLabs speed lives in voice_settings and has a much narrower range than
+# OpenAI's 0.25-4.0. eleven_v3 does not support it at all.
+ELEVENLABS_SPEED_RANGE = (0.7, 1.2)
+OPENAI_SPEED_RANGE = (0.25, 4.0)
+
+# Segments are decoded to this rate before stitching so a mixed-provider episode
+# (OpenAI mp3 is 24kHz, ElevenLabs mp3_44100_128 is 44.1kHz) is deterministic
+# regardless of segment order.
+PODCAST_TARGET_FRAME_RATE = 44100
 
 # Model Lists (for file support detection)
 TRANSCRIPTION_MODELS: list[AudioModel] = [

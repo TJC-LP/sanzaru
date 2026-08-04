@@ -74,7 +74,7 @@ def test_audio_transcribe_multi_file_partial_failure(mocker):
 
 @pytest.mark.integration
 def test_audio_speak_writes_to_output(mocker, tmp_path):
-    async def fake_tts(text_prompt, model, voice, instructions, speed, output_file_name):
+    async def fake_tts(text_prompt, model, voice, instructions, speed, output_file_name, provider, voice_settings):
         (tmp_path / output_file_name).write_bytes(b"mp3")
         return TTSResult(output_file=output_file_name)
 
@@ -156,7 +156,7 @@ def test_podcast_generate_from_stdin_script(mocker, tmp_path):
         "config": {},
     }
 
-    async def fake_podcast(parsed_script, model):
+    async def fake_podcast(parsed_script, model, provider):
         (tmp_path / "podcast_1.mp3").write_bytes(b"audio")
         return PodcastResult(
             output_file="podcast_1.mp3",
@@ -190,3 +190,137 @@ def test_podcast_generate_invalid_json_is_usage_error():
     parsed = json.loads(result.stdout)
     assert parsed["error"]["type"] == "usage"
     assert "not valid JSON" in parsed["error"]["message"]
+
+
+# ==================== PROVIDER SELECTION ====================
+
+
+@pytest.mark.integration
+def test_audio_speak_elevenlabs_passes_provider_and_settings(mocker, tmp_path):
+    tts = mocker.patch(
+        "sanzaru.tools.audio.create_audio",
+        mocker.AsyncMock(return_value=TTSResult(output_file="out.mp3")),
+    )
+    (tmp_path / "out.mp3").write_bytes(b"mp3")
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "audio",
+            "speak",
+            "hello",
+            "--provider",
+            "elevenlabs",
+            "--voice",
+            "voice_abc",
+            "--voice-settings",
+            '{"stability": 0.5}',
+            "-o",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    kwargs = tts.call_args.kwargs
+    assert kwargs["provider"] == "elevenlabs"
+    assert kwargs["voice"] == "voice_abc"
+    assert kwargs["voice_settings"] == {"stability": 0.5}
+    # eleven_v3 is the ElevenLabs default, not the OpenAI one.
+    assert kwargs["model"] == "eleven_v3"
+
+
+@pytest.mark.integration
+def test_audio_speak_defaults_are_unchanged(mocker, tmp_path):
+    tts = mocker.patch(
+        "sanzaru.tools.audio.create_audio",
+        mocker.AsyncMock(return_value=TTSResult(output_file="out.mp3")),
+    )
+    (tmp_path / "out.mp3").write_bytes(b"mp3")
+
+    result = CliRunner().invoke(cli, ["audio", "speak", "hello", "-o", str(tmp_path)])
+
+    assert result.exit_code == 0, result.stderr
+    kwargs = tts.call_args.kwargs
+    assert kwargs["provider"] == "openai"
+    assert kwargs["model"] == "gpt-4o-mini-tts"
+    assert kwargs["voice"] == "alloy"
+    assert kwargs["voice_settings"] is None
+
+
+@pytest.mark.integration
+def test_audio_speak_elevenlabs_requires_a_voice():
+    result = CliRunner().invoke(cli, ["audio", "speak", "hello", "--provider", "elevenlabs"])
+
+    assert result.exit_code == 2
+    assert json.loads(result.stdout)["error"]["type"] == "usage"
+
+
+@pytest.mark.integration
+def test_audio_speak_rejects_elevenlabs_voice_on_openai():
+    result = CliRunner().invoke(cli, ["audio", "speak", "hello", "--voice", "voice_abc"])
+
+    assert result.exit_code == 2
+    assert "not an OpenAI voice" in json.loads(result.stdout)["error"]["message"]
+
+
+@pytest.mark.integration
+def test_audio_speak_rejects_cross_provider_model():
+    result = CliRunner().invoke(
+        cli, ["audio", "speak", "hello", "--provider", "elevenlabs", "--voice", "v1", "--model", "tts-1"]
+    )
+
+    assert result.exit_code == 2
+    assert "not valid for --provider elevenlabs" in json.loads(result.stdout)["error"]["message"]
+
+
+@pytest.mark.integration
+def test_audio_speak_rejects_malformed_voice_settings():
+    result = CliRunner().invoke(cli, ["audio", "speak", "hello", "--voice-settings", "not-json"])
+
+    assert result.exit_code == 2
+    assert "not valid JSON" in json.loads(result.stdout)["error"]["message"]
+
+
+@pytest.mark.integration
+def test_audio_speak_rejects_non_object_voice_settings():
+    result = CliRunner().invoke(cli, ["audio", "speak", "hello", "--voice-settings", "[1,2]"])
+
+    assert result.exit_code == 2
+    assert "must be a JSON object" in json.loads(result.stdout)["error"]["message"]
+
+
+@pytest.mark.integration
+def test_podcast_generate_passes_provider(mocker, tmp_path):
+    script = {
+        "title": "Test Cast",
+        "speakers": [{"id": "h", "name": "Host", "voice": "v1", "speed": 1.0, "instructions": ""}],
+        "segments": [{"speaker": "h", "text": "Welcome!"}],
+        "config": {"default_pause_ms": 500, "normalize_loudness": True, "output_format": "mp3"},
+    }
+
+    async def fake_podcast(parsed_script, model, provider):
+        return PodcastResult(
+            output_file="ep.mp3",
+            title="Test Cast",
+            segment_count=1,
+            estimated_duration_seconds=3.2,
+            speakers=["Host"],
+            transcript="Host: Welcome!",
+        )
+
+    generate = mocker.patch("sanzaru.tools.podcast.generate_podcast", mocker.AsyncMock(side_effect=fake_podcast))
+    mocker.patch("sanzaru.cli.podcast.finalize_output", mocker.AsyncMock(return_value=str(tmp_path / "ep.mp3")))
+
+    result = CliRunner().invoke(cli, ["podcast", "generate", "-", "--provider", "elevenlabs"], input=json.dumps(script))
+
+    assert result.exit_code == 0, result.stderr
+    assert generate.call_args.kwargs["provider"] == "elevenlabs"
+    assert generate.call_args.kwargs["model"] == "eleven_v3"
+
+
+@pytest.mark.integration
+def test_podcast_generate_rejects_cross_provider_model():
+    result = CliRunner().invoke(cli, ["podcast", "generate", "{}", "--provider", "elevenlabs", "--model", "tts-1"])
+
+    assert result.exit_code == 2
+    assert "not valid for --provider elevenlabs" in json.loads(result.stdout)["error"]["message"]

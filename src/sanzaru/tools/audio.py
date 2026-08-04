@@ -15,8 +15,17 @@ from typing import Literal
 from openai.types import AudioModel, AudioResponseFormat
 from openai.types.audio.speech_model import SpeechModel
 
-from ..audio.constants import AudioChatModel, EnhancementType, SortBy, SupportedChatWithAudioFormat, TTSVoice
+from ..audio.constants import (
+    AudioChatModel,
+    ElevenLabsModel,
+    EnhancementType,
+    SortBy,
+    SupportedChatWithAudioFormat,
+    TTSProviderName,
+    TTSVoice,
+)
 from ..audio.models import AudioProcessingResult, ChatResult, FilePathSupportParams, TranscriptionResult, TTSResult
+from ..audio.providers import VoiceSettingsDict
 from ..audio.services import AudioService, FileService, TranscriptionService, TTSService
 
 # ==================== FILE MANAGEMENT TOOLS ====================
@@ -236,35 +245,43 @@ async def transcribe_with_enhancement(
 
 async def create_audio(
     text_prompt: str,
-    model: SpeechModel = "gpt-4o-mini-tts",
-    voice: TTSVoice = "alloy",
+    model: SpeechModel | ElevenLabsModel = "gpt-4o-mini-tts",
+    voice: TTSVoice | str = "alloy",
     instructions: str | None = None,
     speed: float = 1.0,
     output_file_name: str | None = None,
+    provider: TTSProviderName = "openai",
+    voice_settings: VoiceSettingsDict | None = None,
 ) -> TTSResult:
-    """Generate text-to-speech audio using OpenAI TTS API.
+    """Generate text-to-speech audio via OpenAI or ElevenLabs.
 
     Handles texts of any length by splitting into chunks at natural boundaries
-    and concatenating the audio. OpenAI TTS has a 4096 character limit per request.
+    and concatenating the audio; the per-request limit is provider-specific.
 
     Args:
         text_prompt: Text to convert to speech
-        model: TTS model to use (gpt-4o-mini-tts recommended)
-        voice: Voice for TTS (alloy, ash, coral, echo, fable, onyx, nova, sage, shimmer)
-        instructions: Optional instructions for speech style (tonality, accent, etc.)
-        speed: Speed of speech conversion (0.25 to 4.0)
+        model: TTS model. OpenAI: gpt-4o-mini-tts (recommended), tts-1, tts-1-hd.
+            ElevenLabs: eleven_v3 (default), eleven_multilingual_v2, eleven_flash_v2_5,
+            eleven_turbo_v2_5
+        voice: OpenAI named voice (alloy, ash, ballad, coral, echo, fable, nova, onyx,
+            sage, shimmer) or an ElevenLabs voice id
+        instructions: Optional speech-style direction (tonality, accent, etc.).
+            OpenAI-only — ElevenLabs ignores it; use inline audio tags such as
+            [whispers] in the text with eleven_v3 instead
+        speed: Speech speed. 0.25-4.0 on OpenAI, 0.7-1.2 on ElevenLabs, and
+            unsupported by eleven_v3
         output_file_name: Optional custom name for output file
+        provider: "openai" (default) or "elevenlabs"
+        voice_settings: ElevenLabs voice tuning (stability, similarity_boost, style,
+            use_speaker_boost, speed). Rejected when provider is "openai"
 
     Returns:
         TTSResult with name of the generated audio file
 
     Raises:
-        ValueError: If speed is out of valid range (0.25-4.0)
+        ValueError: If a parameter is out of range or not supported by the provider
+        RuntimeError: If the selected provider's API key is not configured
     """
-    # Validate speed parameter
-    if not 0.25 <= speed <= 4.0:
-        raise ValueError(f"speed must be between 0.25 and 4.0, got {speed}")
-
     service = TTSService()
     return await service.create_speech(
         text_prompt=text_prompt,
@@ -273,4 +290,6 @@ async def create_audio(
         voice=voice,
         instructions=instructions,
         speed=speed,
+        provider=provider,
+        voice_settings=voice_settings,
     )

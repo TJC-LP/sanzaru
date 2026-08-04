@@ -69,12 +69,16 @@ def _classify(exc: Exception) -> CLIError:
     # Imported lazily so `sanzaru --help` never pays the openai import.
     from openai import APIConnectionError, APIStatusError
 
+    from ..exceptions import TTSError
     from ..polling import WaitTimeoutError
 
     if isinstance(exc, CLIError):
         return exc
     if isinstance(exc, WaitTimeoutError):
         return CLIError("timeout", str(exc), exit_code=4)
+    if isinstance(exc, TTSError):
+        # Provider-side failures (e.g. an ElevenLabs 429 after retries).
+        return CLIError("api_error", str(exc))
     if isinstance(exc, APIStatusError):
         error_type = "not_found" if exc.status_code == 404 else "api_error"
         return CLIError(error_type, exc.message, extra={"status_code": exc.status_code})
@@ -132,6 +136,12 @@ def run_async(command: str) -> Callable[[Callable[P, Coroutine[None, None, int]]
 
                         set_client(None)
                         await client.close()
+                    # The ElevenLabs client is built lazily on first use rather
+                    # than installed here, so this is a no-op (and costs no
+                    # import) for every command that never touched it.
+                    from ..config import close_elevenlabs_client
+
+                    await close_elevenlabs_client()
                     from ..storage import set_storage_backend
 
                     set_storage_backend(None)

@@ -371,7 +371,8 @@ async def test_generate_podcast_happy_path(mocker, tmp_audio_path):
 
     mock_client = mocker.MagicMock()
     mock_client.audio.speech.create = mocker.AsyncMock(return_value=mock_response)
-    mocker.patch("sanzaru.tools.podcast.get_client", return_value=mock_client)
+    # TTS now routes through the provider layer, which resolves the client there.
+    mocker.patch("sanzaru.audio.providers.openai_provider.get_client", return_value=mock_client)
 
     # Stub _stitch_audio so pydub/ffmpeg is never invoked
     fake_stitched = b"FAKE_STITCHED_OUTPUT"
@@ -438,7 +439,8 @@ async def test_generate_podcast_single_speaker_transcript(mocker, tmp_audio_path
     mock_response.content = b"FAKE"
     mock_client = mocker.MagicMock()
     mock_client.audio.speech.create = mocker.AsyncMock(return_value=mock_response)
-    mocker.patch("sanzaru.tools.podcast.get_client", return_value=mock_client)
+    # TTS now routes through the provider layer, which resolves the client there.
+    mocker.patch("sanzaru.audio.providers.openai_provider.get_client", return_value=mock_client)
     mocker.patch("sanzaru.tools.podcast._stitch_audio", return_value=b"STITCHED")
 
     storage = LocalStorageBackend(path_overrides={"audio": tmp_audio_path})
@@ -490,3 +492,410 @@ async def test_generate_podcast_unknown_speaker_raises():
 
     with pytest.raises(ValueError, match="unknown speaker id"):
         await generate_podcast(script)
+
+
+# ==================== PROVIDER SUPPORT ====================
+
+
+@pytest.mark.unit
+class TestValidateScriptProviders:
+    """Provider-aware validation. Every existing OpenAI script must still pass."""
+
+    def test_openai_is_the_default(self, minimal_script):
+        # No provider anywhere — the OpenAI speed range applies.
+        minimal_script["speakers"][0]["speed"] = 3.0
+        _validate_script(minimal_script)
+
+    def test_unknown_speaker_provider_raises(self, minimal_script):
+        minimal_script["speakers"][0]["provider"] = "azure"
+        with pytest.raises(ValueError, match="Speaker 0 'provider': unknown provider"):
+            _validate_script(minimal_script)
+
+    def test_unknown_config_provider_raises(self, minimal_script):
+        minimal_script["config"]["provider"] = "azure"
+        with pytest.raises(ValueError, match="PodcastConfig 'provider': unknown provider"):
+            _validate_script(minimal_script)
+
+    def test_elevenlabs_speaker_needs_a_voice_id(self, minimal_script):
+        minimal_script["speakers"][0]["provider"] = "elevenlabs"
+        minimal_script["speakers"][0]["voice"] = ""
+        with pytest.raises(ValueError, match="requires an explicit voice id"):
+            _validate_script(minimal_script)
+
+    def test_elevenlabs_speed_range_is_narrower(self, minimal_script):
+        minimal_script["speakers"][0]["provider"] = "elevenlabs"
+        minimal_script["speakers"][0]["voice"] = "voice_abc"
+        minimal_script["speakers"][0]["speed"] = 3.0
+        with pytest.raises(ValueError, match="between 0.7 and 1.2 for provider='elevenlabs'"):
+            _validate_script(minimal_script)
+
+    def test_v3_rejects_speed(self, minimal_script):
+        minimal_script["speakers"][0].update({"provider": "elevenlabs", "voice": "v1", "speed": 1.1})
+        with pytest.raises(ValueError, match="does not support speed"):
+            _validate_script(minimal_script)
+
+    def test_v3_accepts_neutral_speed(self, minimal_script):
+        minimal_script["speakers"][0].update({"provider": "elevenlabs", "voice": "v1", "speed": 1.0})
+        _validate_script(minimal_script)
+
+    def test_config_provider_applies_to_all_speakers(self, minimal_script):
+        minimal_script["config"]["provider"] = "elevenlabs"
+        minimal_script["speakers"][0]["voice"] = "v1"
+        minimal_script["speakers"][0]["speed"] = 2.0
+        with pytest.raises(ValueError, match="provider='elevenlabs'"):
+            _validate_script(minimal_script)
+
+    def test_speaker_provider_overrides_config(self, minimal_script):
+        # config says elevenlabs, the speaker says openai — 2.0 is legal there.
+        minimal_script["config"]["provider"] = "elevenlabs"
+        minimal_script["speakers"][0]["provider"] = "openai"
+        minimal_script["speakers"][0]["speed"] = 2.0
+        _validate_script(minimal_script)
+
+    def test_default_provider_argument_applies(self, minimal_script):
+        minimal_script["speakers"][0]["voice"] = "v1"
+        minimal_script["speakers"][0]["speed"] = 2.0
+        with pytest.raises(ValueError, match="provider='elevenlabs'"):
+            _validate_script(minimal_script, default_provider="elevenlabs")
+
+    def test_speed_override_uses_the_speakers_provider_range(self, minimal_script):
+        minimal_script["speakers"][0].update({"provider": "elevenlabs", "voice": "v1", "speed": 1.0})
+        minimal_script["segments"][0]["speed_override"] = 3.0
+        with pytest.raises(ValueError, match="speed_override must be between 0.7 and 1.2"):
+            _validate_script(minimal_script)
+
+    def test_cross_provider_model_rejected(self, minimal_script):
+        minimal_script["speakers"][0].update({"provider": "elevenlabs", "voice": "v1", "model": "tts-1"})
+        with pytest.raises(ValueError, match="not an ElevenLabs model"):
+            _validate_script(minimal_script)
+
+    def test_voice_settings_unknown_key(self, minimal_script):
+        minimal_script["speakers"][0].update({"provider": "elevenlabs", "voice": "v1", "voice_settings": {"warmth": 1}})
+        with pytest.raises(ValueError, match="unknown key 'warmth'"):
+            _validate_script(minimal_script)
+
+    def test_voice_settings_wrong_type(self, minimal_script):
+        minimal_script["speakers"][0].update(
+            {"provider": "elevenlabs", "voice": "v1", "voice_settings": {"stability": "high"}}
+        )
+        with pytest.raises(ValueError, match="voice_settings\\['stability'\\] must be a number"):
+            _validate_script(minimal_script)
+
+    def test_voice_settings_out_of_range(self, minimal_script):
+        minimal_script["speakers"][0].update(
+            {"provider": "elevenlabs", "voice": "v1", "voice_settings": {"style": 1.5}}
+        )
+        with pytest.raises(ValueError, match="between 0.0 and 1.0"):
+            _validate_script(minimal_script)
+
+    def test_valid_voice_settings_pass(self, minimal_script):
+        minimal_script["speakers"][0].update(
+            {
+                "provider": "elevenlabs",
+                "voice": "v1",
+                "voice_settings": {"stability": 0.5, "similarity_boost": 0.9, "use_speaker_boost": True},
+            }
+        )
+        _validate_script(minimal_script)
+
+    @pytest.mark.parametrize("value", [0, -1, "three"])
+    def test_invalid_max_concurrency(self, minimal_script, value):
+        minimal_script["config"]["max_concurrency"] = value
+        with pytest.raises(ValueError, match="max_concurrency' must be a positive integer"):
+            _validate_script(minimal_script)
+
+    def test_valid_max_concurrency(self, minimal_script):
+        minimal_script["config"]["max_concurrency"] = 2
+        _validate_script(minimal_script)
+
+
+@pytest.fixture
+def podcast_env(mocker, tmp_audio_path):
+    """Mock storage + stubbed stitching so ffmpeg/pydub is never invoked."""
+    from sanzaru.storage.local import LocalStorageBackend
+
+    mocker.patch("sanzaru.tools.podcast._stitch_audio", return_value=b"STITCHED")
+    storage = LocalStorageBackend(path_overrides={"audio": tmp_audio_path})
+    mocker.patch("sanzaru.infrastructure.file_system.get_storage", return_value=storage)
+    return storage
+
+
+def _openai_client(mocker, content=b"OPENAI_MP3"):
+    response = mocker.MagicMock()
+    response.content = content
+    client = mocker.MagicMock()
+    client.audio.speech.create = mocker.AsyncMock(return_value=response)
+    mocker.patch("sanzaru.audio.providers.openai_provider.get_client", return_value=client)
+    return client
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_generate_podcast_mixed_providers(mocker, podcast_env, fake_elevenlabs):
+    """One episode, one speaker per provider — each must hit its own client."""
+    from sanzaru.tools.podcast import generate_podcast
+
+    openai_client = _openai_client(mocker)
+    el_client = fake_elevenlabs.Client(chunks=(b"EL_MP3",))
+    mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=el_client)
+
+    script = {
+        "title": "mixed_ep",
+        "speakers": [
+            {"id": "host", "name": "Alex", "voice": "ash", "speed": 1.0, "instructions": "Confident"},
+            {
+                "id": "guest",
+                "name": "Sam",
+                "voice": "voice_xyz",
+                "speed": 1.0,
+                "instructions": "ignored by elevenlabs",
+                "provider": "elevenlabs",
+                "voice_settings": {"stability": 0.4},
+            },
+        ],
+        "segments": [
+            {"speaker": "host", "text": "Welcome back."},
+            {"speaker": "guest", "text": "Glad to be here."},
+            {"speaker": "host", "text": "Let us dig in."},
+        ],
+        "config": {"default_pause_ms": 300, "normalize_loudness": True, "output_format": "mp3"},
+    }
+
+    result = await generate_podcast(script)
+
+    # Two OpenAI segments, one ElevenLabs segment.
+    assert openai_client.audio.speech.create.await_count == 2
+    assert len(el_client.text_to_speech.calls) == 1
+
+    el_call = el_client.text_to_speech.calls[0]
+    assert el_call["voice_id"] == "voice_xyz"
+    assert el_call["model_id"] == "eleven_v3"
+    assert el_call["voice_settings"].stability == 0.4
+
+    # Envelope shape is unchanged, so downstream QC tooling doesn't fork.
+    assert isinstance(result, PodcastResult)
+    assert result.segment_count == 3
+    assert result.speakers == ["Alex", "Sam"]
+    assert "**Sam:** Glad to be here." in result.transcript
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_openai_segments_carry_voice_speed_and_instructions(mocker, podcast_env):
+    """The per-segment kwargs actually reaching the API were previously untested."""
+    from sanzaru.tools.podcast import generate_podcast
+
+    client = _openai_client(mocker)
+    script = {
+        "title": "kwargs_ep",
+        "speakers": [{"id": "host", "name": "Alex", "voice": "onyx", "speed": 1.25, "instructions": "Be warm"}],
+        "segments": [
+            {"speaker": "host", "text": "First."},
+            {"speaker": "host", "text": "Second.", "speed_override": 0.8, "instruction_override": "Be terse"},
+        ],
+        "config": {"default_pause_ms": 300, "normalize_loudness": True, "output_format": "mp3"},
+    }
+
+    await generate_podcast(script)
+
+    calls = {c.kwargs["input"]: c.kwargs for c in client.audio.speech.create.await_args_list}
+    assert calls["First."]["voice"] == "onyx"
+    assert calls["First."]["speed"] == 1.25
+    assert calls["First."]["instructions"] == "Be warm"
+    assert calls["Second."]["speed"] == 0.8
+    assert calls["Second."]["instructions"] == "Be terse"
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_empty_instruction_override_is_honored(mocker, podcast_env):
+    """An intentional empty override must not fall back to the speaker's instructions."""
+    from sanzaru.tools.podcast import generate_podcast
+
+    client = _openai_client(mocker)
+    script = {
+        "title": "override_ep",
+        "speakers": [{"id": "host", "name": "Alex", "voice": "ash", "speed": 1.0, "instructions": "Be dramatic"}],
+        "segments": [{"speaker": "host", "text": "Plainly.", "instruction_override": ""}],
+        "config": {"default_pause_ms": 300, "normalize_loudness": True, "output_format": "mp3"},
+    }
+
+    await generate_podcast(script)
+
+    assert client.audio.speech.create.await_args.kwargs["instructions"] == ""
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_elevenlabs_fan_out_respects_max_concurrency(mocker, podcast_env, fake_elevenlabs):
+    import anyio
+
+    from sanzaru.tools.podcast import generate_podcast
+
+    in_flight = 0
+    peak = 0
+
+    async def track():
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await anyio.sleep(0)
+        in_flight -= 1
+
+    el_client = fake_elevenlabs.Client(chunks=(b"EL",), on_call=track)
+    mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=el_client)
+
+    script = {
+        "title": "concurrency_ep",
+        "speakers": [
+            {
+                "id": "host",
+                "name": "Alex",
+                "voice": "v1",
+                "speed": 1.0,
+                "instructions": "",
+                "provider": "elevenlabs",
+            }
+        ],
+        "segments": [{"speaker": "host", "text": f"Segment {i}."} for i in range(8)],
+        "config": {
+            "default_pause_ms": 200,
+            "normalize_loudness": True,
+            "output_format": "mp3",
+            "max_concurrency": 2,
+        },
+    }
+
+    result = await generate_podcast(script)
+
+    assert peak <= 2
+    assert len(el_client.text_to_speech.calls) == 8
+    # Order is by index, not completion — the limiter only delays task entry.
+    assert [c["text"] for c in el_client.text_to_speech.calls] != [] and result.segment_count == 8
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_openai_fan_out_stays_unbounded(mocker, podcast_env):
+    """Zero-behavior-change guard: OpenAI-only episodes must not be throttled."""
+    import anyio
+
+    from sanzaru.tools.podcast import generate_podcast
+
+    in_flight = 0
+    peak = 0
+
+    async def create(**kwargs):
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await anyio.sleep(0)
+        in_flight -= 1
+        response = mocker.MagicMock()
+        response.content = b"MP3"
+        return response
+
+    client = mocker.MagicMock()
+    client.audio.speech.create = mocker.AsyncMock(side_effect=create)
+    mocker.patch("sanzaru.audio.providers.openai_provider.get_client", return_value=client)
+
+    script = {
+        "title": "unbounded_ep",
+        "speakers": [{"id": "host", "name": "Alex", "voice": "ash", "speed": 1.0, "instructions": "x"}],
+        "segments": [{"speaker": "host", "text": f"Segment {i}."} for i in range(8)],
+        "config": {"default_pause_ms": 200, "normalize_loudness": True, "output_format": "mp3"},
+    }
+
+    await generate_podcast(script)
+
+    assert peak == 8
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_segment_order_is_preserved_under_a_limiter(mocker, podcast_env, fake_elevenlabs):
+    """Stitching receives segments in script order even when renders finish out of order."""
+    from sanzaru.tools.podcast import generate_podcast
+
+    class OrderedTTS:
+        def __init__(self):
+            self.calls = []
+
+        def convert(self, **kwargs):
+            self.calls.append(kwargs)
+            text = kwargs["text"]
+
+            async def _stream():
+                # Later segments finish first.
+                import anyio
+
+                await anyio.sleep(0.001 * (5 - len(text)))
+                yield text.encode()
+
+            return _stream()
+
+    client = fake_elevenlabs.Client()
+    client.text_to_speech = OrderedTTS()
+    mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=client)
+    stitch = mocker.patch("sanzaru.tools.podcast._stitch_audio", return_value=b"STITCHED")
+
+    script = {
+        "title": "order_ep",
+        "speakers": [
+            {"id": "h", "name": "A", "voice": "v1", "speed": 1.0, "instructions": "", "provider": "elevenlabs"}
+        ],
+        "segments": [{"speaker": "h", "text": t} for t in ("aaaa", "bbb", "cc", "d")],
+        "config": {
+            "default_pause_ms": 100,
+            "normalize_loudness": True,
+            "output_format": "mp3",
+            "max_concurrency": 4,
+        },
+    }
+
+    await generate_podcast(script)
+
+    assert stitch.call_args.kwargs["segment_bytes_list"] == [b"aaaa", b"bbb", b"cc", b"d"]
+
+
+@pytest.mark.integration
+def test_stitch_normalizes_mixed_sample_rates(tmp_path):
+    """OpenAI mp3 is 24kHz, ElevenLabs mp3_44100_128 is 44.1kHz.
+
+    pydub resamples on concatenation anyway, but _stitch_audio pins the rate so
+    a mixed-provider episode is deterministic regardless of segment order.
+    Needs a real encoder, so it is skipped where ffmpeg is unavailable.
+    """
+    import io
+    import shutil
+
+    if not (shutil.which("ffmpeg") or shutil.which("avconv")):
+        pytest.skip("ffmpeg not available")
+
+    from pydub import AudioSegment
+    from pydub.generators import Sine
+
+    from sanzaru.tools.podcast import _stitch_audio
+
+    def mp3_bytes(freq: int, rate: int, ms: int = 500) -> bytes:
+        seg = Sine(freq, sample_rate=rate).to_audio_segment(duration=ms).set_channels(1)
+        buf = io.BytesIO()
+        seg.export(buf, format="mp3")
+        return buf.getvalue()
+
+    out = _stitch_audio(
+        segment_bytes_list=[mp3_bytes(440, 24000), mp3_bytes(660, 44100), mp3_bytes(440, 24000)],
+        pause_ms_list=[300, 300, 0],
+        intro_ms=200,
+        outro_ms=200,
+        normalize_loudness=True,
+        output_format="mp3",
+        output_bitrate="192k",
+    )
+
+    final = AudioSegment.from_mp3(io.BytesIO(out))
+    assert final.frame_rate == 44100
+    assert final.channels == 1
+    # 200 intro + 3x500 speech + 300 + 300 pauses + 200 outro = 2500ms.
+    # A resampling bug would stretch or squash the 24kHz segments.
+    assert 2400 <= len(final) <= 2600

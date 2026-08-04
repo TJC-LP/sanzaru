@@ -137,7 +137,7 @@ async def capabilities() -> int:
     from importlib.metadata import PackageNotFoundError, version
 
     from ..config import is_path_configured
-    from ..features import get_available_features
+    from ..features import get_available_features, get_tts_providers
     from . import cli
 
     try:
@@ -171,6 +171,7 @@ async def capabilities() -> int:
     result: dict[str, object] = {
         "version": pkg_version,
         "features": features,
+        "tts_providers": get_tts_providers(),
         "paths_configured": paths,
         "storage_backend": os.getenv("STORAGE_BACKEND", "local"),
         "api_key_present": bool(os.getenv("OPENAI_API_KEY")),

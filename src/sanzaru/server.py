@@ -213,7 +213,15 @@ if check_audio_available():
     from openai.types import AudioModel, AudioResponseFormat
     from openai.types.audio.speech_model import SpeechModel
 
-    from .audio.constants import AudioChatModel, EnhancementType, SortBy, TTSVoice
+    from .audio.constants import (
+        AudioChatModel,
+        ElevenLabsModel,
+        EnhancementType,
+        SortBy,
+        TTSProviderName,
+        TTSVoice,
+    )
+    from .audio.providers import VoiceSettingsDict
     from .descriptions import (
         CHAT_WITH_AUDIO,
         COMPRESS_AUDIO,
@@ -295,17 +303,32 @@ if check_audio_available():
     @mcp.tool(description=CREATE_AUDIO, annotations=WRITE_OPEN)
     async def create_audio(
         text_prompt: str,
-        model: SpeechModel = "gpt-4o-mini-tts",
-        voice: TTSVoice = "alloy",
+        model: SpeechModel | ElevenLabsModel = "gpt-4o-mini-tts",
+        voice: TTSVoice | str = "alloy",
         instructions: str | None = None,
         speed: float = 1.0,
         output_filename: str | None = None,
+        provider: TTSProviderName = "openai",
+        voice_settings: VoiceSettingsDict | None = None,
     ):
-        return await audio.create_audio(text_prompt, model, voice, instructions, speed, output_filename)
+        return await audio.create_audio(
+            text_prompt=text_prompt,
+            model=model,
+            voice=voice,
+            instructions=instructions,
+            speed=speed,
+            output_file_name=output_filename,
+            provider=provider,
+            voice_settings=voice_settings,
+        )
 
     @mcp.tool(description=GENERATE_PODCAST, annotations=WRITE_OPEN)
-    async def generate_podcast(script: podcast.PodcastScript, model: SpeechModel = "gpt-4o-mini-tts"):
-        return await podcast.generate_podcast(script, model=model)
+    async def generate_podcast(
+        script: podcast.PodcastScript,
+        model: SpeechModel | ElevenLabsModel = "gpt-4o-mini-tts",
+        provider: TTSProviderName = "openai",
+    ):
+        return await podcast.generate_podcast(script, model=model, provider=provider)
 
     logger.info("Audio tools registered (9 tools)")
 

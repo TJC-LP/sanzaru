@@ -20,14 +20,76 @@ from ._runtime import CLIError, _classify, get_state, run_async
 
 _AUDIO_DEP_MESSAGE = "audio commands require optional dependencies — install with: uv pip install 'sanzaru[audio]'"
 
-_VOICES = ["alloy", "ash", "coral", "echo", "fable", "onyx", "nova", "sage", "shimmer"]
+# Literal lists, not imports from sanzaru.audio.constants: importing sanzaru.cli
+# must not pull in openai/pydantic (see tests/cli/test_root.py).
+_VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"]
 _TTS_MODELS = ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"]
+_ELEVENLABS_MODELS = ["eleven_v3", "eleven_multilingual_v2", "eleven_flash_v2_5", "eleven_turbo_v2_5"]
+_PROVIDERS = ["openai", "elevenlabs"]
 _TRANSCRIBE_MODELS = ["gpt-4o-mini-transcribe", "gpt-4o-transcribe", "whisper-1"]
 _ENHANCEMENTS = ["detailed", "storytelling", "professional", "analytical"]
 
 
 def _audio_dep_error(exc: ImportError) -> CLIError:
     return CLIError("config", f"{_AUDIO_DEP_MESSAGE} ({exc})", exit_code=EXIT_CONFIG)
+
+
+def resolve_tts_model(provider: str, model: str | None) -> str:
+    """Pick the TTS model for `provider`, validating any explicit choice.
+
+    `--model` cannot be a click.Choice because the valid set depends on
+    `--provider`, so the check lives here and raises the same usage error.
+    """
+    allowed = _ELEVENLABS_MODELS if provider == "elevenlabs" else _TTS_MODELS
+    if model is None:
+        return allowed[0]
+    if model not in allowed:
+        raise CLIError(
+            "usage",
+            f"--model {model!r} is not valid for --provider {provider}; choose one of: {', '.join(allowed)}",
+            exit_code=EXIT_USAGE,
+        )
+    return model
+
+
+def resolve_tts_voice(provider: str, voice: str | None) -> str:
+    """Pick the TTS voice for `provider`, validating any explicit choice.
+
+    OpenAI takes a named voice from a fixed set; ElevenLabs takes an opaque
+    voice id from the user's library, so it cannot be a click.Choice either.
+    """
+    if provider == "elevenlabs":
+        if not voice or not voice.strip():
+            raise CLIError(
+                "usage",
+                "--voice is required for --provider elevenlabs (an ElevenLabs voice id, e.g. 21m00Tcm4TlvDq8ikWAM)",
+                exit_code=EXIT_USAGE,
+            )
+        return voice.strip()
+    if voice is None:
+        return "alloy"
+    if voice not in _VOICES:
+        raise CLIError(
+            "usage",
+            f"--voice {voice!r} is not an OpenAI voice; choose one of: {', '.join(_VOICES)}",
+            exit_code=EXIT_USAGE,
+        )
+    return voice
+
+
+def parse_voice_settings(raw: str | None) -> dict[str, object] | None:
+    """Parse the --voice-settings JSON object, or None when not given."""
+    if raw is None:
+        return None
+    import json
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise CLIError("usage", f"--voice-settings is not valid JSON: {exc}", exit_code=EXIT_USAGE) from exc
+    if not isinstance(parsed, dict):
+        raise CLIError("usage", "--voice-settings must be a JSON object", exit_code=EXIT_USAGE)
+    return parsed
 
 
 @click.group()
@@ -168,30 +230,58 @@ async def audio_chat(file: str, model: str, system_prompt: str | None, user_prom
 
 @audio.command("speak")
 @click.argument("text")
-@click.option("--model", type=click.Choice(_TTS_MODELS), default="gpt-4o-mini-tts", show_default=True)
-@click.option("--voice", type=click.Choice(_VOICES), default="alloy", show_default=True)
-@click.option("--instructions", default=None, help="Speech style: tonality, accent, pacing, ...")
+@click.option("--provider", type=click.Choice(_PROVIDERS), default="openai", show_default=True)
+@click.option(
+    "--model",
+    default=None,
+    help=f"openai: {', '.join(_TTS_MODELS)} [default: gpt-4o-mini-tts]  |  "
+    f"elevenlabs: {', '.join(_ELEVENLABS_MODELS)} [default: eleven_v3]",
+)
+@click.option(
+    "--voice",
+    default=None,
+    help=f"openai: {', '.join(_VOICES)} [default: alloy]  |  elevenlabs: a voice id (required)",
+)
+@click.option("--instructions", default=None, help="Speech style: tonality, accent, pacing (OpenAI only).")
 @click.option("--speed", type=click.FloatRange(0.25, 4.0), default=1.0, show_default=True)
+@click.option(
+    "--voice-settings",
+    default=None,
+    help='ElevenLabs voice tuning as JSON, e.g. \'{"stability":0.5,"similarity_boost":0.8}\'.',
+)
 @click.option("-o", "--output", default=None, help="Output file or directory (default: media dir).")
 @click.pass_context
 @run_async("audio.speak")
 async def audio_speak(
     ctx: click.Context,
     text: str,
-    model: str,
-    voice: str,
+    provider: str,
+    model: str | None,
+    voice: str | None,
     instructions: str | None,
     speed: float,
+    voice_settings: str | None,
     output: str | None,
 ) -> int:
-    """Text-to-speech. TEXT is inline, @file, or - (stdin); long text auto-chunks."""
+    """Text-to-speech. TEXT is inline, @file, or - (stdin); long text auto-chunks.
+
+    \b
+    ElevenLabs notes: --voice is a voice id from your library, --speed must be
+    0.7-1.2 (and is unsupported by eleven_v3), and --instructions is ignored —
+    use inline audio tags such as [whispers] in the text instead.
+    """
     try:
         from ..tools import audio as audio_tools
     except ImportError as exc:
         raise _audio_dep_error(exc) from exc
     from openai.types.audio.speech_model import SpeechModel
 
-    from ..audio.constants import TTSVoice
+    from ..audio.constants import TTSProviderName, TTSVoice
+    from ..audio.providers import VoiceSettingsDict
+
+    resolved_model = resolve_tts_model(provider, model)
+    resolved_voice = resolve_tts_voice(provider, voice)
+    settings = parse_voice_settings(voice_settings)
 
     state = get_state(ctx)
     text_content = read_content_arg(text, "TEXT")
@@ -202,11 +292,13 @@ async def audio_speak(
     started = time.monotonic()
     result = await audio_tools.create_audio(
         text_prompt=text_content,
-        model=cast(SpeechModel, model),
-        voice=cast(TTSVoice, voice),
+        model=cast(SpeechModel, resolved_model),
+        voice=cast(TTSVoice, resolved_voice),
         instructions=instructions,
         speed=speed,
         output_file_name=plan.filename,
+        provider=cast(TTSProviderName, provider),
+        voice_settings=cast(VoiceSettingsDict, settings) if settings is not None else None,
     )
     final_path = await finalize_output(session, plan, result.output_file)
     payload: dict[str, object] = result.model_dump(mode="json")
