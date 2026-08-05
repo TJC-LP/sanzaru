@@ -1,6 +1,6 @@
 ---
 name: sanzaru-cli
-description: Generate videos (Sora), images (gpt-image-2), speech/transcription, and podcasts from the shell with the sanzaru CLI. Use for long-running media jobs (create → wait → download one-shots, resumable waits, JSON envelopes, batch fan-out) instead of loading the MCP tool surface.
+description: Generate videos (Sora), images (gpt-image-2), speech/transcription (OpenAI or ElevenLabs), and multi-voice podcasts from the shell with the sanzaru CLI. Use for long-running media jobs (create → wait → download one-shots, resumable waits, JSON envelopes, batch fan-out) instead of loading the MCP tool surface.
 ---
 
 # Sanzaru CLI for agents
@@ -55,6 +55,30 @@ sanzaru video wait "$ID" --download -o ./out/clip.mp4 --timeout 100s
   `image create "add neon rain" --previous-id "$R1" -o v2.png`.
 - gpt-image-2 is the default; `--background transparent` requires `--image-model gpt-image-1.5`.
 
+## Two TTS providers
+
+`audio speak` and `podcast generate` take `--provider openai|elevenlabs` (default `openai`;
+ElevenLabs needs `ELEVENLABS_API_KEY` and `uv pip install 'sanzaru[elevenlabs]'`). What differs,
+and will bite if you assume otherwise:
+
+- `--voice` is an opaque voice **id** from your library, not a name like `alloy`, and is required.
+- `--instructions` is **ignored** — put inline audio tags (`[whispers]`, `[excited]`) in the text
+  instead, which the default `eleven_v3` understands.
+- Speed is 0.7–1.2, and `eleven_v3` rejects any change. Out-of-range values raise rather than
+  being rescaled from OpenAI's 0.25–4.0, so `--speed 2.0` never quietly means two things.
+- `--voice-settings '{"stability":0.4,"similarity_boost":0.85}'` is ElevenLabs-only.
+
+Podcast speakers choose independently (`speaker.provider` > `config.provider` > `--provider`), so
+one episode can mix both. HTTP 429 means you exceeded your tier's concurrency — lower
+`SANZARU_ELEVENLABS_MAX_CONCURRENCY` (defaults are Free-tier: 2, or 4 on flash/turbo).
+
+`podcast generate --render-mode dialogue` sends consecutive `eleven_v3` turns as **one** request
+so the model paces the exchange itself — distinctly more natural than fixed silence gaps. Turns
+that cannot join a run (OpenAI speakers, other models, a lone turn) still render per segment, so
+mixed episodes keep working. Inside a run, `pause_after` and per-speaker `voice_settings` do not
+apply; use `config.dialogue_stability` (0–1) instead. Stay on the default `segments` when you need
+exact gaps, per-speaker tuning, or cheap per-segment retry.
+
 ## Media in, media out
 
 - `-o` takes a file or directory (trailing `/`); parents are created; without it files land in the
@@ -70,6 +94,7 @@ sanzaru video wait "$ID" --download -o ./out/clip.mp4 --timeout 100s
 
 `video` create/remix/status/wait/download/list/delete/files · `image`
 generate/edit/create/status/wait/download/prepare/files · `audio`
-transcribe(--enhance)/chat/speak/convert/compress/files(--latest) · `podcast` generate ·
+transcribe(--enhance)/chat/speak(--provider)/convert/compress/files(--latest) ·
+`podcast` generate(--provider, --render-mode) ·
 `wait` (mixed ids) · `capabilities` · `serve` (MCP server; bare `sanzaru` does the same).
 Every command supports `-h`; details in docs/cli.md.
