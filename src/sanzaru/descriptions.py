@@ -786,11 +786,31 @@ script must be a JSON object matching this structure:
     "output_format": "mp3"|"wav",    // Output format (required)
     "output_bitrate": string,        // MP3 bitrate (optional; default "192k")
     "provider": string,              // Optional episode default: "openai" | "elevenlabs"
-    "max_concurrency": number        // Optional cap on parallel TTS requests (positive int).
+    "max_concurrency": number,       // Optional cap on parallel TTS requests (positive int).
                                      // ElevenLabs enforces a per-tier cap (2-15, or 4-30 on
                                      // Flash/Turbo); lower this if you see HTTP 429.
+    "render_mode": string,           // Optional: "segments" (default) | "dialogue"
+    "dialogue_stability": number     // Optional 0-1, dialogue mode only
   }
 }
+
+**Render modes:**
+- "segments" (default): one TTS request per segment, joined with your configured
+  silence gaps. Full control; every segment is independent, so a single bad
+  render can be retried on its own.
+- "dialogue": consecutive turns that share a dialogue-capable provider and model
+  (currently ElevenLabs eleven_v3) are sent as ONE request, so the model paces
+  the conversation itself — turn-taking, reactions landing on the previous line.
+  Noticeably more natural. Turns that cannot join a run (OpenAI speakers, other
+  models, a lone turn) still render per segment, so mixed episodes keep working.
+
+  Inside a dialogue run: `pause_after` is ignored (the model owns the pacing) and
+  per-speaker `voice_settings`/`speed` do not apply — the endpoint takes a single
+  `config.dialogue_stability` for the whole request. Runs are split at turn
+  boundaries to stay under 5000 characters per request.
+
+  Prefer "segments" when you need exact gap control or per-speaker tuning;
+  prefer "dialogue" for natural back-and-forth conversation.
 
 **Voice guide (OpenAI):**
 - ash: Authoritative, confident — good for hosts and anchors

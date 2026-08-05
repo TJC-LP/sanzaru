@@ -14,6 +14,7 @@ OpenAI and ElevenLabs voices — the stitch path is mp3-in, mp3-out.
 """
 
 import time
+from dataclasses import dataclass
 from io import BytesIO
 from typing import Literal, NotRequired, TypedDict
 
@@ -25,19 +26,25 @@ from pydub import AudioSegment  # type: ignore[import-untyped]
 from pydub.effects import normalize as pydub_normalize  # type: ignore[import-untyped]
 
 from ..audio.constants import (
+    DEFAULT_RENDER_MODE,
     ELEVENLABS_SPEED_RANGE,
+    MIN_DIALOGUE_TURNS,
     OPENAI_SPEED_RANGE,
     PODCAST_TARGET_FRAME_RATE,
+    RENDER_MODES,
     ElevenLabsModel,
+    PodcastRenderMode,
     TTSProviderName,
 )
 from ..audio.providers import (
     VOICE_SETTINGS_BOOL_KEYS,
     VOICE_SETTINGS_FLOAT_KEYS,
     VOICE_SETTINGS_KEYS,
+    DialogueTurn,
     SpeechRequest,
     TTSProvider,
     VoiceSettingsDict,
+    as_dialogue_provider,
     get_provider,
     synthesize_speech,
     validate_provider_name,
@@ -75,6 +82,8 @@ class PodcastConfig(TypedDict):
     output_bitrate: NotRequired[str]
     provider: NotRequired[TTSProviderName]
     max_concurrency: NotRequired[int]
+    render_mode: NotRequired[PodcastRenderMode]
+    dialogue_stability: NotRequired[float]
 
 
 class PodcastScript(TypedDict):
@@ -175,6 +184,16 @@ def _validate_script(
     ):
         raise ValueError(f"PodcastConfig 'max_concurrency' must be a positive integer, got {config['max_concurrency']}")
 
+    render_mode: PodcastRenderMode = config.get("render_mode", DEFAULT_RENDER_MODE)
+    if render_mode not in RENDER_MODES:
+        raise ValueError(f"PodcastConfig 'render_mode' must be one of: {', '.join(RENDER_MODES)}, got {render_mode!r}")
+    if "dialogue_stability" in config:
+        stability = config["dialogue_stability"]
+        if not isinstance(stability, int | float) or not 0.0 <= stability <= 1.0:
+            raise ValueError(f"PodcastConfig 'dialogue_stability' must be between 0.0 and 1.0, got {stability}")
+        if render_mode != "dialogue":
+            logger.warning("PodcastConfig 'dialogue_stability' is ignored unless render_mode is 'dialogue'")
+
     speaker_ids: set[str] = set()
     # provider name per speaker id, so segment-level checks below know which
     # speed range applies.
@@ -198,6 +217,17 @@ def _validate_script(
 
         if "voice_settings" in speaker:
             _validate_voice_settings(speaker["voice_settings"], f"Speaker {i}")
+            if render_mode == "dialogue" and provider_name == "elevenlabs":
+                # The dialogue endpoint takes one `stability` for the whole
+                # request, not per-voice settings. Warn rather than reject:
+                # a speaker may still fall back to segment rendering if it does
+                # not end up inside a dialogue run.
+                logger.warning(
+                    "Speaker %d ('%s') sets voice_settings, which the dialogue endpoint cannot apply "
+                    "per speaker - use config.dialogue_stability, or render_mode='segments' to keep them",
+                    i,
+                    speaker["id"],
+                )
 
         # Fail before spending a single API call: this resolves the model,
         # rejects cross-provider model names, and applies provider-specific
@@ -322,6 +352,87 @@ def _safe_title(title: str) -> str:
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in title).strip("_") or "podcast"
 
 
+@dataclass(frozen=True, slots=True)
+class RenderUnit:
+    """One TTS request's worth of the script.
+
+    Either a single segment (`indices` of length 1) or a consecutive run of
+    turns rendered together as one dialogue. Stitching works in units, so the
+    pause after a unit comes from its *last* segment.
+    """
+
+    indices: tuple[int, ...]
+    speaker_id: str
+    """Speaker of the first segment; for dialogue units, only its provider and
+    model matter — the turns carry their own voices."""
+    is_dialogue: bool
+
+
+def _plan_render_units(
+    segments: list[Segment],
+    speaker_map: dict[str, Speaker],
+    providers: dict[str, TTSProvider],
+    models: dict[str, str],
+    render_mode: PodcastRenderMode,
+) -> list[RenderUnit]:
+    """Split the script into TTS requests.
+
+    In "segments" mode every segment is its own unit — the historical behavior.
+
+    In "dialogue" mode, maximal runs of consecutive segments that share a
+    dialogue-capable provider *and* model are batched into one request, so the
+    model paces the exchange itself. Runs are further split to stay under the
+    provider's per-request character budget, always at a turn boundary. Anything
+    that cannot participate — an OpenAI speaker, a non-dialogue model, a
+    lone turn — falls back to its own segment unit, which is what makes
+    dialogue mode compose with mixed-provider episodes.
+    """
+    if render_mode == "segments":
+        return [RenderUnit((i,), seg["speaker"], False) for i, seg in enumerate(segments)]
+
+    units: list[RenderUnit] = []
+    run: list[int] = []
+    run_key: tuple[str, str] | None = None
+    run_chars = 0
+
+    def flush() -> None:
+        nonlocal run, run_key, run_chars
+        if not run:
+            return
+        # A single turn gains nothing from the dialogue endpoint and would lose
+        # its per-speaker voice_settings, so render it normally.
+        is_dialogue = len(run) >= MIN_DIALOGUE_TURNS
+        if is_dialogue:
+            units.append(RenderUnit(tuple(run), segments[run[0]]["speaker"], True))
+        else:
+            units.extend(RenderUnit((i,), segments[i]["speaker"], False) for i in run)
+        run, run_key, run_chars = [], None, 0
+
+    for i, segment in enumerate(segments):
+        speaker = speaker_map[segment["speaker"]]
+        provider = providers[speaker["id"]]
+        model = models[speaker["id"]]
+        dialogue = as_dialogue_provider(provider)
+
+        if dialogue is None or not dialogue.supports_dialogue_model(model):
+            flush()
+            units.append(RenderUnit((i,), segment["speaker"], False))
+            continue
+
+        key = (provider.name, model)
+        length = len(segment["text"])
+        budget = dialogue.max_dialogue_chars(model)
+
+        if run_key is not None and (key != run_key or run_chars + length > budget):
+            flush()
+        run_key = key
+        run.append(i)
+        run_chars += length
+
+    flush()
+    return units
+
+
 async def generate_podcast(
     script: PodcastScript,
     model: SpeechModel | ElevenLabsModel = "gpt-4o-mini-tts",
@@ -369,6 +480,24 @@ async def generate_podcast(
         if limit:
             logger.info("Limiting %s to %d concurrent TTS requests", speaker_provider.name, limit)
 
+    render_mode: PodcastRenderMode = config.get("render_mode", DEFAULT_RENDER_MODE)
+    units = _plan_render_units(segments, speaker_map, providers, models, render_mode)
+    if render_mode == "dialogue":
+        dialogue_units = [u for u in units if u.is_dialogue]
+        if dialogue_units:
+            logger.info(
+                "Dialogue mode: %d/%d segments batched into %d conversation request(s); "
+                "the model paces those turns, so their pause_after is not applied",
+                sum(len(u.indices) for u in dialogue_units),
+                len(segments),
+                len(dialogue_units),
+            )
+        else:
+            logger.warning(
+                "render_mode='dialogue' but no run of 2+ consecutive turns shares a "
+                "dialogue-capable provider and model (eleven_v3) - rendering per segment"
+            )
+
     async def _gen_segment(i: int, segment: Segment) -> bytes:
         """Render one segment. Independent of the others, so #35's verify pass
         can re-invoke this for just the segments that failed QC."""
@@ -395,19 +524,53 @@ async def generate_podcast(
         )
         return await synthesize_speech(speaker_provider, request, limiter=limiters[speaker_provider.name])
 
+    async def _gen_dialogue(unit: RenderUnit) -> bytes:
+        """Render a run of consecutive turns as one conversation."""
+        speaker_provider = providers[unit.speaker_id]
+        dialogue = as_dialogue_provider(speaker_provider)
+        if dialogue is None:  # pragma: no cover - _plan_render_units guarantees this
+            raise RuntimeError(f"provider {speaker_provider.name!r} cannot render dialogue")
+
+        turns = [
+            DialogueTurn(
+                text=segments[i]["text"],
+                voice=speaker_provider.resolve_voice(speaker_map[segments[i]["speaker"]]["voice"]),
+            )
+            for i in unit.indices
+        ]
+        names = ", ".join(dict.fromkeys(speaker_map[segments[i]["speaker"]]["name"] for i in unit.indices))
+        logger.info(
+            f"Queued dialogue segments {unit.indices[0] + 1}-{unit.indices[-1] + 1}/{len(segments)} "
+            f"[{names} / {speaker_provider.name}]"
+        )
+        limiter = limiters[speaker_provider.name]
+        if limiter is None:
+            return await dialogue.synthesize_dialogue(turns, models[unit.speaker_id], config.get("dialogue_stability"))
+        async with limiter:
+            return await dialogue.synthesize_dialogue(turns, models[unit.speaker_id], config.get("dialogue_stability"))
+
+    async def _gen_unit(unit: RenderUnit) -> bytes:
+        if unit.is_dialogue:
+            return await _gen_dialogue(unit)
+        index = unit.indices[0]
+        return await _gen_segment(index, segments[index])
+
     async with anyio.create_task_group() as tg:
-        captures = [ResultCapture.start_soon(tg, _gen_segment, i, seg) for i, seg in enumerate(segments)]
+        captures = [ResultCapture.start_soon(tg, _gen_unit, unit) for unit in units]
 
     # Read by index, not completion order — the limiter only delays task entry.
     segment_bytes_list = [c.result() for c in captures]
 
+    # Pauses are per unit: a dialogue unit's internal gaps belong to the model,
+    # so only the pause after its final turn is applied here.
     default_pause_ms = config.get("default_pause_ms", 600)
     pause_ms_list: list[int] = []
-    for i, segment in enumerate(segments):
-        if i == len(segments) - 1:
+    for unit_index, unit in enumerate(units):
+        if unit_index == len(units) - 1:
             pause_ms_list.append(0)
         else:
-            pause_ms_list.append(segment.get("pause_after", default_pause_ms))
+            last = segments[unit.indices[-1]]
+            pause_ms_list.append(last.get("pause_after", default_pause_ms))
 
     intro_ms = config.get("intro_silence_ms") or 0
     outro_ms = config.get("outro_silence_ms") or 0

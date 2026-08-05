@@ -11,8 +11,9 @@ every segment with `AudioSegment.from_mp3`.
 """
 
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import Protocol, TypedDict
+from typing import Protocol, TypedDict, runtime_checkable
 
 import anyio
 
@@ -57,10 +58,21 @@ class SpeechRequest:
     """Following text, for cross-chunk prosody continuity. ElevenLabs-only."""
 
 
+@dataclass(frozen=True, slots=True)
+class DialogueTurn:
+    """One speaker's turn within a multi-speaker dialogue request."""
+
+    text: str
+    voice: str
+
+
 class TTSProvider(Protocol):
     """A text-to-speech backend. Implementations must return mp3 bytes."""
 
     name: TTSProviderName
+    supports_dialogue: bool
+    """True when the provider can render several turns in one request, letting
+    the model pace the conversation instead of us inserting silence gaps."""
 
     def resolve_model(self, model: str | None) -> str:
         """Return the model to use, or raise ValueError if it belongs to another provider."""
@@ -85,6 +97,42 @@ class TTSProvider(Protocol):
     async def synthesize_chunk(self, request: SpeechRequest) -> bytes:
         """Synthesize one chunk of text into mp3 bytes."""
         ...
+
+
+@runtime_checkable
+class DialogueProvider(Protocol):
+    """A provider that can render a multi-speaker exchange in one request.
+
+    Kept separate from TTSProvider so backends without the capability (OpenAI)
+    are not forced to stub it out. Narrow with `as_dialogue_provider`.
+    """
+
+    name: TTSProviderName
+    supports_dialogue: bool
+
+    def supports_dialogue_model(self, model: str) -> bool:
+        """True when `model` can render dialogue (not every model can)."""
+        ...
+
+    def max_dialogue_chars(self, model: str) -> int:
+        """Total characters accepted across all turns in one dialogue request."""
+        ...
+
+    async def synthesize_dialogue(
+        self,
+        turns: Sequence[DialogueTurn],
+        model: str,
+        stability: float | None = None,
+    ) -> bytes:
+        """Render `turns` as one continuous conversation, returning mp3 bytes."""
+        ...
+
+
+def as_dialogue_provider(provider: TTSProvider) -> "DialogueProvider | None":
+    """Return `provider` narrowed to DialogueProvider, or None if unsupported."""
+    if getattr(provider, "supports_dialogue", False) and isinstance(provider, DialogueProvider):
+        return provider
+    return None
 
 
 def env_concurrency(env_var: str, default: int) -> int:

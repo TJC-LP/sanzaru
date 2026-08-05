@@ -13,31 +13,6 @@ pytestmark = pytest.mark.audio
 
 
 @pytest.fixture
-def minimal_script():
-    """Minimal valid PodcastScript for testing."""
-    return {
-        "title": "test_podcast",
-        "speakers": [
-            {
-                "id": "host",
-                "name": "Alex",
-                "voice": "ash",
-                "speed": 1.0,
-                "instructions": "Confident host",
-            }
-        ],
-        "segments": [
-            {"speaker": "host", "text": "Welcome to the show."},
-        ],
-        "config": {
-            "default_pause_ms": 600,
-            "normalize_loudness": True,
-            "output_format": "mp3",
-        },
-    }
-
-
-@pytest.fixture
 def two_speaker_script():
     """Two-speaker PodcastScript for testing."""
     return {
