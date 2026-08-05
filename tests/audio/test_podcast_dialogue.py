@@ -60,7 +60,8 @@ class TestPlanRenderUnits:
         assert shape(units) == [("S", (0,)), ("D", (1, 2, 3)), ("S", (4,)), ("D", (5, 6))]
 
     def test_lone_elevenlabs_turn_falls_back_to_segment(self):
-        # One turn gains nothing from the dialogue endpoint and would lose its
+        # One turn is one voice, so the distinct-voice rule already excludes it;
+        # it also gains nothing from the endpoint and would lose its
         # per-speaker voice_settings.
         speakers = [speaker("host"), speaker("a", "elevenlabs")]
         units = plan(speakers, ["host", "a", "host"])
@@ -68,24 +69,90 @@ class TestPlanRenderUnits:
 
     def test_non_dialogue_model_never_batches(self):
         # Only eleven_v3 supports dialogue.
-        speakers = [speaker("a", "elevenlabs", model="eleven_multilingual_v2")]
+        speakers = [
+            speaker("a", "elevenlabs", model="eleven_multilingual_v2"),
+            speaker("b", "elevenlabs", model="eleven_multilingual_v2"),
+        ]
+        units = plan(speakers, ["a", "b", "a"])
+        assert shape(units) == [("S", (0,)), ("S", (1,)), ("S", (2,))]
+
+    def test_non_dialogue_model_between_runs_splits_them(self):
+        """An excluded turn ends the run in progress and a new one starts after
+        it — the same guarantee as the OpenAI case, one layer down."""
+        speakers = [
+            speaker("a", "elevenlabs", model="eleven_v3"),
+            speaker("b", "elevenlabs", model="eleven_v3"),
+            speaker("c", "elevenlabs", model="eleven_multilingual_v2"),
+        ]
+        units = plan(speakers, ["a", "b", "c", "a", "b"])
+        assert shape(units) == [("D", (0, 1)), ("S", (2,)), ("D", (3, 4))]
+
+    def test_two_dialogue_capable_models_never_share_a_run(self, monkeypatch):
+        """A dialogue request carries one model_id, so turns on different models
+        must not batch together — even when both models can render dialogue.
+
+        Only eleven_v3 is dialogue-capable today, so the run key can only differ
+        by model if a second one is admitted; widening the set is how we reach
+        the branch at all.
+        """
+        monkeypatch.setattr(
+            "sanzaru.audio.providers.elevenlabs_provider.ELEVENLABS_DIALOGUE_MODELS",
+            frozenset({"eleven_v3", "eleven_multilingual_v2"}),
+        )
+        speakers = [
+            speaker("a", "elevenlabs", model="eleven_v3"),
+            speaker("b", "elevenlabs", model="eleven_v3"),
+            speaker("c", "elevenlabs", model="eleven_multilingual_v2"),
+            speaker("d", "elevenlabs", model="eleven_multilingual_v2"),
+        ]
+        units = plan(speakers, ["a", "b", "c", "d"])
+        assert shape(units) == [("D", (0, 1)), ("D", (2, 3))]
+
+    def test_single_speaker_run_never_batches(self):
+        """Consecutive turns by ONE voice have no turn-taking for the model to
+        pace, so batching them buys nothing and would swallow their pause_after."""
+        speakers = [speaker("a", "elevenlabs")]
         units = plan(speakers, ["a", "a", "a"])
         assert shape(units) == [("S", (0,)), ("S", (1,)), ("S", (2,))]
 
-    def test_differing_models_split_the_run(self):
-        speakers = [
-            speaker("a", "elevenlabs", model="eleven_v3"),
-            speaker("b", "elevenlabs", model="eleven_multilingual_v2"),
-        ]
-        units = plan(speakers, ["a", "a", "b", "a", "a"])
-        assert shape(units) == [("D", (0, 1)), ("S", (2,)), ("D", (3, 4))]
+    def test_single_speaker_stretch_inside_a_two_voice_run_still_batches(self):
+        """The rule is per run, not per adjacent pair: a monologue in the middle
+        of a real exchange is still part of one conversation."""
+        speakers = [speaker("a", "elevenlabs"), speaker("b", "elevenlabs")]
+        units = plan(speakers, ["a", "a", "a", "b"])
+        assert shape(units) == [("D", (0, 1, 2, 3))]
+
+    def test_turn_over_the_dialogue_budget_renders_alone(self):
+        """A turn that alone fills the 2000-char request budget cannot share one
+        with its neighbours, so it (and they) fall back to segment units and get
+        chunked the normal way."""
+        speakers = [speaker("a", "elevenlabs"), speaker("b", "elevenlabs")]
+        units = plan(speakers, ["a", "b", "a"], texts=["short", "x" * 2500, "short"])
+        assert shape(units) == [("S", (0,)), ("S", (1,)), ("S", (2,))]
 
     def test_run_splits_at_the_character_budget(self):
-        # 5000-char budget for eleven_v3; 4 turns of 2000 chars must split 2+2,
-        # always at a turn boundary.
+        # 2000-char dialogue budget; 4 turns of 900 chars must split 2+2, always
+        # at a turn boundary.
         speakers = [speaker("a", "elevenlabs"), speaker("b", "elevenlabs")]
-        units = plan(speakers, ["a", "b", "a", "b"], texts=["x" * 2000] * 4)
+        units = plan(speakers, ["a", "b", "a", "b"], texts=["x" * 900] * 4)
         assert shape(units) == [("D", (0, 1)), ("D", (2, 3))]
+
+    def test_run_exactly_at_the_character_budget_still_batches(self):
+        # The budget is inclusive: 1000 + 1000 == 2000 is one request, not two.
+        speakers = [speaker("a", "elevenlabs"), speaker("b", "elevenlabs")]
+        units = plan(speakers, ["a", "b"], texts=["x" * 1000, "y" * 1000])
+        assert shape(units) == [("D", (0, 1))]
+
+    def test_two_speakers_sharing_one_voice_never_batch(self):
+        """The endpoint hears voices, not speaker ids. Two entries pointing at
+        the same voice are a monologue, so batching them would buy nothing and
+        swallow their pause_after."""
+        speakers = [
+            speaker("a", "elevenlabs", voice="shared_voice"),
+            speaker("b", "elevenlabs", voice="shared_voice"),
+        ]
+        units = plan(speakers, ["a", "b", "a"])
+        assert shape(units) == [("S", (0,)), ("S", (1,)), ("S", (2,))]
 
     def test_oversized_single_turn_still_becomes_its_own_unit(self):
         speakers = [speaker("a", "elevenlabs"), speaker("b", "elevenlabs")]
@@ -132,6 +199,21 @@ class TestValidateRenderMode:
         )
         _validate_script(minimal_script)
         assert "cannot apply per speaker" in caplog.text
+
+    def test_no_voice_settings_warning_for_a_model_that_cannot_batch(self, minimal_script, caplog):
+        """eleven_multilingual_v2 never joins a dialogue run, so its
+        voice_settings are guaranteed to be honoured — warning about them is a lie."""
+        minimal_script["config"]["render_mode"] = "dialogue"
+        minimal_script["speakers"][0].update(
+            {
+                "provider": "elevenlabs",
+                "voice": "v1",
+                "model": "eleven_multilingual_v2",
+                "voice_settings": {"stability": 0.5},
+            }
+        )
+        _validate_script(minimal_script)
+        assert "cannot apply per speaker" not in caplog.text
 
 
 # ==================== RENDERING ====================
@@ -252,6 +334,36 @@ class TestDialogueRendering:
         assert kwargs["segment_bytes_list"] == [b"DIALOGUE"]
         assert kwargs["pause_ms_list"] == [0]
 
+    async def test_estimate_excludes_pauses_the_model_paces(self, mocker, podcast_env):
+        """estimated_duration_seconds is user-visible, so it must count only the
+        silence actually inserted: none, for a script that plans to one unit."""
+        from sanzaru.tools.podcast import generate_podcast
+
+        mocker.patch(
+            "sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client",
+            return_value=FakeDialogueClient(),
+        )
+
+        # 6 words at 1.0x -> 2.4s of speech; the three 400ms pause_afters are
+        # inside the run (or trailing), so none of them reach the output.
+        result = await generate_podcast(dialogue_script())
+
+        assert result.estimated_duration_seconds == pytest.approx(2.4)
+
+    async def test_estimate_counts_real_gaps_in_segments_mode(self, mocker, podcast_env):
+        """Same script rendered per segment: two 400ms gaps, and still nothing
+        trailing the last one."""
+        from sanzaru.tools.podcast import generate_podcast
+
+        mocker.patch(
+            "sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client",
+            return_value=FakeDialogueClient(),
+        )
+
+        result = await generate_podcast(dialogue_script(render_mode="segments"))
+
+        assert result.estimated_duration_seconds == pytest.approx(2.4 + 0.8)
+
     async def test_dialogue_stability_is_forwarded(self, mocker, podcast_env):
         from sanzaru.tools.podcast import generate_podcast
 
@@ -288,11 +400,13 @@ class TestDialogueRendering:
 
         script = dialogue_script()
         script["speakers"].append({"id": "host", "name": "Host", "voice": "ash", "speed": 1.0, "instructions": "Warm"})
+        # Distinct pauses inside the run: a unit's gap comes from its LAST turn,
+        # so 111 must be swallowed by the model's own pacing and 222 kept.
         script["segments"] = [
-            {"speaker": "host", "text": "Intro."},
-            {"speaker": "a", "text": "First."},
-            {"speaker": "b", "text": "Second."},
-            {"speaker": "host", "text": "Outro."},
+            {"speaker": "host", "text": "Intro.", "pause_after": 100},
+            {"speaker": "a", "text": "First.", "pause_after": 111},
+            {"speaker": "b", "text": "Second.", "pause_after": 222},
+            {"speaker": "host", "text": "Outro.", "pause_after": 333},
         ]
 
         await generate_podcast(script)
@@ -300,7 +414,10 @@ class TestDialogueRendering:
         assert len(client.dialogue_calls) == 1
         assert openai_client.audio.speech.create.await_count == 2
         # 3 units: openai segment, dialogue run, openai segment — in order.
-        assert podcast_env.call_args.kwargs["segment_bytes_list"] == [b"OPENAI", b"DIALOGUE", b"OPENAI"]
+        kwargs = podcast_env.call_args.kwargs
+        assert kwargs["segment_bytes_list"] == [b"OPENAI", b"DIALOGUE", b"OPENAI"]
+        # 333 is the trailing pause of the final unit, which never applies.
+        assert kwargs["pause_ms_list"] == [100, 222, 0]
 
     async def test_falls_back_when_no_run_qualifies(self, mocker, podcast_env, caplog):
         from sanzaru.tools.podcast import generate_podcast
@@ -319,6 +436,20 @@ class TestDialogueRendering:
 
         assert "no run of 2+ consecutive turns" in caplog.text
         assert openai_client.audio.speech.create.await_count == 2
+
+    async def test_unbounded_concurrency_still_renders_dialogue(self, mocker, podcast_env, monkeypatch):
+        """SANZARU_ELEVENLABS_MAX_CONCURRENCY=0 is the documented unbounded mode,
+        which leaves the limiter None — the dialogue path must not assume one."""
+        from sanzaru.tools.podcast import generate_podcast
+
+        monkeypatch.setenv("SANZARU_ELEVENLABS_MAX_CONCURRENCY", "0")
+        client = FakeDialogueClient()
+        mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=client)
+
+        await generate_podcast(dialogue_script())
+
+        assert len(client.dialogue_calls) == 1
+        assert podcast_env.call_args.kwargs["segment_bytes_list"] == [b"DIALOGUE"]
 
     async def test_segments_mode_never_touches_the_dialogue_endpoint(self, mocker, podcast_env):
         from sanzaru.tools.podcast import generate_podcast
@@ -361,6 +492,18 @@ class TestDialogueProviderGuards:
         assert provider is not None
         with pytest.raises(ValueError, match="at least one turn"):
             await provider.synthesize_dialogue([], "eleven_v3")
+
+    @pytest.mark.anyio
+    async def test_rejects_a_request_over_the_character_budget(self):
+        """An over-budget dialogue can terminate the stream early, which reads
+        as a short-but-successful take — so refuse before sending it."""
+        from sanzaru.audio.providers import DialogueTurn, as_dialogue_provider
+
+        provider = as_dialogue_provider(get_provider("elevenlabs"))
+        assert provider is not None
+        turns = [DialogueTurn("x" * 1500, "v1"), DialogueTurn("y" * 600, "v2")]
+        with pytest.raises(ValueError, match="over the 2000-character limit"):
+            await provider.synthesize_dialogue(turns, "eleven_v3")
 
     @pytest.mark.anyio
     async def test_rejects_out_of_range_stability(self):

@@ -688,7 +688,8 @@ not names from the list above.
 Parameters:
 - text_prompt: Text to convert to speech (required, any length)
 - model: TTS model. Default: "gpt-4o-mini-tts" (openai) / "eleven_v3" (elevenlabs)
-- voice: OpenAI voice name, or an ElevenLabs voice id. Default: "alloy"
+- voice: OpenAI voice name, or an ElevenLabs voice id. Default: "alloy" (openai); elevenlabs has
+  no default and requires an explicit voice id
 - instructions: Optional style guidance (e.g., "Speak slowly and clearly", "Use British accent", "Sound excited").
   OPENAI ONLY — ElevenLabs ignores it. For expressive ElevenLabs delivery, put inline audio tags
   in the text itself with eleven_v3: "[whispers] this is the secret. [laughs] Got you."
@@ -774,7 +775,8 @@ script must be a JSON object matching this structure:
       "speaker": string,             // Must match a speaker id (required)
       "text": string,                // Spoken content (required, max ~40000 chars)
       "pause_after": number,         // Silence in ms after this segment (optional, overrides default)
-      "speed_override": number,      // Override speaker speed for this segment (optional)
+      "speed_override": number,      // Override speaker speed for this segment (optional; also
+                                     // wins over the speaker's voice_settings "speed")
       "instruction_override": string // Override speaker instructions for this segment (optional)
     }
   ],
@@ -801,13 +803,15 @@ script must be a JSON object matching this structure:
 - "dialogue": consecutive turns that share a dialogue-capable provider and model
   (currently ElevenLabs eleven_v3) are sent as ONE request, so the model paces
   the conversation itself — turn-taking, reactions landing on the previous line.
-  Noticeably more natural. Turns that cannot join a run (OpenAI speakers, other
-  models, a lone turn) still render per segment, so mixed episodes keep working.
+  Noticeably more natural. Turns that cannot join a run still render per segment,
+  so mixed episodes keep working: OpenAI speakers, other models, a lone turn, a
+  stretch in one voice (no turn-taking to pace), a turn that alone fills the
+  2000-character request budget.
 
   Inside a dialogue run: `pause_after` is ignored (the model owns the pacing) and
   per-speaker `voice_settings`/`speed` do not apply — the endpoint takes a single
   `config.dialogue_stability` for the whole request. Runs are split at turn
-  boundaries to stay under 5000 characters per request.
+  boundaries to stay under 2000 characters per request.
 
   Prefer "segments" when you need exact gap control or per-speaker tuning;
   prefer "dialogue" for natural back-and-forth conversation.

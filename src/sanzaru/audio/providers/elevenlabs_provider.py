@@ -25,7 +25,7 @@ from ..constants import (
     ElevenLabsModel,
     TTSProviderName,
 )
-from .base import VOICE_SETTINGS_KEYS, DialogueTurn, SpeechRequest, env_concurrency
+from .base import DialogueTurn, SpeechRequest, check_voice_settings_types, env_concurrency
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -89,11 +89,9 @@ class ElevenLabsTTSProvider:
             raise ValueError("provider='elevenlabs' requires an explicit voice id")
 
         settings = request.voice_settings or {}
-        for key in settings:
-            if key not in VOICE_SETTINGS_KEYS:
-                raise ValueError(
-                    f"unknown voice_settings key {key!r}; expected one of: {', '.join(VOICE_SETTINGS_KEYS)}"
-                )
+        # Types first: the range comparisons below would raise TypeError on a
+        # string, which the CLI reports as internal/exit 1 rather than usage.
+        check_voice_settings_types(settings)
         for key, value in (
             ("stability", settings.get("stability")),
             ("similarity_boost", settings.get("similarity_boost")),
@@ -162,6 +160,17 @@ class ElevenLabsTTSProvider:
             )
         if stability is not None and not 0.0 <= stability <= 1.0:
             raise ValueError(f"dialogue stability must be between 0.0 and 1.0, got {stability}")
+
+        # Over-budget requests fail by *terminating the stream early*, which
+        # _convert_dialogue cannot distinguish from a complete take — it would
+        # return a truncated conversation as a success. The planner already
+        # splits runs at this budget; this is the backstop for direct callers.
+        total_chars = sum(len(turn.text) for turn in turns)
+        if total_chars > ELEVENLABS_DIALOGUE_MAX_CHARS:
+            raise ValueError(
+                f"dialogue request is {total_chars} characters across {len(turns)} turns, over the "
+                f"{ELEVENLABS_DIALOGUE_MAX_CHARS}-character limit; split it at a turn boundary"
+            )
 
         client = get_elevenlabs_client()
         return await self._with_retries(lambda: self._convert_dialogue(client, turns, model, stability))

@@ -15,7 +15,7 @@ OpenAI and ElevenLabs voices — the stitch path is mp3-in, mp3-out.
 
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from io import BytesIO
 from typing import Literal, NotRequired, TypedDict
 
@@ -28,8 +28,9 @@ from pydub.effects import normalize as pydub_normalize  # type: ignore[import-un
 
 from ..audio.constants import (
     DEFAULT_RENDER_MODE,
+    ELEVENLABS_MODELS,
     ELEVENLABS_SPEED_RANGE,
-    MIN_DIALOGUE_TURNS,
+    MIN_DIALOGUE_SPEAKERS,
     OPENAI_SPEED_RANGE,
     PODCAST_TARGET_FRAME_RATE,
     RENDER_MODES,
@@ -38,20 +39,20 @@ from ..audio.constants import (
     TTSProviderName,
 )
 from ..audio.providers import (
-    VOICE_SETTINGS_BOOL_KEYS,
-    VOICE_SETTINGS_FLOAT_KEYS,
-    VOICE_SETTINGS_KEYS,
     DialogueTurn,
     SpeechRequest,
     TTSProvider,
     VoiceSettingsDict,
     as_dialogue_provider,
+    check_voice_settings_types,
     get_provider,
     synthesize_speech,
     validate_provider_name,
 )
 from ..config import logger
 from ..infrastructure import FileSystemRepository
+
+_ELEVENLABS_MODEL_NAMES = frozenset(ELEVENLABS_MODELS)
 
 
 class Speaker(TypedDict):
@@ -115,44 +116,64 @@ def _resolve_provider_name(
     return speaker.get("provider") or config.get("provider") or default
 
 
-def _resolve_model(speaker: Speaker, provider: TTSProvider, openai_model: str) -> str:
+def _resolve_model(speaker: Speaker, provider: TTSProvider, requested_model: str | None) -> str:
     """Model for a speaker.
 
-    A per-speaker `model` always wins. Otherwise the tool's `model` argument
-    applies to OpenAI speakers (it names an OpenAI model), and ElevenLabs
-    speakers fall back to the provider default.
+    A per-speaker `model` always wins, and a wrong one there is an error the
+    caller asked for. Otherwise the tool's `model` argument applies to whichever
+    provider it names; on a mixed-provider episode the speakers of the *other*
+    provider fall back to their own default rather than failing the render.
     """
     if "model" in speaker:
         return provider.resolve_model(speaker["model"])
-    return provider.resolve_model(openai_model if provider.name == "openai" else None)
+    try:
+        resolved = provider.resolve_model(requested_model)
+    except ValueError:
+        # ElevenLabs rejects a foreign model name outright.
+        return provider.resolve_model(None)
+    # OpenAI's resolve_model accepts unknown names on purpose (new speech models
+    # ship between our releases), so only the allowlist catches the reverse case.
+    if provider.name == "openai" and resolved in _ELEVENLABS_MODEL_NAMES:
+        return provider.resolve_model(None)
+    return resolved
 
 
 def _speed_range(provider_name: TTSProviderName) -> tuple[float, float]:
     return ELEVENLABS_SPEED_RANGE if provider_name == "elevenlabs" else OPENAI_SPEED_RANGE
 
 
-def _validate_voice_settings(settings: VoiceSettingsDict, context: str) -> None:
-    """Validate a per-speaker voice_settings mapping."""
-    if not isinstance(settings, dict):
-        raise ValueError(f"{context} voice_settings must be an object")
-    for key in settings:
-        if key not in VOICE_SETTINGS_KEYS:
-            raise ValueError(
-                f"{context} voice_settings has unknown key '{key}'; expected: {', '.join(VOICE_SETTINGS_KEYS)}"
-            )
-    for key in VOICE_SETTINGS_FLOAT_KEYS:
-        if key in settings and not isinstance(settings[key], int | float):  # type: ignore[literal-required]
-            raise ValueError(f"{context} voice_settings['{key}'] must be a number")
-    for key in VOICE_SETTINGS_BOOL_KEYS:
-        if key in settings and not isinstance(settings[key], bool):  # type: ignore[literal-required]
-            raise ValueError(f"{context} voice_settings['{key}'] must be a boolean")
+def _resolve_segment_speech(segment: Segment, speaker: Speaker) -> tuple[float, VoiceSettingsDict | None]:
+    """Speed and voice_settings for one segment, with script-level precedence applied.
+
+    A segment's `speed_override` is the most specific value in the script, so it
+    beats both `speaker["speed"]` and the speaker's `voice_settings["speed"]`.
+    The second half matters because ElevenLabs' native speed knob lives *inside*
+    voice_settings and wins there over the neutral `SpeechRequest.speed`: without
+    materializing the override into the copy below, a speaker that sets
+    `voice_settings["speed"]` would silently kill every override in its segments.
+
+    Validation and rendering both go through here, so they can never disagree
+    about which speed the episode will actually be rendered at.
+    """
+    settings = speaker.get("voice_settings")
+    if "speed_override" not in segment:
+        return speaker["speed"], settings
+    speed = segment["speed_override"]
+    if settings is not None and "speed" in settings:
+        settings = settings.copy()
+        settings["speed"] = speed
+    return speed, settings
 
 
 def _validate_script(
     script: PodcastScript,
     default_provider: TTSProviderName = "openai",
+    default_model: str | None = None,
 ) -> tuple[str, list[Speaker], list[Segment], PodcastConfig]:
     """Validate PodcastScript structure and return its components.
+
+    `default_model` must be the same value the render path will use, or
+    validation checks a model the episode never runs on.
 
     Raises ValueError if the script is invalid.
     """
@@ -196,9 +217,10 @@ def _validate_script(
             logger.warning("PodcastConfig 'dialogue_stability' is ignored unless render_mode is 'dialogue'")
 
     speaker_ids: set[str] = set()
-    # provider name per speaker id, so segment-level checks below know which
-    # speed range applies.
+    # Per speaker id, so the segment pass below can re-probe with the same
+    # provider, model, and voice the render will use.
     speaker_providers: dict[str, TTSProviderName] = {}
+    speaker_probes: dict[str, tuple[Speaker, TTSProvider, SpeechRequest]] = {}
 
     for i, speaker in enumerate(speakers):
         for field in ("id", "name", "voice", "speed", "instructions"):
@@ -217,12 +239,23 @@ def _validate_script(
             )
 
         if "voice_settings" in speaker:
-            _validate_voice_settings(speaker["voice_settings"], f"Speaker {i}")
-            if render_mode == "dialogue" and provider_name == "elevenlabs":
-                # The dialogue endpoint takes one `stability` for the whole
-                # request, not per-voice settings. Warn rather than reject:
-                # a speaker may still fall back to segment rendering if it does
-                # not end up inside a dialogue run.
+            check_voice_settings_types(speaker["voice_settings"], f"Speaker {i} ")
+
+        # Fail before spending a single API call: this resolves the model,
+        # rejects cross-provider model names, and applies provider-specific
+        # rules (eleven_v3 has no speed, ElevenLabs needs a voice id).
+        provider = get_provider(provider_name)
+        model = _resolve_model(speaker, provider, default_model)
+
+        if render_mode == "dialogue" and "voice_settings" in speaker:
+            # The dialogue endpoint takes one `stability` for the whole request,
+            # not per-voice settings. Gate on the *model*, not just the provider:
+            # only eleven_v3 can batch, so an eleven_multilingual_v2 speaker is
+            # guaranteed to keep its voice_settings and must not be warned.
+            # Still only a warning for the ones that can — a qualifying speaker
+            # may yet fall back to segment rendering if no run forms around it.
+            dialogue_capable = as_dialogue_provider(provider)
+            if dialogue_capable is not None and dialogue_capable.supports_dialogue_model(model):
                 logger.warning(
                     "Speaker %d ('%s') sets voice_settings, which the dialogue endpoint cannot apply "
                     "per speaker - use config.dialogue_stability, or render_mode='segments' to keep them",
@@ -230,24 +263,19 @@ def _validate_script(
                     speaker["id"],
                 )
 
-        # Fail before spending a single API call: this resolves the model,
-        # rejects cross-provider model names, and applies provider-specific
-        # rules (eleven_v3 has no speed, ElevenLabs needs a voice id).
-        provider = get_provider(provider_name)
-        model = _resolve_model(speaker, provider, "gpt-4o-mini-tts")
-        provider.validate(
-            SpeechRequest(
-                text="validation probe",
-                voice=provider.resolve_voice(speaker["voice"]),
-                model=model,
-                speed=speaker["speed"],
-                instructions=speaker["instructions"],
-                voice_settings=speaker.get("voice_settings"),
-            )
+        probe = SpeechRequest(
+            text="validation probe",
+            voice=provider.resolve_voice(speaker["voice"]),
+            model=model,
+            speed=speaker["speed"],
+            instructions=speaker["instructions"],
+            voice_settings=speaker.get("voice_settings"),
         )
+        provider.validate(probe)
 
         speaker_ids.add(speaker["id"])
         speaker_providers[speaker["id"]] = provider_name
+        speaker_probes[speaker["id"]] = (speaker, provider, probe)
 
     segments = script["segments"]
     if not segments:
@@ -273,27 +301,49 @@ def _validate_script(
                     f"Segment {i} speed_override must be between {low} and {high} for "
                     f"provider='{speaker_providers[segment['speaker']]}', got {segment['speed_override']}"
                 )
+            # The range above is provider-wide; per-model rules (eleven_v3 has no
+            # speed at all) live in provider.validate, which the speaker pass only
+            # ever ran against speaker["speed"]. Re-probe each override or an
+            # in-range-but-unsupported value fails inside the task group, after
+            # sibling segments have already spent API calls.
+            owner, owner_provider, probe = speaker_probes[segment["speaker"]]
+            speed, settings = _resolve_segment_speech(segment, owner)
+            try:
+                # instructions=None: the speaker pass already warned once about
+                # ElevenLabs ignoring them, and this must not repeat it per segment.
+                owner_provider.validate(replace(probe, speed=speed, instructions=None, voice_settings=settings))
+            except ValueError as exc:
+                raise ValueError(f"Segment {i} speed_override: {exc}") from exc
 
     return title, speakers, segments, config
 
 
-def _estimate_duration(segments: list[Segment], speakers: list[Speaker], config: PodcastConfig) -> float:
-    """Estimate total podcast duration in seconds (~150 wpm)."""
+def _estimate_duration(
+    segments: list[Segment],
+    speakers: list[Speaker],
+    pause_ms_list: list[int],
+    config: PodcastConfig,
+) -> float:
+    """Estimate total podcast duration in seconds (~150 wpm).
+
+    `pause_ms_list` must be the very list the stitch step inserts — one entry per
+    render *unit*, not per segment — or the estimate reports silence the output
+    never contains. Deriving it here from `pause_after` instead over-reported
+    twice over: it counted a trailing pause after the final segment, and in
+    dialogue mode it counted the intra-run gaps the model paces itself.
+    """
     speaker_speeds = {s["id"]: float(s["speed"]) for s in speakers}
 
     speech_seconds = 0.0
-    total_pause_ms = 0
-
     for segment in segments:
         word_count = len(segment["text"].split())
         speed = float(segment["speed_override"]) if "speed_override" in segment else speaker_speeds[segment["speaker"]]
         speech_seconds += word_count * 60.0 / (150.0 * speed)
-        total_pause_ms += int(segment.get("pause_after", config["default_pause_ms"]))
 
     intro_ms = int(config.get("intro_silence_ms") or 0)
     outro_ms = int(config.get("outro_silence_ms") or 0)
 
-    return speech_seconds + (total_pause_ms + intro_ms + outro_ms) / 1000.0
+    return speech_seconds + (sum(pause_ms_list) + intro_ms + outro_ms) / 1000.0
 
 
 def _decode_mp3(raw_bytes: bytes) -> AudioSegment:
@@ -357,6 +407,28 @@ def _stitch_audio(
     return output.getvalue()
 
 
+def _derive_concurrency_limits(providers: dict[str, TTSProvider], models: dict[str, str]) -> dict[str, int]:
+    """Tightest concurrency cap per provider, across every model the episode uses.
+
+    The cap is per-model, but the limiter is per-provider, so the smallest model
+    cap has to win: an eleven_flash_v2_5 host (4) beside an eleven_v3 guest (2)
+    must still run 2-wide or ElevenLabs answers HTTP 429. Taking the first
+    speaker's cap instead made the answer depend on speaker order.
+
+    Both dicts are keyed by speaker id. 0 means unbounded, so it can never win a
+    min against a real cap.
+    """
+    limits: dict[str, int] = {}
+    for speaker_id, provider in providers.items():
+        limit = provider.max_concurrency(models[speaker_id])
+        current = limits.get(provider.name)
+        if current is None or current == 0:
+            limits[provider.name] = limit
+        elif limit != 0:
+            limits[provider.name] = min(current, limit)
+    return limits
+
+
 def _safe_title(title: str) -> str:
     """Convert a podcast title to a filesystem-safe slug."""
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in title).strip("_") or "podcast"
@@ -391,11 +463,12 @@ def _plan_render_units(
 
     In "dialogue" mode, maximal runs of consecutive segments that share a
     dialogue-capable provider *and* model are batched into one request, so the
-    model paces the exchange itself. Runs are further split to stay under the
+    model paces the exchange itself. Runs are further split to stay within the
     provider's per-request character budget, always at a turn boundary. Anything
-    that cannot participate — an OpenAI speaker, a non-dialogue model, a
-    lone turn — falls back to its own segment unit, which is what makes
-    dialogue mode compose with mixed-provider episodes.
+    that cannot participate — an OpenAI speaker, a non-dialogue model, a turn
+    that alone fills the budget, a lone turn, a run with only one voice in it —
+    falls back to its own segment unit, which is what makes dialogue mode
+    compose with mixed-provider episodes.
     """
     if render_mode == "segments":
         return [RenderUnit((i,), seg["speaker"], False) for i, seg in enumerate(segments)]
@@ -409,10 +482,16 @@ def _plan_render_units(
         nonlocal run, run_key, run_chars
         if not run:
             return
-        # A single turn gains nothing from the dialogue endpoint and would lose
-        # its per-speaker voice_settings, so render it normally.
-        is_dialogue = len(run) >= MIN_DIALOGUE_TURNS
-        if is_dialogue:
+        # A run in one voice has no turn-taking left for the model to pace, so
+        # it would cost a dialogue request and drop every pause_after between
+        # those paragraph beats for nothing. Distinct *voices*, not speaker ids:
+        # two speaker entries can point at the same ElevenLabs voice, and the
+        # endpoint only hears the voice. At MIN_DIALOGUE_SPEAKERS=2 this also
+        # covers the lone turn, which would lose its per-speaker voice_settings.
+        voices_in_run = {
+            providers[segments[i]["speaker"]].resolve_voice(speaker_map[segments[i]["speaker"]]["voice"]) for i in run
+        }
+        if len(voices_in_run) >= MIN_DIALOGUE_SPEAKERS:
             units.append(RenderUnit(tuple(run), segments[run[0]]["speaker"], True))
         else:
             units.extend(RenderUnit((i,), segments[i]["speaker"], False) for i in run)
@@ -433,6 +512,13 @@ def _plan_render_units(
         length = len(segment["text"])
         budget = dialogue.max_dialogue_chars(model)
 
+        # The budget is the only length rule: it is below every provider's
+        # per-chunk budget, so a turn too long to share a dialogue request is
+        # also one segments mode would happily send whole. Such a turn opens a
+        # run of its own, which the next turn (or the final flush) closes into a
+        # single-voice run — i.e. a segment unit, chunked normally. That is also
+        # why a batched run can never exceed the budget: only the first turn of
+        # a run skips the check below.
         if run_key is not None and (key != run_key or run_chars + length > budget):
             flush()
         run_key = key
@@ -441,6 +527,22 @@ def _plan_render_units(
 
     flush()
     return units
+
+
+def _build_pause_list(units: list[RenderUnit], segments: list[Segment], default_pause_ms: int) -> list[int]:
+    """Silence to insert after each render unit.
+
+    Pauses are per unit, not per segment: a dialogue unit's internal gaps belong
+    to the model, so only the pause after its *last* turn survives. The final
+    unit gets no trailing pause — `outro_silence_ms` is the knob for that.
+
+    Both the stitch step and the duration estimate read this list, which is the
+    only way the estimate can stay honest about silence that is actually added.
+    """
+    return [
+        0 if unit_index == len(units) - 1 else segments[unit.indices[-1]].get("pause_after", default_pause_ms)
+        for unit_index, unit in enumerate(units)
+    ]
 
 
 async def generate_podcast(
@@ -453,20 +555,16 @@ async def generate_podcast(
     Args:
         script: The podcast script. Speakers may each pick their own provider,
             so one episode can mix OpenAI and ElevenLabs voices.
-        model: Default model for OpenAI speakers. ElevenLabs speakers fall back to
-            that provider's default unless they set their own `model`.
+        model: Default model for the speakers whose provider it belongs to.
+            Speakers on the other provider fall back to that provider's default
+            unless they set their own `model`.
         provider: Episode-wide default provider, itself overridden by
             `config.provider` and then by each speaker's `provider`.
 
     Raises ValueError if the script fails validation.
     """
-    title, speakers, segments, config = _validate_script(script, default_provider=provider)
+    title, speakers, segments, config = _validate_script(script, default_provider=provider, default_model=model)
     speaker_map: dict[str, Speaker] = {s["id"]: s for s in speakers}
-
-    estimated_duration = _estimate_duration(segments, speakers, config)
-    logger.info(
-        f"Podcast '{title}': {len(segments)} segments, {len(speakers)} speakers, ~{estimated_duration:.0f}s estimated"
-    )
 
     # Resolve each speaker's provider and model once, up front.
     providers: dict[str, TTSProvider] = {}
@@ -481,14 +579,13 @@ async def generate_podcast(
     # so segment-level and chunk-level parallelism share one budget — which is
     # what ElevenLabs' concurrency cap actually counts. OpenAI's limit is 0
     # (unbounded) by default, preserving the historical behavior exactly.
+    override = config.get("max_concurrency")
     limiters: dict[str, anyio.CapacityLimiter | None] = {}
-    for speaker_id, speaker_provider in providers.items():
-        if speaker_provider.name in limiters:
-            continue
-        limit = config.get("max_concurrency") or speaker_provider.max_concurrency(models[speaker_id])
-        limiters[speaker_provider.name] = anyio.CapacityLimiter(limit) if limit else None
+    for provider_name, derived in _derive_concurrency_limits(providers, models).items():
+        limit = override or derived
+        limiters[provider_name] = anyio.CapacityLimiter(limit) if limit else None
         if limit:
-            logger.info("Limiting %s to %d concurrent TTS requests", speaker_provider.name, limit)
+            logger.info("Limiting %s to %d concurrent TTS requests", provider_name, limit)
 
     render_mode: PodcastRenderMode = config.get("render_mode", DEFAULT_RENDER_MODE)
     units = _plan_render_units(segments, speaker_map, providers, models, render_mode)
@@ -504,16 +601,22 @@ async def generate_podcast(
             )
         else:
             logger.warning(
-                "render_mode='dialogue' but no run of 2+ consecutive turns shares a "
+                "render_mode='dialogue' but no run of 2+ consecutive turns in 2+ distinct voices shares a "
                 "dialogue-capable provider and model (eleven_v3) - rendering per segment"
             )
+
+    pause_ms_list = _build_pause_list(units, segments, config.get("default_pause_ms", 600))
+    estimated_duration = _estimate_duration(segments, speakers, pause_ms_list, config)
+    logger.info(
+        f"Podcast '{title}': {len(segments)} segments, {len(speakers)} speakers, ~{estimated_duration:.0f}s estimated"
+    )
 
     async def _gen_segment(i: int, segment: Segment) -> bytes:
         """Render one segment. Independent of the others, so #35's verify pass
         can re-invoke this for just the segments that failed QC."""
         speaker = speaker_map[segment["speaker"]]
         speaker_provider = providers[speaker["id"]]
-        speed = segment["speed_override"] if "speed_override" in segment else speaker["speed"]
+        speed, voice_settings = _resolve_segment_speech(segment, speaker)
         # `in`-check rather than `or`: an intentional empty-string override must
         # not silently fall back to the speaker's instructions.
         instructions = segment["instruction_override"] if "instruction_override" in segment else speaker["instructions"]
@@ -530,7 +633,7 @@ async def generate_podcast(
             # instructions is OpenAI-only; _validate_script already warned once
             # per ElevenLabs speaker that carries one.
             instructions=instructions if speaker_provider.name == "openai" else None,
-            voice_settings=speaker.get("voice_settings"),
+            voice_settings=voice_settings,
         )
         return await synthesize_speech(speaker_provider, request, limiter=limiters[speaker_provider.name])
 
@@ -570,17 +673,6 @@ async def generate_podcast(
 
     # Read by index, not completion order — the limiter only delays task entry.
     segment_bytes_list = [c.result() for c in captures]
-
-    # Pauses are per unit: a dialogue unit's internal gaps belong to the model,
-    # so only the pause after its final turn is applied here.
-    default_pause_ms = config.get("default_pause_ms", 600)
-    pause_ms_list: list[int] = []
-    for unit_index, unit in enumerate(units):
-        if unit_index == len(units) - 1:
-            pause_ms_list.append(0)
-        else:
-            last = segments[unit.indices[-1]]
-            pause_ms_list.append(last.get("pause_after", default_pause_ms))
 
     intro_ms = config.get("intro_silence_ms") or 0
     outro_ms = config.get("outro_silence_ms") or 0

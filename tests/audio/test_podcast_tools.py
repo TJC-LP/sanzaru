@@ -4,6 +4,8 @@ import pytest
 
 from sanzaru.tools.podcast import (
     PodcastResult,
+    RenderUnit,
+    _build_pause_list,
     _estimate_duration,
     _safe_title,
     _validate_script,
@@ -215,7 +217,7 @@ class TestEstimateDuration:
         segments = [{"speaker": "host", "text": text}]
         config = {"default_pause_ms": 0}
 
-        duration = _estimate_duration(segments, speakers, config)
+        duration = _estimate_duration(segments, speakers, [0], config)
         assert duration == pytest.approx(60.0)
 
     def test_faster_speed_reduces_duration(self):
@@ -228,21 +230,30 @@ class TestEstimateDuration:
         segments = [{"speaker": "host", "text": text}]
         config = {"default_pause_ms": 0}
 
-        duration = _estimate_duration(segments, speakers, config)
+        duration = _estimate_duration(segments, speakers, [0], config)
         assert duration == pytest.approx(30.0)
 
     def test_pause_contributes_to_duration(self):
-        """Pauses are included in estimated duration."""
-        text = "short"
+        """Only the pauses actually handed to the stitch step count."""
         speakers = [{"id": "host", "speed": 1.0}]
-        segments = [{"speaker": "host", "text": text}]
+        segments = [{"speaker": "host", "text": "short"}] * 2
         config = {"default_pause_ms": 1000}
 
-        duration_with_pause = _estimate_duration(segments, speakers, config)
-        config["default_pause_ms"] = 0
-        duration_no_pause = _estimate_duration(segments, speakers, config)
+        duration_with_pause = _estimate_duration(segments, speakers, [1000, 0], config)
+        duration_no_pause = _estimate_duration(segments, speakers, [0, 0], config)
 
         assert duration_with_pause - duration_no_pause == pytest.approx(1.0)
+
+    def test_pause_after_is_never_read_behind_the_pause_lists_back(self):
+        """The stitch step zeroes the trailing pause, so the estimate must too.
+        The pause list is the single source of truth: a `pause_after` the list
+        does not carry is silence the output never contains."""
+        speakers = [{"id": "host", "speed": 1.0}]
+        segments = [{"speaker": "host", "text": "word", "pause_after": 5000}]
+        config = {"default_pause_ms": 5000}
+
+        # One word at 1.0x is 60/150 = 0.4s, and nothing else.
+        assert _estimate_duration(segments, speakers, [0], config) == pytest.approx(0.4)
 
     def test_intro_outro_silence_included(self):
         """Intro and outro silence contribute to total duration."""
@@ -255,9 +266,9 @@ class TestEstimateDuration:
             "outro_silence_ms": 1000,
         }
 
-        duration = _estimate_duration(segments, speakers, config)
+        duration = _estimate_duration(segments, speakers, [0], config)
         config_no_silence = {"default_pause_ms": 0}
-        duration_no_silence = _estimate_duration(segments, speakers, config_no_silence)
+        duration_no_silence = _estimate_duration(segments, speakers, [0], config_no_silence)
 
         assert duration - duration_no_silence == pytest.approx(1.5)
 
@@ -271,7 +282,7 @@ class TestEstimateDuration:
         segments = [{"speaker": "host", "text": text, "speed_override": 2.0}]
         config = {"default_pause_ms": 0}
 
-        duration = _estimate_duration(segments, speakers, config)
+        duration = _estimate_duration(segments, speakers, [0], config)
         assert duration == pytest.approx(30.0)
 
     def test_speed_override_zero_not_ignored(self):
@@ -281,7 +292,7 @@ class TestEstimateDuration:
         segments = [{"speaker": "host", "text": text, "speed_override": 0.25}]
         config = {"default_pause_ms": 0}
 
-        duration = _estimate_duration(segments, speakers, config)
+        duration = _estimate_duration(segments, speakers, [0], config)
         # At 0.25x speed: 150 * 60 / (150 * 0.25) = 240s
         assert duration == pytest.approx(240.0)
 
@@ -292,8 +303,35 @@ class TestEstimateDuration:
         segments = [{"speaker": "host", "text": text}]
         config = {"default_pause_ms": 0}  # No intro/outro keys
 
-        duration = _estimate_duration(segments, speakers, config)
+        duration = _estimate_duration(segments, speakers, [0], config)
         assert duration >= 0
+
+
+@pytest.mark.unit
+class TestBuildPauseList:
+    """One pause per render unit, taken from that unit's LAST segment."""
+
+    def test_one_pause_per_segment_and_no_trailing_pause(self):
+        segments = [{"speaker": "a", "text": "x"} for _ in range(3)]
+        units = [RenderUnit((0,), "a", False), RenderUnit((1,), "a", False), RenderUnit((2,), "a", False)]
+
+        assert _build_pause_list(units, segments, 400) == [400, 400, 0]
+
+    def test_dialogue_unit_takes_its_last_segments_pause(self):
+        segments = [
+            {"speaker": "a", "text": "x", "pause_after": 111},
+            {"speaker": "b", "text": "x", "pause_after": 222},
+            {"speaker": "a", "text": "x"},
+        ]
+        units = [RenderUnit((0, 1), "a", True), RenderUnit((2,), "a", False)]
+
+        # 111 belongs to a turn inside the run; the model paces that gap.
+        assert _build_pause_list(units, segments, 400) == [222, 0]
+
+    def test_single_unit_gets_no_pause_at_all(self):
+        segments = [{"speaker": "a", "text": "x", "pause_after": 5000}]
+
+        assert _build_pause_list([RenderUnit((0,), "a", False)], segments, 400) == [0]
 
 
 @pytest.mark.unit
@@ -539,6 +577,25 @@ class TestValidateScriptProviders:
         with pytest.raises(ValueError, match="speed_override must be between 0.7 and 1.2"):
             _validate_script(minimal_script)
 
+    def test_speed_override_is_probed_against_the_speakers_model(self, minimal_script):
+        """0.9 is inside ElevenLabs' 0.7-1.2 range, so only the per-model rule can
+        reject it — and the speaker pass only ever probed speaker['speed'].
+
+        Without the per-segment probe this raises inside the task group, after
+        sibling segments have already spent API calls.
+        """
+        minimal_script["speakers"][0].update({"provider": "elevenlabs", "voice": "v1", "model": "eleven_v3"})
+        minimal_script["segments"][0]["speed_override"] = 0.9
+        with pytest.raises(ValueError, match="Segment 0 speed_override: eleven_v3 does not support speed"):
+            _validate_script(minimal_script)
+
+    def test_supported_speed_override_passes_the_probe(self, minimal_script):
+        minimal_script["speakers"][0].update(
+            {"provider": "elevenlabs", "voice": "v1", "model": "eleven_multilingual_v2"}
+        )
+        minimal_script["segments"][0]["speed_override"] = 0.9
+        _validate_script(minimal_script)
+
     def test_cross_provider_model_rejected(self, minimal_script):
         minimal_script["speakers"][0].update({"provider": "elevenlabs", "voice": "v1", "model": "tts-1"})
         with pytest.raises(ValueError, match="not an ElevenLabs model"):
@@ -552,6 +609,16 @@ class TestValidateScriptProviders:
     def test_voice_settings_wrong_type(self, minimal_script):
         minimal_script["speakers"][0].update(
             {"provider": "elevenlabs", "voice": "v1", "voice_settings": {"stability": "high"}}
+        )
+        with pytest.raises(ValueError, match="voice_settings\\['stability'\\] must be a number"):
+            _validate_script(minimal_script)
+
+    @pytest.mark.parametrize("value", [True, False])
+    def test_voice_settings_bool_is_not_a_number(self, minimal_script, value):
+        """isinstance(True, int) is True, so bool has to be excluded explicitly —
+        otherwise `{"stability": true}` clears both the type and range checks."""
+        minimal_script["speakers"][0].update(
+            {"provider": "elevenlabs", "voice": "v1", "voice_settings": {"stability": value}}
         )
         with pytest.raises(ValueError, match="voice_settings\\['stability'\\] must be a number"):
             _validate_script(minimal_script)
@@ -698,6 +765,49 @@ async def test_empty_instruction_override_is_honored(mocker, podcast_env):
     await generate_podcast(script)
 
     assert client.audio.speech.create.await_args.kwargs["instructions"] == ""
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_speed_override_beats_the_speakers_voice_settings_speed(mocker, podcast_env, fake_elevenlabs):
+    """The segment override is the most specific value in the script, so it must
+    reach the API — a speaker-level voice_settings['speed'] would otherwise
+    swallow it, since that is the knob ElevenLabs actually reads."""
+    from sanzaru.tools.podcast import generate_podcast
+
+    el_client = fake_elevenlabs.Client(chunks=(b"EL_MP3",))
+    mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=el_client)
+
+    script = {
+        "title": "override_speed_ep",
+        "speakers": [
+            {
+                "id": "guest",
+                "name": "Sam",
+                "voice": "voice_xyz",
+                "speed": 1.0,
+                "instructions": "",
+                "provider": "elevenlabs",
+                "model": "eleven_multilingual_v2",
+                "voice_settings": {"stability": 0.4, "speed": 1.1},
+            }
+        ],
+        "segments": [
+            {"speaker": "guest", "text": "Normal pace."},
+            {"speaker": "guest", "text": "Slower now.", "speed_override": 0.8},
+        ],
+        "config": {"default_pause_ms": 300, "normalize_loudness": True, "output_format": "mp3"},
+    }
+
+    await generate_podcast(script)
+
+    calls = {call["text"]: call["voice_settings"] for call in el_client.text_to_speech.calls}
+    assert calls["Normal pace."].speed == 1.1
+    assert calls["Slower now."].speed == 0.8
+    # Only speed is replaced; the rest of the speaker's tuning still applies.
+    assert calls["Slower now."].stability == 0.4
+    # And the speaker's own dict is untouched, so segment order cannot matter.
+    assert script["speakers"][0]["voice_settings"]["speed"] == 1.1
 
 
 @pytest.mark.integration
@@ -874,3 +984,211 @@ def test_stitch_normalizes_mixed_sample_rates(tmp_path):
     # 200 intro + 3x500 speech + 300 + 300 pauses + 200 outro = 2500ms.
     # A resampling bug would stretch or squash the 24kHz segments.
     assert 2400 <= len(final) <= 2600
+
+
+# ==================== THE `model` ARGUMENT ====================
+# It used to be dropped for anything but OpenAI speakers, so
+# `--provider elevenlabs --model eleven_flash_v2_5` silently rendered on
+# eleven_v3 — wrong chunk budget, wrong concurrency cap, wrong price.
+
+
+def _elevenlabs_script(**speaker_extra):
+    speaker = {"id": "host", "name": "Alex", "voice": "v1", "speed": 1.0, "instructions": "", "provider": "elevenlabs"}
+    speaker.update(speaker_extra)
+    return {
+        "title": "model_ep",
+        "speakers": [speaker],
+        "segments": [{"speaker": "host", "text": "Hello there."}],
+        "config": {"default_pause_ms": 200, "normalize_loudness": True, "output_format": "mp3"},
+    }
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_elevenlabs_model_argument_reaches_the_api(mocker, podcast_env, fake_elevenlabs):
+    client = fake_elevenlabs.Client(chunks=(b"EL",))
+    mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=client)
+    from sanzaru.tools.podcast import generate_podcast
+
+    await generate_podcast(_elevenlabs_script(), model="eleven_flash_v2_5", provider="elevenlabs")
+
+    assert client.text_to_speech.calls[0]["model_id"] == "eleven_flash_v2_5"
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_speaker_model_still_beats_the_argument(mocker, podcast_env, fake_elevenlabs):
+    client = fake_elevenlabs.Client(chunks=(b"EL",))
+    mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=client)
+    from sanzaru.tools.podcast import generate_podcast
+
+    await generate_podcast(
+        _elevenlabs_script(model="eleven_multilingual_v2"),
+        model="eleven_flash_v2_5",
+        provider="elevenlabs",
+    )
+
+    assert client.text_to_speech.calls[0]["model_id"] == "eleven_multilingual_v2"
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_foreign_model_falls_back_per_provider(mocker, podcast_env, fake_elevenlabs):
+    """A mixed episode gets one `model`; the provider it does not name must not explode."""
+    openai_client = _openai_client(mocker)
+    el_client = fake_elevenlabs.Client(chunks=(b"EL",))
+    mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=el_client)
+    from sanzaru.tools.podcast import generate_podcast
+
+    script = {
+        "title": "mixed_model_ep",
+        "speakers": [
+            {"id": "host", "name": "Alex", "voice": "ash", "speed": 1.0, "instructions": "Warm", "provider": "openai"},
+            {"id": "guest", "name": "Sam", "voice": "v1", "speed": 1.0, "instructions": "", "provider": "elevenlabs"},
+        ],
+        "segments": [{"speaker": "host", "text": "Hi."}, {"speaker": "guest", "text": "Hello."}],
+        "config": {"default_pause_ms": 200, "normalize_loudness": True, "output_format": "mp3"},
+    }
+
+    await generate_podcast(script, model="eleven_flash_v2_5", provider="elevenlabs")
+
+    assert el_client.text_to_speech.calls[0]["model_id"] == "eleven_flash_v2_5"
+    # OpenAI's resolve_model accepts unknown names, so a foreign one would
+    # otherwise sail through to the API as-is.
+    assert openai_client.audio.speech.create.await_args.kwargs["model"] == "gpt-4o-mini-tts"
+
+
+@pytest.mark.audio
+@pytest.mark.unit
+def test_validation_checks_the_model_the_render_will_use():
+    """Validation ran against a hardcoded "gpt-4o-mini-tts", so an ElevenLabs
+    episode was rejected (or accepted) on the wrong model's rules.
+
+    speed=1.1 is legal on eleven_flash_v2_5 and rejected by eleven_v3, so this
+    also pins the error message to the model the caller actually chose.
+    """
+    from sanzaru.tools.podcast import _validate_script
+
+    script = _elevenlabs_script()
+    script["speakers"][0]["speed"] = 1.1
+
+    _validate_script(script, default_provider="elevenlabs", default_model="eleven_flash_v2_5")
+
+    with pytest.raises(ValueError, match="eleven_v3 does not support speed adjustment"):
+        _validate_script(script, default_provider="elevenlabs", default_model="eleven_v3")
+
+
+# ==================== DERIVED CONCURRENCY LIMITS ====================
+# Every other concurrency test pins config.max_concurrency, which bypasses the
+# derivation entirely. These exercise the derived path.
+
+
+def _mixed_model_script(first: str, second: str):
+    """One ElevenLabs episode using two models with different caps (flash 4, v3 2)."""
+    return {
+        "title": f"caps_{first}_{second}",
+        "speakers": [
+            {
+                "id": name,
+                "name": name,
+                "voice": f"v_{name}",
+                "speed": 1.0,
+                "instructions": "",
+                "provider": "elevenlabs",
+                "model": model,
+            }
+            for name, model in (("first", first), ("second", second))
+        ],
+        # Enough segments per speaker that a cap of 4 is actually reachable.
+        "segments": [{"speaker": s, "text": f"Segment {i}."} for i in range(4) for s in ("first", "second")],
+        "config": {"default_pause_ms": 200, "normalize_loudness": True, "output_format": "mp3"},
+    }
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [("eleven_flash_v2_5", "eleven_v3"), ("eleven_v3", "eleven_flash_v2_5")],
+)
+async def test_provider_limiter_takes_the_smallest_model_cap(mocker, podcast_env, fake_elevenlabs, first, second):
+    """One limiter serves both models, so the tighter cap has to win.
+
+    Listing the flash speaker first used to yield a limiter of 4 and run the
+    eleven_v3 segments four-wide — the case that returns HTTP 429 on Free tier.
+    """
+    import anyio
+
+    from sanzaru.tools.podcast import generate_podcast
+
+    in_flight = 0
+    peak = 0
+
+    async def track():
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await anyio.sleep(0)
+        in_flight -= 1
+
+    client = fake_elevenlabs.Client(chunks=(b"EL",), on_call=track)
+    mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=client)
+
+    await generate_podcast(_mixed_model_script(first, second), provider="elevenlabs")
+
+    assert peak == 2
+    assert len(client.text_to_speech.calls) == 8
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_config_max_concurrency_still_overrides_the_derived_cap(mocker, podcast_env, fake_elevenlabs):
+    """A paid tier raises the cap past what the model table knows about."""
+    import anyio
+
+    from sanzaru.tools.podcast import generate_podcast
+
+    in_flight = 0
+    peak = 0
+
+    async def track():
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await anyio.sleep(0)
+        in_flight -= 1
+
+    client = fake_elevenlabs.Client(chunks=(b"EL",), on_call=track)
+    mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=client)
+
+    script = _mixed_model_script("eleven_flash_v2_5", "eleven_v3")
+    script["config"]["max_concurrency"] = 8
+
+    await generate_podcast(script, provider="elevenlabs")
+
+    assert peak == 8
+
+
+@pytest.mark.audio
+@pytest.mark.unit
+def test_unbounded_never_wins_a_min_against_a_real_cap():
+    """0 means unbounded, so min() would silently pin a provider to zero."""
+    from sanzaru.tools.podcast import _derive_concurrency_limits
+
+    class FakeProvider:
+        def __init__(self, name, caps):
+            self.name = name
+            self._caps = caps
+
+        def max_concurrency(self, model):
+            return self._caps[model]
+
+    capped = FakeProvider("elevenlabs", {"a": 0, "b": 2})
+    unbounded = FakeProvider("openai", {"c": 0, "d": 0})
+
+    limits = _derive_concurrency_limits(
+        {"s1": capped, "s2": capped, "s3": unbounded, "s4": unbounded},
+        {"s1": "a", "s2": "b", "s3": "c", "s4": "d"},
+    )
+
+    assert limits == {"elevenlabs": 2, "openai": 0}

@@ -29,8 +29,9 @@ export OPENAI_API_KEY=sk-...
 ```bash
 uv add "sanzaru[elevenlabs]"
 export ELEVENLABS_API_KEY=...
-# Optional: lower if renders hit HTTP 429 (their cap is per subscription tier)
-export SANZARU_ELEVENLABS_MAX_CONCURRENCY=3
+# Optional: defaults are the Free-tier caps (2, or 4 on flash/turbo). Raise it on
+# a paid tier; lower it if renders still hit HTTP 429.
+export SANZARU_ELEVENLABS_MAX_CONCURRENCY=2
 ```
 
 Differences that matter when switching:
@@ -82,10 +83,11 @@ Full rationale and measured numbers: [simulated-podcasts.md](simulated-podcasts.
 - **`dialogue`** — consecutive `eleven_v3` turns are sent as one request and the model paces the
   exchange itself. Distinctly more natural conversation.
 
-Grouping is per-run: turns that can't join one (OpenAI speakers, other models, lone turns) still
-render per segment, so mixed-provider episodes work in either mode. Inside a run, `pause_after` and
-per-speaker `voice_settings` don't apply — use `config.dialogue_stability` (0–1) instead. Runs
-split at turn boundaries under 5000 characters.
+Grouping is per-run: turns that can't join one (OpenAI speakers, other models, lone turns,
+stretches in one voice, turns that alone fill the 2000-character request budget) still render per segment, so mixed-provider
+episodes work in either mode. Inside a run, `pause_after` and per-speaker `voice_settings` don't
+apply — use `config.dialogue_stability` (0–1) instead. Runs split at turn boundaries to stay under
+2000 characters, the ceiling ElevenLabs documents for a reliable dialogue request.
 
 ## Available Tools
 

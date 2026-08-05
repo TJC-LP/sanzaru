@@ -76,14 +76,21 @@ DEFAULT_RENDER_MODE: PodcastRenderMode = "segments"
 # Only eleven_v3 is trained for multi-speaker dialogue.
 ELEVENLABS_DIALOGUE_MODELS: frozenset[str] = frozenset({"eleven_v3"})
 
-# Per-request budget for the whole conversation, from GET /v1/models
-# (maximum_text_length_per_request for eleven_v3). Longer runs are split at
-# turn boundaries into several dialogue calls.
-ELEVENLABS_DIALOGUE_MAX_CHARS = 5000
+# Per-request budget for the whole conversation, summed over inputs[].text.
+# /v1/text-to-dialogue documents 2,000 as the ceiling for reliable generation:
+# past it a request "can terminate early in streaming responses", which our
+# stream reader cannot tell apart from a complete take — it would ship a
+# truncated episode as a success. Not the text-to-speech per-request budget
+# (ELEVENLABS_MAX_CHARS), which is far larger. Longer runs are split at turn
+# boundaries into several dialogue calls.
+ELEVENLABS_DIALOGUE_MAX_CHARS = 2000
 
-# A dialogue run needs at least this many turns to be worth batching; a single
-# turn gains nothing from the dialogue endpoint and loses per-speaker settings.
-MIN_DIALOGUE_TURNS = 2
+# Distinct voices a run needs before batching is worth it. A stretch of turns in
+# one voice has no turn-taking for the model to pace, so a dialogue request buys
+# nothing and silently drops the pause_after between those paragraph beats. At 2
+# this also excludes a lone turn, which would additionally lose its per-speaker
+# voice_settings.
+MIN_DIALOGUE_SPEAKERS = 2
 
 # ElevenLabs speed lives in voice_settings and has a much narrower range than
 # OpenAI's 0.25-4.0. eleven_v3 does not support it at all.

@@ -163,7 +163,7 @@ detail — `podcast._stitch_audio` decodes every segment with `AudioSegment.from
 | `voice_settings` | rejected | stability / similarity_boost / style / use_speaker_boost / speed |
 | Speed | 0.25–4.0 | 0.7–1.2; **eleven_v3 rejects any change** |
 | Chunk limit | 4000 chars | 3000 (v3) / 10000 (multilingual) / 40000 (flash, turbo) |
-| Concurrency | unbounded | 3–4 by model, capped per subscription tier |
+| Concurrency | unbounded | 2, or 4 on flash/turbo (Free-tier caps), per subscription tier |
 
 Speed ranges are **not** rescaled across providers — an out-of-range value is a `ValueError`, so
 `speed=2.0` never silently means two different things.
@@ -185,8 +185,17 @@ happens in `_plan_render_units`, which returns `RenderUnit`s — each either one
 Everything downstream (limiters, stitching, pause list) works in units, and a unit's pause comes
 from its *last* segment.
 
-Turns that cannot join a run (OpenAI speakers, non-`eleven_v3` models, lone turns) fall back to
-segment units, which is what keeps dialogue mode compatible with mixed-provider episodes.
+Turns that cannot join a run fall back to segment units, which is what keeps dialogue mode
+compatible with mixed-provider episodes. A run is only batched when it carries
+≥`MIN_DIALOGUE_SPEAKERS` distinct *resolved voices* (not speaker ids — two speaker entries can
+share one voice id) — a monologue has no turn-taking to pace, so batching it would cost a dialogue
+request and swallow its `pause_after`s for nothing; at 2 that rule also excludes a lone turn.
+Excluded outright: OpenAI speakers and non-`eleven_v3` models. Runs are split at turn boundaries to
+stay within `ELEVENLABS_DIALOGUE_MAX_CHARS` (2000, the ceiling `/v1/text-to-dialogue` documents for
+reliable generation — past it the stream can terminate early, which reads as a short but successful
+take, so `synthesize_dialogue` refuses over-budget requests outright). That budget is the only
+length rule, and it sits below every `max_chunk_chars`: a turn too long to share a dialogue request
+opens a run of its own, which closes as a single-voice run — a segment unit, chunked normally.
 
 Dialogue is a **separate** `DialogueProvider` Protocol (`runtime_checkable`, narrowed by
 `as_dialogue_provider`) rather than a method on `TTSProvider`, so OpenAI isn't forced to stub a
@@ -401,7 +410,7 @@ LOG_LEVEL="INFO"  # DEBUG, INFO, WARNING, ERROR (defaults to INFO)
 
 # ElevenLabs TTS provider — needs `uv pip install 'sanzaru[elevenlabs]'`
 ELEVENLABS_API_KEY="..."
-SANZARU_ELEVENLABS_MAX_CONCURRENCY=3  # lower if podcast renders hit HTTP 429
+SANZARU_ELEVENLABS_MAX_CONCURRENCY=2  # Free-tier cap (4 on flash/turbo); raise on a paid tier
 SANZARU_OPENAI_MAX_CONCURRENCY=0      # 0 = unbounded (default)
 
 # Simulated podcasts (needs only OPENAI_API_KEY + the [audio] extra)
