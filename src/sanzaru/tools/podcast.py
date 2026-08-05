@@ -378,9 +378,10 @@ async def generate_podcast(
         # `in`-check rather than `or`: an intentional empty-string override must
         # not silently fall back to the speaker's instructions.
         instructions = segment["instruction_override"] if "instruction_override" in segment else speaker["instructions"]
+        # "Queued", not "Generating": the limiter is acquired downstream in
+        # synthesize_speech, so this line fires before the request goes out.
         logger.info(
-            f"Generating segment {i + 1}/{len(segments)} "
-            f"[{speaker['name']} / {speaker['voice']} / {speaker_provider.name}]"
+            f"Queued segment {i + 1}/{len(segments)} [{speaker['name']} / {speaker['voice']} / {speaker_provider.name}]"
         )
         request = SpeechRequest(
             text=segment["text"],

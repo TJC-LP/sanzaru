@@ -84,13 +84,15 @@ class TestResolution:
 
     def test_elevenlabs_concurrency_default_and_env_override(self, monkeypatch):
         provider = get_provider("elevenlabs")
-        assert provider.max_concurrency("eleven_v3") == 3
+        # 2 is the Free-tier cap for non-Flash models; 3 returns HTTP 429 there.
+        assert provider.max_concurrency("eleven_v3") == 2
+        assert provider.max_concurrency("eleven_flash_v2_5") == 4
         monkeypatch.setenv("SANZARU_ELEVENLABS_MAX_CONCURRENCY", "7")
         assert provider.max_concurrency("eleven_v3") == 7
 
     def test_malformed_concurrency_env_falls_back(self, monkeypatch):
         monkeypatch.setenv("SANZARU_ELEVENLABS_MAX_CONCURRENCY", "lots")
-        assert get_provider("elevenlabs").max_concurrency("eleven_v3") == 3
+        assert get_provider("elevenlabs").max_concurrency("eleven_v3") == 2
 
 
 # ---------- validation ----------

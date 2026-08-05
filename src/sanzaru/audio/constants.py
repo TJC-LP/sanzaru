@@ -50,11 +50,12 @@ ELEVENLABS_MAX_CHARS: dict[ElevenLabsModel, int] = {
 }
 
 # Concurrent requests allowed in parallel. ElevenLabs caps this per subscription
-# tier (Flash/Turbo 4→30, other models 2→15); these are Free-tier-safe floors,
-# overridable with SANZARU_ELEVENLABS_MAX_CONCURRENCY.
+# tier (Flash/Turbo 4→30, other models 2→15). These are the Free-tier limits:
+# verified against a live Free account, 3 concurrent v3 requests returns HTTP 429.
+# Paid tiers should raise this with SANZARU_ELEVENLABS_MAX_CONCURRENCY.
 ELEVENLABS_DEFAULT_CONCURRENCY: dict[ElevenLabsModel, int] = {
-    "eleven_v3": 3,
-    "eleven_multilingual_v2": 3,
+    "eleven_v3": 2,
+    "eleven_multilingual_v2": 2,
     "eleven_flash_v2_5": 4,
     "eleven_turbo_v2_5": 4,
 }
