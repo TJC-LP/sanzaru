@@ -1,5 +1,10 @@
 """Tests for TTSService.create_speech across providers."""
 
+import json
+import os
+import subprocess
+import sys
+
 import pytest
 
 from sanzaru.audio.services import TTSService
@@ -112,6 +117,80 @@ async def test_elevenlabs_requires_a_voice(mocker, storage, fake_elevenlabs):
 async def test_unknown_provider_raises(storage):
     with pytest.raises(ValueError, match="unknown TTS provider"):
         await TTSService().create_speech(text_prompt="Hello", provider="azure")
+
+
+# ==================== create_audio TOOL DEFAULTS ====================
+# The tool layer used to hardcode the OpenAI model/voice pair, which made
+# provider="elevenlabs" unreachable: resolve_model rejected "gpt-4o-mini-tts",
+# and fixing only the model sent "alloy" upstream as a voice id.
+
+
+@pytest.mark.anyio
+async def test_tool_elevenlabs_uses_the_provider_default_model(mocker, storage, fake_elevenlabs):
+    from sanzaru.tools.audio import create_audio
+
+    client = fake_elevenlabs.Client(chunks=(b"EL",))
+    mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=client)
+
+    await create_audio(text_prompt="Hello", provider="elevenlabs", voice="voice_abc")
+
+    assert client.text_to_speech.calls[0]["model_id"] == "eleven_v3"
+
+
+@pytest.mark.anyio
+async def test_tool_elevenlabs_without_a_voice_asks_for_a_voice_id(mocker, storage, fake_elevenlabs):
+    """Not "alloy is not an ElevenLabs voice" — the OpenAI default must not leak through."""
+    from sanzaru.tools.audio import create_audio
+
+    client = fake_elevenlabs.Client()
+    mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=client)
+
+    with pytest.raises(ValueError, match="requires an explicit voice id"):
+        await create_audio(text_prompt="Hello", provider="elevenlabs")
+
+    assert client.text_to_speech.calls == []
+
+
+@pytest.mark.anyio
+async def test_tool_openai_defaults_are_unchanged(openai_client, storage):
+    from sanzaru.tools.audio import create_audio
+
+    await create_audio(text_prompt="Hello")
+
+    kwargs = openai_client.audio.speech.create.call_args.kwargs
+    assert kwargs["model"] == "gpt-4o-mini-tts"
+    assert kwargs["voice"] == "alloy"
+
+
+def test_mcp_create_audio_schema_defers_to_the_provider(tmp_path):
+    """The JSON schema agents see must not pin model/voice to the OpenAI pair.
+
+    Audio tools register at import time behind check_audio_available(), so the
+    media path has to be set before `sanzaru.server` is imported — hence the
+    subprocess.
+    """
+    pytest.importorskip("ffmpeg")
+    pytest.importorskip("pydub")
+
+    code = (
+        "import asyncio, json; from sanzaru.server import mcp; "
+        "tools = asyncio.run(mcp.list_tools()); "
+        "tool = next(t for t in tools if t.name == 'create_audio'); "
+        "print(json.dumps(tool.inputSchema))"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code],
+        capture_output=True,
+        text=True,
+        env={**os.environ, "SANZARU_MEDIA_PATH": str(tmp_path)},
+    )
+
+    assert proc.returncode == 0, proc.stderr
+    schema = json.loads(proc.stdout)
+    assert schema["properties"]["model"]["default"] is None
+    assert schema["properties"]["voice"]["default"] is None
+    # Optional, not required — agents that omit them still get the OpenAI defaults.
+    assert schema.get("required") == ["text_prompt"]
 
 
 # ==================== FEATURE DETECTION ====================

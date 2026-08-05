@@ -899,3 +899,211 @@ def test_stitch_normalizes_mixed_sample_rates(tmp_path):
     # 200 intro + 3x500 speech + 300 + 300 pauses + 200 outro = 2500ms.
     # A resampling bug would stretch or squash the 24kHz segments.
     assert 2400 <= len(final) <= 2600
+
+
+# ==================== THE `model` ARGUMENT ====================
+# It used to be dropped for anything but OpenAI speakers, so
+# `--provider elevenlabs --model eleven_flash_v2_5` silently rendered on
+# eleven_v3 — wrong chunk budget, wrong concurrency cap, wrong price.
+
+
+def _elevenlabs_script(**speaker_extra):
+    speaker = {"id": "host", "name": "Alex", "voice": "v1", "speed": 1.0, "instructions": "", "provider": "elevenlabs"}
+    speaker.update(speaker_extra)
+    return {
+        "title": "model_ep",
+        "speakers": [speaker],
+        "segments": [{"speaker": "host", "text": "Hello there."}],
+        "config": {"default_pause_ms": 200, "normalize_loudness": True, "output_format": "mp3"},
+    }
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_elevenlabs_model_argument_reaches_the_api(mocker, podcast_env, fake_elevenlabs):
+    client = fake_elevenlabs.Client(chunks=(b"EL",))
+    mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=client)
+    from sanzaru.tools.podcast import generate_podcast
+
+    await generate_podcast(_elevenlabs_script(), model="eleven_flash_v2_5", provider="elevenlabs")
+
+    assert client.text_to_speech.calls[0]["model_id"] == "eleven_flash_v2_5"
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_speaker_model_still_beats_the_argument(mocker, podcast_env, fake_elevenlabs):
+    client = fake_elevenlabs.Client(chunks=(b"EL",))
+    mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=client)
+    from sanzaru.tools.podcast import generate_podcast
+
+    await generate_podcast(
+        _elevenlabs_script(model="eleven_multilingual_v2"),
+        model="eleven_flash_v2_5",
+        provider="elevenlabs",
+    )
+
+    assert client.text_to_speech.calls[0]["model_id"] == "eleven_multilingual_v2"
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_foreign_model_falls_back_per_provider(mocker, podcast_env, fake_elevenlabs):
+    """A mixed episode gets one `model`; the provider it does not name must not explode."""
+    openai_client = _openai_client(mocker)
+    el_client = fake_elevenlabs.Client(chunks=(b"EL",))
+    mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=el_client)
+    from sanzaru.tools.podcast import generate_podcast
+
+    script = {
+        "title": "mixed_model_ep",
+        "speakers": [
+            {"id": "host", "name": "Alex", "voice": "ash", "speed": 1.0, "instructions": "Warm", "provider": "openai"},
+            {"id": "guest", "name": "Sam", "voice": "v1", "speed": 1.0, "instructions": "", "provider": "elevenlabs"},
+        ],
+        "segments": [{"speaker": "host", "text": "Hi."}, {"speaker": "guest", "text": "Hello."}],
+        "config": {"default_pause_ms": 200, "normalize_loudness": True, "output_format": "mp3"},
+    }
+
+    await generate_podcast(script, model="eleven_flash_v2_5", provider="elevenlabs")
+
+    assert el_client.text_to_speech.calls[0]["model_id"] == "eleven_flash_v2_5"
+    # OpenAI's resolve_model accepts unknown names, so a foreign one would
+    # otherwise sail through to the API as-is.
+    assert openai_client.audio.speech.create.await_args.kwargs["model"] == "gpt-4o-mini-tts"
+
+
+@pytest.mark.audio
+@pytest.mark.unit
+def test_validation_checks_the_model_the_render_will_use():
+    """Validation ran against a hardcoded "gpt-4o-mini-tts", so an ElevenLabs
+    episode was rejected (or accepted) on the wrong model's rules.
+
+    speed=1.1 is legal on eleven_flash_v2_5 and rejected by eleven_v3, so this
+    also pins the error message to the model the caller actually chose.
+    """
+    from sanzaru.tools.podcast import _validate_script
+
+    script = _elevenlabs_script()
+    script["speakers"][0]["speed"] = 1.1
+
+    _validate_script(script, default_provider="elevenlabs", default_model="eleven_flash_v2_5")
+
+    with pytest.raises(ValueError, match="eleven_v3 does not support speed adjustment"):
+        _validate_script(script, default_provider="elevenlabs", default_model="eleven_v3")
+
+
+# ==================== DERIVED CONCURRENCY LIMITS ====================
+# Every other concurrency test pins config.max_concurrency, which bypasses the
+# derivation entirely. These exercise the derived path.
+
+
+def _mixed_model_script(first: str, second: str):
+    """One ElevenLabs episode using two models with different caps (flash 4, v3 2)."""
+    return {
+        "title": f"caps_{first}_{second}",
+        "speakers": [
+            {
+                "id": name,
+                "name": name,
+                "voice": f"v_{name}",
+                "speed": 1.0,
+                "instructions": "",
+                "provider": "elevenlabs",
+                "model": model,
+            }
+            for name, model in (("first", first), ("second", second))
+        ],
+        # Enough segments per speaker that a cap of 4 is actually reachable.
+        "segments": [{"speaker": s, "text": f"Segment {i}."} for i in range(4) for s in ("first", "second")],
+        "config": {"default_pause_ms": 200, "normalize_loudness": True, "output_format": "mp3"},
+    }
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("first", "second"),
+    [("eleven_flash_v2_5", "eleven_v3"), ("eleven_v3", "eleven_flash_v2_5")],
+)
+async def test_provider_limiter_takes_the_smallest_model_cap(mocker, podcast_env, fake_elevenlabs, first, second):
+    """One limiter serves both models, so the tighter cap has to win.
+
+    Listing the flash speaker first used to yield a limiter of 4 and run the
+    eleven_v3 segments four-wide — the case that returns HTTP 429 on Free tier.
+    """
+    import anyio
+
+    from sanzaru.tools.podcast import generate_podcast
+
+    in_flight = 0
+    peak = 0
+
+    async def track():
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await anyio.sleep(0)
+        in_flight -= 1
+
+    client = fake_elevenlabs.Client(chunks=(b"EL",), on_call=track)
+    mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=client)
+
+    await generate_podcast(_mixed_model_script(first, second), provider="elevenlabs")
+
+    assert peak == 2
+    assert len(client.text_to_speech.calls) == 8
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_config_max_concurrency_still_overrides_the_derived_cap(mocker, podcast_env, fake_elevenlabs):
+    """A paid tier raises the cap past what the model table knows about."""
+    import anyio
+
+    from sanzaru.tools.podcast import generate_podcast
+
+    in_flight = 0
+    peak = 0
+
+    async def track():
+        nonlocal in_flight, peak
+        in_flight += 1
+        peak = max(peak, in_flight)
+        await anyio.sleep(0)
+        in_flight -= 1
+
+    client = fake_elevenlabs.Client(chunks=(b"EL",), on_call=track)
+    mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=client)
+
+    script = _mixed_model_script("eleven_flash_v2_5", "eleven_v3")
+    script["config"]["max_concurrency"] = 8
+
+    await generate_podcast(script, provider="elevenlabs")
+
+    assert peak == 8
+
+
+@pytest.mark.audio
+@pytest.mark.unit
+def test_unbounded_never_wins_a_min_against_a_real_cap():
+    """0 means unbounded, so min() would silently pin a provider to zero."""
+    from sanzaru.tools.podcast import _derive_concurrency_limits
+
+    class FakeProvider:
+        def __init__(self, name, caps):
+            self.name = name
+            self._caps = caps
+
+        def max_concurrency(self, model):
+            return self._caps[model]
+
+    capped = FakeProvider("elevenlabs", {"a": 0, "b": 2})
+    unbounded = FakeProvider("openai", {"c": 0, "d": 0})
+
+    limits = _derive_concurrency_limits(
+        {"s1": capped, "s2": capped, "s3": unbounded, "s4": unbounded},
+        {"s1": "a", "s2": "b", "s3": "c", "s4": "d"},
+    )
+
+    assert limits == {"elevenlabs": 2, "openai": 0}

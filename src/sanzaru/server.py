@@ -303,8 +303,10 @@ if check_audio_available():
     @mcp.tool(description=CREATE_AUDIO, annotations=WRITE_OPEN)
     async def create_audio(
         text_prompt: str,
-        model: SpeechModel | ElevenLabsModel = "gpt-4o-mini-tts",
-        voice: TTSVoice | str = "alloy",
+        # None so each provider resolves its own default — hardcoding the OpenAI
+        # pair here made provider="elevenlabs" unreachable from MCP.
+        model: SpeechModel | ElevenLabsModel | None = None,
+        voice: TTSVoice | str | None = None,
         instructions: str | None = None,
         speed: float = 1.0,
         output_filename: str | None = None,

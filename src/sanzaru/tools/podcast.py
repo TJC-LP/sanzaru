@@ -25,6 +25,7 @@ from pydub import AudioSegment  # type: ignore[import-untyped]
 from pydub.effects import normalize as pydub_normalize  # type: ignore[import-untyped]
 
 from ..audio.constants import (
+    ELEVENLABS_MODELS,
     ELEVENLABS_SPEED_RANGE,
     OPENAI_SPEED_RANGE,
     PODCAST_TARGET_FRAME_RATE,
@@ -44,6 +45,8 @@ from ..audio.providers import (
 )
 from ..config import logger
 from ..infrastructure import FileSystemRepository
+
+_ELEVENLABS_MODEL_NAMES = frozenset(ELEVENLABS_MODELS)
 
 
 class Speaker(TypedDict):
@@ -105,16 +108,26 @@ def _resolve_provider_name(
     return speaker.get("provider") or config.get("provider") or default
 
 
-def _resolve_model(speaker: Speaker, provider: TTSProvider, openai_model: str) -> str:
+def _resolve_model(speaker: Speaker, provider: TTSProvider, requested_model: str | None) -> str:
     """Model for a speaker.
 
-    A per-speaker `model` always wins. Otherwise the tool's `model` argument
-    applies to OpenAI speakers (it names an OpenAI model), and ElevenLabs
-    speakers fall back to the provider default.
+    A per-speaker `model` always wins, and a wrong one there is an error the
+    caller asked for. Otherwise the tool's `model` argument applies to whichever
+    provider it names; on a mixed-provider episode the speakers of the *other*
+    provider fall back to their own default rather than failing the render.
     """
     if "model" in speaker:
         return provider.resolve_model(speaker["model"])
-    return provider.resolve_model(openai_model if provider.name == "openai" else None)
+    try:
+        resolved = provider.resolve_model(requested_model)
+    except ValueError:
+        # ElevenLabs rejects a foreign model name outright.
+        return provider.resolve_model(None)
+    # OpenAI's resolve_model accepts unknown names on purpose (new speech models
+    # ship between our releases), so only the allowlist catches the reverse case.
+    if provider.name == "openai" and resolved in _ELEVENLABS_MODEL_NAMES:
+        return provider.resolve_model(None)
+    return resolved
 
 
 def _speed_range(provider_name: TTSProviderName) -> tuple[float, float]:
@@ -141,8 +154,12 @@ def _validate_voice_settings(settings: VoiceSettingsDict, context: str) -> None:
 def _validate_script(
     script: PodcastScript,
     default_provider: TTSProviderName = "openai",
+    default_model: str | None = None,
 ) -> tuple[str, list[Speaker], list[Segment], PodcastConfig]:
     """Validate PodcastScript structure and return its components.
+
+    `default_model` must be the same value the render path will use, or
+    validation checks a model the episode never runs on.
 
     Raises ValueError if the script is invalid.
     """
@@ -203,7 +220,7 @@ def _validate_script(
         # rejects cross-provider model names, and applies provider-specific
         # rules (eleven_v3 has no speed, ElevenLabs needs a voice id).
         provider = get_provider(provider_name)
-        model = _resolve_model(speaker, provider, "gpt-4o-mini-tts")
+        model = _resolve_model(speaker, provider, default_model)
         provider.validate(
             SpeechRequest(
                 text="validation probe",
@@ -317,6 +334,28 @@ def _stitch_audio(
     return output.getvalue()
 
 
+def _derive_concurrency_limits(providers: dict[str, TTSProvider], models: dict[str, str]) -> dict[str, int]:
+    """Tightest concurrency cap per provider, across every model the episode uses.
+
+    The cap is per-model, but the limiter is per-provider, so the smallest model
+    cap has to win: an eleven_flash_v2_5 host (4) beside an eleven_v3 guest (2)
+    must still run 2-wide or ElevenLabs answers HTTP 429. Taking the first
+    speaker's cap instead made the answer depend on speaker order.
+
+    Both dicts are keyed by speaker id. 0 means unbounded, so it can never win a
+    min against a real cap.
+    """
+    limits: dict[str, int] = {}
+    for speaker_id, provider in providers.items():
+        limit = provider.max_concurrency(models[speaker_id])
+        current = limits.get(provider.name)
+        if current is None or current == 0:
+            limits[provider.name] = limit
+        elif limit != 0:
+            limits[provider.name] = min(current, limit)
+    return limits
+
+
 def _safe_title(title: str) -> str:
     """Convert a podcast title to a filesystem-safe slug."""
     return "".join(c if c.isalnum() or c in "-_" else "_" for c in title).strip("_") or "podcast"
@@ -332,14 +371,15 @@ async def generate_podcast(
     Args:
         script: The podcast script. Speakers may each pick their own provider,
             so one episode can mix OpenAI and ElevenLabs voices.
-        model: Default model for OpenAI speakers. ElevenLabs speakers fall back to
-            that provider's default unless they set their own `model`.
+        model: Default model for the speakers whose provider it belongs to.
+            Speakers on the other provider fall back to that provider's default
+            unless they set their own `model`.
         provider: Episode-wide default provider, itself overridden by
             `config.provider` and then by each speaker's `provider`.
 
     Raises ValueError if the script fails validation.
     """
-    title, speakers, segments, config = _validate_script(script, default_provider=provider)
+    title, speakers, segments, config = _validate_script(script, default_provider=provider, default_model=model)
     speaker_map: dict[str, Speaker] = {s["id"]: s for s in speakers}
 
     estimated_duration = _estimate_duration(segments, speakers, config)
@@ -360,14 +400,13 @@ async def generate_podcast(
     # so segment-level and chunk-level parallelism share one budget — which is
     # what ElevenLabs' concurrency cap actually counts. OpenAI's limit is 0
     # (unbounded) by default, preserving the historical behavior exactly.
+    override = config.get("max_concurrency")
     limiters: dict[str, anyio.CapacityLimiter | None] = {}
-    for speaker_id, speaker_provider in providers.items():
-        if speaker_provider.name in limiters:
-            continue
-        limit = config.get("max_concurrency") or speaker_provider.max_concurrency(models[speaker_id])
-        limiters[speaker_provider.name] = anyio.CapacityLimiter(limit) if limit else None
+    for provider_name, derived in _derive_concurrency_limits(providers, models).items():
+        limit = override or derived
+        limiters[provider_name] = anyio.CapacityLimiter(limit) if limit else None
         if limit:
-            logger.info("Limiting %s to %d concurrent TTS requests", speaker_provider.name, limit)
+            logger.info("Limiting %s to %d concurrent TTS requests", provider_name, limit)
 
     async def _gen_segment(i: int, segment: Segment) -> bytes:
         """Render one segment. Independent of the others, so #35's verify pass
