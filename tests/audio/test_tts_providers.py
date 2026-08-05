@@ -5,6 +5,9 @@ and iterates the result, so `FakeElevenLabsClient` needs no SDK import — these
 tests run without the [elevenlabs] extra installed.
 """
 
+import pathlib
+import re
+
 import pytest
 
 from sanzaru.audio.providers import (
@@ -94,6 +97,18 @@ class TestResolution:
         monkeypatch.setenv("SANZARU_ELEVENLABS_MAX_CONCURRENCY", "lots")
         assert get_provider("elevenlabs").max_concurrency("eleven_v3") == 2
 
+    def test_env_example_does_not_suggest_a_429(self):
+        """The docs used to recommend 3, which this PR verified returns HTTP 429."""
+        from sanzaru.audio.constants import ELEVENLABS_DEFAULT_CONCURRENCY
+
+        env_example = pathlib.Path(__file__).resolve().parents[2] / ".env.example"
+        suggested = re.findall(
+            r"^#?\s*SANZARU_ELEVENLABS_MAX_CONCURRENCY=(\d+)", env_example.read_text(), flags=re.MULTILINE
+        )
+
+        assert suggested, "expected .env.example to document SANZARU_ELEVENLABS_MAX_CONCURRENCY"
+        assert all(int(value) <= min(ELEVENLABS_DEFAULT_CONCURRENCY.values()) for value in suggested)
+
 
 # ---------- validation ----------
 
@@ -151,8 +166,24 @@ class TestElevenLabsValidation:
             get_provider("elevenlabs").validate(elevenlabs_request(speed=1.0, voice_settings={"speed": 1.9}))
 
     def test_unknown_voice_settings_key(self):
-        with pytest.raises(ValueError, match="unknown voice_settings key"):
+        with pytest.raises(ValueError, match="unknown key 'warmth'"):
             get_provider("elevenlabs").validate(elevenlabs_request(voice_settings={"warmth": 0.5}))
+
+    @pytest.mark.parametrize("value", ["high", True, None])
+    def test_non_numeric_voice_setting_is_a_value_error(self, value):
+        # Not the TypeError the bare range comparison used to raise: the CLI maps
+        # that to internal/exit 1 instead of usage/exit 2.
+        with pytest.raises(ValueError, match="voice_settings\\['stability'\\] must be a number"):
+            get_provider("elevenlabs").validate(elevenlabs_request(voice_settings={"stability": value}))
+
+    def test_bool_speed_is_rejected(self):
+        # float(True) == 1.0, which sits happily inside 0.7-1.2.
+        with pytest.raises(ValueError, match="voice_settings\\['speed'\\] must be a number"):
+            get_provider("elevenlabs").validate(elevenlabs_request(voice_settings={"speed": True}))
+
+    def test_non_bool_speaker_boost_is_rejected(self):
+        with pytest.raises(ValueError, match="voice_settings\\['use_speaker_boost'\\] must be a boolean"):
+            get_provider("elevenlabs").validate(elevenlabs_request(voice_settings={"use_speaker_boost": "yes"}))
 
     @pytest.mark.parametrize("key", ["stability", "similarity_boost", "style"])
     def test_voice_settings_ranges(self, key):

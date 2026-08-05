@@ -16,6 +16,7 @@ from .base import (
     SpeechRequest,
     TTSProvider,
     VoiceSettingsDict,
+    check_voice_settings_types,
     synthesize_speech,
 )
 
@@ -56,6 +57,7 @@ __all__ = [
     "SpeechRequest",
     "TTSProvider",
     "VoiceSettingsDict",
+    "check_voice_settings_types",
     "get_provider",
     "synthesize_speech",
     "validate_provider_name",

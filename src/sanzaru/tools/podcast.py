@@ -14,6 +14,7 @@ OpenAI and ElevenLabs voices — the stitch path is mp3-in, mp3-out.
 """
 
 import time
+from dataclasses import replace
 from io import BytesIO
 from typing import Literal, NotRequired, TypedDict
 
@@ -33,12 +34,10 @@ from ..audio.constants import (
     TTSProviderName,
 )
 from ..audio.providers import (
-    VOICE_SETTINGS_BOOL_KEYS,
-    VOICE_SETTINGS_FLOAT_KEYS,
-    VOICE_SETTINGS_KEYS,
     SpeechRequest,
     TTSProvider,
     VoiceSettingsDict,
+    check_voice_settings_types,
     get_provider,
     synthesize_speech,
     validate_provider_name,
@@ -134,21 +133,27 @@ def _speed_range(provider_name: TTSProviderName) -> tuple[float, float]:
     return ELEVENLABS_SPEED_RANGE if provider_name == "elevenlabs" else OPENAI_SPEED_RANGE
 
 
-def _validate_voice_settings(settings: VoiceSettingsDict, context: str) -> None:
-    """Validate a per-speaker voice_settings mapping."""
-    if not isinstance(settings, dict):
-        raise ValueError(f"{context} voice_settings must be an object")
-    for key in settings:
-        if key not in VOICE_SETTINGS_KEYS:
-            raise ValueError(
-                f"{context} voice_settings has unknown key '{key}'; expected: {', '.join(VOICE_SETTINGS_KEYS)}"
-            )
-    for key in VOICE_SETTINGS_FLOAT_KEYS:
-        if key in settings and not isinstance(settings[key], int | float):  # type: ignore[literal-required]
-            raise ValueError(f"{context} voice_settings['{key}'] must be a number")
-    for key in VOICE_SETTINGS_BOOL_KEYS:
-        if key in settings and not isinstance(settings[key], bool):  # type: ignore[literal-required]
-            raise ValueError(f"{context} voice_settings['{key}'] must be a boolean")
+def _resolve_segment_speech(segment: Segment, speaker: Speaker) -> tuple[float, VoiceSettingsDict | None]:
+    """Speed and voice_settings for one segment, with script-level precedence applied.
+
+    A segment's `speed_override` is the most specific value in the script, so it
+    beats both `speaker["speed"]` and the speaker's `voice_settings["speed"]`.
+    The second half matters because ElevenLabs' native speed knob lives *inside*
+    voice_settings and wins there over the neutral `SpeechRequest.speed`: without
+    materializing the override into the copy below, a speaker that sets
+    `voice_settings["speed"]` would silently kill every override in its segments.
+
+    Validation and rendering both go through here, so they can never disagree
+    about which speed the episode will actually be rendered at.
+    """
+    settings = speaker.get("voice_settings")
+    if "speed_override" not in segment:
+        return speaker["speed"], settings
+    speed = segment["speed_override"]
+    if settings is not None and "speed" in settings:
+        settings = settings.copy()
+        settings["speed"] = speed
+    return speed, settings
 
 
 def _validate_script(
@@ -193,9 +198,10 @@ def _validate_script(
         raise ValueError(f"PodcastConfig 'max_concurrency' must be a positive integer, got {config['max_concurrency']}")
 
     speaker_ids: set[str] = set()
-    # provider name per speaker id, so segment-level checks below know which
-    # speed range applies.
+    # Per speaker id, so the segment pass below can re-probe with the same
+    # provider, model, and voice the render will use.
     speaker_providers: dict[str, TTSProviderName] = {}
+    speaker_probes: dict[str, tuple[Speaker, TTSProvider, SpeechRequest]] = {}
 
     for i, speaker in enumerate(speakers):
         for field in ("id", "name", "voice", "speed", "instructions"):
@@ -214,26 +220,26 @@ def _validate_script(
             )
 
         if "voice_settings" in speaker:
-            _validate_voice_settings(speaker["voice_settings"], f"Speaker {i}")
+            check_voice_settings_types(speaker["voice_settings"], f"Speaker {i} ")
 
         # Fail before spending a single API call: this resolves the model,
         # rejects cross-provider model names, and applies provider-specific
         # rules (eleven_v3 has no speed, ElevenLabs needs a voice id).
         provider = get_provider(provider_name)
         model = _resolve_model(speaker, provider, default_model)
-        provider.validate(
-            SpeechRequest(
-                text="validation probe",
-                voice=provider.resolve_voice(speaker["voice"]),
-                model=model,
-                speed=speaker["speed"],
-                instructions=speaker["instructions"],
-                voice_settings=speaker.get("voice_settings"),
-            )
+        probe = SpeechRequest(
+            text="validation probe",
+            voice=provider.resolve_voice(speaker["voice"]),
+            model=model,
+            speed=speaker["speed"],
+            instructions=speaker["instructions"],
+            voice_settings=speaker.get("voice_settings"),
         )
+        provider.validate(probe)
 
         speaker_ids.add(speaker["id"])
         speaker_providers[speaker["id"]] = provider_name
+        speaker_probes[speaker["id"]] = (speaker, provider, probe)
 
     segments = script["segments"]
     if not segments:
@@ -259,6 +265,19 @@ def _validate_script(
                     f"Segment {i} speed_override must be between {low} and {high} for "
                     f"provider='{speaker_providers[segment['speaker']]}', got {segment['speed_override']}"
                 )
+            # The range above is provider-wide; per-model rules (eleven_v3 has no
+            # speed at all) live in provider.validate, which the speaker pass only
+            # ever ran against speaker["speed"]. Re-probe each override or an
+            # in-range-but-unsupported value fails inside the task group, after
+            # sibling segments have already spent API calls.
+            owner, owner_provider, probe = speaker_probes[segment["speaker"]]
+            speed, settings = _resolve_segment_speech(segment, owner)
+            try:
+                # instructions=None: the speaker pass already warned once about
+                # ElevenLabs ignoring them, and this must not repeat it per segment.
+                owner_provider.validate(replace(probe, speed=speed, instructions=None, voice_settings=settings))
+            except ValueError as exc:
+                raise ValueError(f"Segment {i} speed_override: {exc}") from exc
 
     return title, speakers, segments, config
 
@@ -413,7 +432,7 @@ async def generate_podcast(
         can re-invoke this for just the segments that failed QC."""
         speaker = speaker_map[segment["speaker"]]
         speaker_provider = providers[speaker["id"]]
-        speed = segment["speed_override"] if "speed_override" in segment else speaker["speed"]
+        speed, voice_settings = _resolve_segment_speech(segment, speaker)
         # `in`-check rather than `or`: an intentional empty-string override must
         # not silently fall back to the speaker's instructions.
         instructions = segment["instruction_override"] if "instruction_override" in segment else speaker["instructions"]
@@ -430,7 +449,7 @@ async def generate_podcast(
             # instructions is OpenAI-only; _validate_script already warned once
             # per ElevenLabs speaker that carries one.
             instructions=instructions if speaker_provider.name == "openai" else None,
-            voice_settings=speaker.get("voice_settings"),
+            voice_settings=voice_settings,
         )
         return await synthesize_speech(speaker_provider, request, limiter=limiters[speaker_provider.name])
 

@@ -129,15 +129,37 @@ async def close_elevenlabs_client() -> None:
 
     A no-op when the provider was never used, so unrelated CLI commands pay
     nothing (not even the import).
+
+    elevenlabs 2.60 exposes no `aclose()` (nor any other close method) on
+    AsyncElevenLabs, so the connection pool has to be reached through the
+    generated wrapper: AsyncElevenLabs._client_wrapper.httpx_client is the SDK's
+    AsyncHttpClient, which holds the real httpx.AsyncClient. `aclose()` is still
+    tried first so a future SDK that grows one wins. Every hop is getattr-guarded
+    and failures are swallowed: this runs in the CLI's teardown `finally`, where
+    raising would replace the command's own result.
     """
     global _elevenlabs_cached
     client = _elevenlabs_cached
     _elevenlabs_cached = None
     if client is None:
         return
+
     aclose = getattr(client, "aclose", None)
-    if aclose is not None:
+    if not callable(aclose):
+        wrapper = getattr(client, "_client_wrapper", None)
+        http_client = getattr(wrapper, "httpx_client", None)
+        # The wrapper's `httpx_client` is the SDK's own AsyncHttpClient, which
+        # nests the httpx.AsyncClient under the same attribute name.
+        pool = getattr(http_client, "httpx_client", http_client)
+        aclose = getattr(pool, "aclose", None)
+
+    if not callable(aclose):
+        logger.debug("ElevenLabs client exposes no close method; leaving its connection pool to GC")
+        return
+    try:
         await aclose()
+    except Exception as exc:  # noqa: BLE001 - teardown must not mask the command's outcome
+        logger.debug("Closing the ElevenLabs client failed: %s", exc)
 
 
 # ---------- Path configuration (runtime) ----------

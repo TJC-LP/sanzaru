@@ -775,7 +775,8 @@ script must be a JSON object matching this structure:
       "speaker": string,             // Must match a speaker id (required)
       "text": string,                // Spoken content (required, max ~40000 chars)
       "pause_after": number,         // Silence in ms after this segment (optional, overrides default)
-      "speed_override": number,      // Override speaker speed for this segment (optional)
+      "speed_override": number,      // Override speaker speed for this segment (optional; also
+                                     // wins over the speaker's voice_settings "speed")
       "instruction_override": string // Override speaker instructions for this segment (optional)
     }
   ],

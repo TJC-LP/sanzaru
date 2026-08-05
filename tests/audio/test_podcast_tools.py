@@ -564,6 +564,25 @@ class TestValidateScriptProviders:
         with pytest.raises(ValueError, match="speed_override must be between 0.7 and 1.2"):
             _validate_script(minimal_script)
 
+    def test_speed_override_is_probed_against_the_speakers_model(self, minimal_script):
+        """0.9 is inside ElevenLabs' 0.7-1.2 range, so only the per-model rule can
+        reject it — and the speaker pass only ever probed speaker['speed'].
+
+        Without the per-segment probe this raises inside the task group, after
+        sibling segments have already spent API calls.
+        """
+        minimal_script["speakers"][0].update({"provider": "elevenlabs", "voice": "v1", "model": "eleven_v3"})
+        minimal_script["segments"][0]["speed_override"] = 0.9
+        with pytest.raises(ValueError, match="Segment 0 speed_override: eleven_v3 does not support speed"):
+            _validate_script(minimal_script)
+
+    def test_supported_speed_override_passes_the_probe(self, minimal_script):
+        minimal_script["speakers"][0].update(
+            {"provider": "elevenlabs", "voice": "v1", "model": "eleven_multilingual_v2"}
+        )
+        minimal_script["segments"][0]["speed_override"] = 0.9
+        _validate_script(minimal_script)
+
     def test_cross_provider_model_rejected(self, minimal_script):
         minimal_script["speakers"][0].update({"provider": "elevenlabs", "voice": "v1", "model": "tts-1"})
         with pytest.raises(ValueError, match="not an ElevenLabs model"):
@@ -577,6 +596,16 @@ class TestValidateScriptProviders:
     def test_voice_settings_wrong_type(self, minimal_script):
         minimal_script["speakers"][0].update(
             {"provider": "elevenlabs", "voice": "v1", "voice_settings": {"stability": "high"}}
+        )
+        with pytest.raises(ValueError, match="voice_settings\\['stability'\\] must be a number"):
+            _validate_script(minimal_script)
+
+    @pytest.mark.parametrize("value", [True, False])
+    def test_voice_settings_bool_is_not_a_number(self, minimal_script, value):
+        """isinstance(True, int) is True, so bool has to be excluded explicitly —
+        otherwise `{"stability": true}` clears both the type and range checks."""
+        minimal_script["speakers"][0].update(
+            {"provider": "elevenlabs", "voice": "v1", "voice_settings": {"stability": value}}
         )
         with pytest.raises(ValueError, match="voice_settings\\['stability'\\] must be a number"):
             _validate_script(minimal_script)
@@ -723,6 +752,49 @@ async def test_empty_instruction_override_is_honored(mocker, podcast_env):
     await generate_podcast(script)
 
     assert client.audio.speech.create.await_args.kwargs["instructions"] == ""
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_speed_override_beats_the_speakers_voice_settings_speed(mocker, podcast_env, fake_elevenlabs):
+    """The segment override is the most specific value in the script, so it must
+    reach the API — a speaker-level voice_settings['speed'] would otherwise
+    swallow it, since that is the knob ElevenLabs actually reads."""
+    from sanzaru.tools.podcast import generate_podcast
+
+    el_client = fake_elevenlabs.Client(chunks=(b"EL_MP3",))
+    mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=el_client)
+
+    script = {
+        "title": "override_speed_ep",
+        "speakers": [
+            {
+                "id": "guest",
+                "name": "Sam",
+                "voice": "voice_xyz",
+                "speed": 1.0,
+                "instructions": "",
+                "provider": "elevenlabs",
+                "model": "eleven_multilingual_v2",
+                "voice_settings": {"stability": 0.4, "speed": 1.1},
+            }
+        ],
+        "segments": [
+            {"speaker": "guest", "text": "Normal pace."},
+            {"speaker": "guest", "text": "Slower now.", "speed_override": 0.8},
+        ],
+        "config": {"default_pause_ms": 300, "normalize_loudness": True, "output_format": "mp3"},
+    }
+
+    await generate_podcast(script)
+
+    calls = {call["text"]: call["voice_settings"] for call in el_client.text_to_speech.calls}
+    assert calls["Normal pace."].speed == 1.1
+    assert calls["Slower now."].speed == 0.8
+    # Only speed is replaced; the rest of the speaker's tuning still applies.
+    assert calls["Slower now."].stability == 0.4
+    # And the speaker's own dict is untouched, so segment order cannot matter.
+    assert script["speakers"][0]["voice_settings"]["speed"] == 1.1
 
 
 @pytest.mark.integration
