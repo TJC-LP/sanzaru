@@ -247,16 +247,24 @@ Non-obvious things that are easy to break:
   "audio" path type for one invocation, but the resume hint carries no `-o`, so anything found by
   run id alone goes through `storage.get_default_storage()` (`simulate_podcast.checkpoint_storage`).
   Only the episode and stems follow `-o`. Loading a checkpoint decodes inside the try — a
-  truncated or zero-audio act is re-recorded, never fatal to the whole resume.
+  truncated or zero-audio act is re-recorded, never fatal to the whole resume. The two writes
+  that make a checkpoint happen inside `anyio.CancelScope(shield=True)`: a sibling act's failure
+  cancels the task group, and an mp3 with no sidecar is paid-for audio that resume throws away.
 - **On `--resume`, caller-set fields win and the manifest fills the rest** (`model_fields_set` is
   the signal). That is why `cli/podcast.py` gives every simulate option a `None` click default and
   only puts what the user typed into the payload: a click-supplied `"mp3"` would be
   indistinguishable from the user asking for mp3, and a dropped `--max-cost` would make the
-  ceiling abort's own resume hint re-run uncapped.
+  ceiling abort's own resume hint re-run uncapped. The restored ceiling also counts the spend
+  replayed from the checkpoints, so a bare resume under it would abort at the same total after
+  paying to re-record: `_refuse_a_resume_that_cannot_finish` projects the remaining acts and
+  stops first, and the CLI's ceiling envelope prints a resume command with a raised
+  `--max-cost` (`CostBudget.suggested_limit_usd`).
 - **Every turn runs under `anyio.fail_after`.** Nothing in the Realtime protocol bounds a turn, and
   a stalled session would hold a `CapacityLimiter` slot forever inside a blocking tool. The bound
   is 6x `turn_seconds` (min 60s), overridable via `SANZARU_REALTIME_TURN_TIMEOUT` /
-  `turn_timeout_s`; a breach becomes `RealtimeAPIError`. Relatedly, `speak()` requires a
+  `turn_timeout_s`; a breach becomes `RealtimeAPIError`, which fails the run (no per-act retry)
+  but leaves finished acts checkpointed — the CLI attaches `run_id` + `resume` to *every*
+  post-recording failure envelope, not just the ceiling. Relatedly, `speak()` requires a
   `response.done`: the SDK's `__aiter__` *returns* on `ConnectionClosedOK`, so a graceful mid-act
   close would otherwise look like a successful silent turn.
 - **`_stitch_audio` takes a `decode` callable.** Realtime is PCM16/24k end to end with no mp3

@@ -32,10 +32,16 @@ from __future__ import annotations
 
 import math
 import os
+import pathlib
+import sys
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Literal
+
+if sys.version_info < (3, 11):  # pragma: no cover - 3.11+ has it as a builtin
+    # anyio already requires this backport below 3.11, so it is always present.
+    from exceptiongroup import BaseExceptionGroup
 
 import anyio
 from aioresult import ResultCapture  # type: ignore[import-untyped]
@@ -78,6 +84,7 @@ from ..audio.realtime.types import (
     RunId,
 )
 from ..config import logger
+from ..exceptions import CostCeilingError
 from ..infrastructure import FileSystemRepository
 from ..storage import StorageBackend, get_default_storage, get_storage
 from .podcast import _safe_title, _stitch_audio
@@ -162,8 +169,14 @@ class SimulationBrief(BaseModel):
         once a rundown exists — but when one does not, the quotient becomes each
         act's `target_seconds`, and letting an impossible pair through means
         paying for a planner call whose result cannot be constructed.
+
+        Skipped on resume for the same reason, plus one that bites: the manifest
+        stores this brief with its rundown stripped, and pydantic revalidates
+        the nested model on write. Without the resume escape, a perfectly legal
+        `rundown` + `target_minutes=200` brief passes here and then dies with a
+        raw ValidationError at manifest-write time, after pre-production.
         """
-        if self.rundown is not None:
+        if self.rundown is not None or self.resume:
             return self
         seconds_each = self.target_minutes * 60.0 / self.acts
         if seconds_each > MAX_ACT_SECONDS:
@@ -326,6 +339,14 @@ def _act_meta_name(slug: str, run_id: str, act_id: str) -> str:
     return f"{slug}_{run_id}_{act_id}.json"
 
 
+def _with_format_suffix(filename: str | None, output_format: str) -> str | None:
+    """Re-point a filename at the container that is actually being written."""
+    if not filename:
+        return filename
+    stem = pathlib.PurePosixPath(filename).stem
+    return f"{stem}.{output_format}"
+
+
 def new_run_id() -> str:
     """Short, sortable, and unique enough for one media directory.
 
@@ -404,15 +425,21 @@ def annotate_upcoming(rundown: Rundown) -> Rundown:
     return rundown.model_copy(update={"acts": updated})
 
 
-def project_run(rundown: Rundown, brief: SimulationBrief) -> CostReport:
-    """Project usage and cost for a rundown without recording anything."""
+def _projected_usage(rundown: Rundown, acts: Sequence[ActBrief]) -> RealtimeUsage:
+    """Expected usage for some of a rundown's acts, at its host count."""
     total = RealtimeUsage()
-    for act in rundown.acts:
+    for act in acts:
         total = total + project_usage(
             seconds=act.target_seconds,
             turns=act.max_turns,
             hosts=len(rundown.hosts),
         )
+    return total
+
+
+def project_run(rundown: Rundown, brief: SimulationBrief) -> CostReport:
+    """Project usage and cost for a rundown without recording anything."""
+    total = _projected_usage(rundown, rundown.acts)
     cost = usage_cost(total, brief.model)
     return CostReport(
         usd=None if cost is None else round(cost, 4),
@@ -420,6 +447,35 @@ def project_run(rundown: Rundown, brief: SimulationBrief) -> CostReport:
         limit_usd=brief.max_cost_usd,
         unpriced_models=[] if cost is not None else [brief.model],
         estimated=True,
+    )
+
+
+def _refuse_a_resume_that_cannot_finish(budget: CostBudget, run_id: str, remaining_acts: int) -> None:
+    """Stop a resume that would re-record, re-charge, and abort at the same total.
+
+    A resume restores the run's ceiling from the manifest and replays the spend
+    of every act it read off disk. So a bare `--resume RUN_ID` — precisely what
+    the ceiling abort prints — charges the same acts against the same limit,
+    re-records whatever is missing, trips at the same place, and checkpoints
+    nothing new. Every retry costs money and makes no progress.
+
+    Finding that out by recording first is the expensive way to find it out, so
+    project the remaining acts before opening a session and name a ceiling that
+    would actually work. An estimate can be wrong in either direction, which is
+    why this only guards resumes: a first run's ceiling is a deliberate hard
+    stop, and stopping partway there still buys checkpoints.
+    """
+    limit, projected, suggested = budget.limit_usd, budget.projected_usd, budget.suggested_limit_usd
+    if limit is None or projected is None or suggested is None or projected <= limit:
+        return
+    raise CostCeilingError(
+        f"cost ceiling too low to finish run {run_id}: ${projected:.2f} projected "
+        f"(${budget.spent_usd:.2f} already recorded, {remaining_acts} act(s) still to record) "
+        f"against a ${limit:.2f} ceiling - resume with max_cost_usd of about ${suggested:.2f}",
+        spent_usd=budget.spent_usd,
+        limit_usd=limit,
+        completed_acts=budget.completed_acts,
+        suggested_limit_usd=suggested,
     )
 
 
@@ -518,7 +574,6 @@ async def _record_act(
     mp3 = await anyio.to_thread.run_sync(encode_pcm, result.join_pcm(), "mp3", brief.output_bitrate)
 
     audio_name = _act_audio_name(slug, run_id, act.id)
-    await checkpoints.write_audio_file(audio_name, mp3)
     meta = ActCheckpoint(
         act_id=act.id,
         title=act.title,
@@ -526,14 +581,41 @@ async def _record_act(
         usage=result.usage,
         turns=result.turns,
     )
-    await checkpoints.write_audio_file(_act_meta_name(slug, run_id, act.id), meta.model_dump_json(indent=2).encode())
-    budget.mark_act_complete(act.id)
+    # A checkpoint is two files, and `_load_checkpoint` requires both. A sibling
+    # act failing — the cost ceiling, a stalled turn — cancels this task group at
+    # the next await, and landing between the two writes leaves an orphan mp3:
+    # audio that was recorded, billed, and then re-recorded on resume anyway.
+    # Writing the sidecar first only moves which half survives, so shield the
+    # pair (and the bookkeeping that says they are there) instead.
+    with anyio.CancelScope(shield=True):
+        await checkpoints.write_audio_file(audio_name, mp3)
+        await checkpoints.write_audio_file(
+            _act_meta_name(slug, run_id, act.id), meta.model_dump_json(indent=2).encode()
+        )
+        budget.mark_act_complete(act.id)
 
     _note(
         f"act {index + 1}/{len(rundown.acts)} recorded {len(result.audio)} turns, "
         f"{result.seconds:.0f}s audio ({result.stop_reason})"
     )
     return _RecordedAct(brief=act, result=result, mp3=mp3, checkpoint=audio_name, turn_pcm=turn_pcm)
+
+
+def _restate_completed_acts(exc: BaseException, budget: CostBudget) -> None:
+    """Re-read which acts are on disk once the recording tasks have unwound.
+
+    `CostCeilingError` snapshots `completed_acts` where it is raised, but the
+    acts it cancels keep going: their checkpoint writes are shielded, so they
+    land (and mark themselves complete) *after* the snapshot was taken. Left
+    alone, the abort reports "0 act(s) checkpointed and safe" for a run with two
+    finished acts on disk — which reads as "your work is gone, start over".
+    The budget is final by the time the task group re-raises.
+    """
+    if isinstance(exc, CostCeilingError):
+        exc.completed_acts = budget.completed_acts
+    if isinstance(exc, BaseExceptionGroup):
+        for inner in exc.exceptions:
+            _restate_completed_acts(inner, budget)
 
 
 async def _record_all(
@@ -601,8 +683,12 @@ async def _record_all(
             on_progress=on_progress,
         )
 
-    async with anyio.create_task_group() as tg:
-        captures = [ResultCapture.start_soon(tg, _one, index, act) for index, act in todo]
+    try:
+        async with anyio.create_task_group() as tg:
+            captures = [ResultCapture.start_soon(tg, _one, index, act) for index, act in todo]
+    except BaseException as raised:
+        _restate_completed_acts(raised, budget)
+        raise
     # Read by index — the limiter delays task entry, it never reorders results.
     for capture in captures:
         recorded = capture.result()
@@ -759,6 +845,14 @@ async def simulate_podcast(
             # empty so it stays a valid standalone description of this run.
             restored.update({"resume": True, "run_id": run_id, "rundown": None})
             effective = manifest.brief.model_copy(update=restored)
+            # `--format` became effective on resume, but the filename is
+            # restored independently — so changing the container would write wav
+            # bytes into the manifest's `.mp3` name. Only a *restored* name is
+            # corrected; one the caller passed this time is theirs to get wrong.
+            if "output_format" in brief.model_fields_set and "filename" not in brief.model_fields_set:
+                effective = effective.model_copy(
+                    update={"filename": _with_format_suffix(effective.filename, effective.output_format)}
+                )
             logger.info("Resuming run %s: %s", run_id, rundown.title)
         elif brief.rundown is None:
             raise ValueError(
@@ -836,13 +930,24 @@ async def simulate_podcast(
         if reuse and on_progress is not None:
             on_progress(f"resuming run {run_id}: reusing {len(reuse)}/{len(rundown.acts)} acts")
 
-    budget = CostBudget(effective.max_cost_usd)
+    todo = [act for act in rundown.acts if act.id not in reuse]
+    replayed = sum(usage_cost(a.result.usage, effective.model) or 0.0 for a in reuse.values())
+    remaining = usage_cost(_projected_usage(rundown, todo), effective.model)
+    budget = CostBudget(
+        effective.max_cost_usd,
+        projected_usd=None if remaining is None else replayed + remaining,
+    )
     for existing in reuse.values():
-        # Marked before charging: a reused act's checkpoint is already on disk,
-        # so it counts as safe even if replaying its spend is what trips the
-        # ceiling on this very line.
+        # Every reused act is marked before any of them is charged: their
+        # checkpoints are all on disk already, so they are all safe even when
+        # replaying their spend is what trips the ceiling partway through the
+        # loop below. Marking and charging together under-reported the count the
+        # abort tells the user to decide on.
         budget.mark_act_complete(existing.result.act_id)
+    for existing in reuse.values():
         budget.charge(existing.result.usage, effective.model)
+    if effective.resume and todo:
+        _refuse_a_resume_that_cannot_finish(budget, run_id, len(todo))
 
     recorded = await _record_all(
         rundown,

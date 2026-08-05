@@ -104,15 +104,26 @@ class _Judgement(BaseModel):
     acts: list[_JudgedAct]
 
 
+_WORD_EDGES = ".,!?;:\"'()[]{}…—–-"
+
+
+def _words(text: str) -> list[str]:
+    """Comparable words: lowercased, stripped of the punctuation glued to them."""
+    return [word for word in (raw.strip(_WORD_EDGES) for raw in text.lower().split()) if word]
+
+
 def similarity(intended: str, rendered: str) -> float:
     """Word-level overlap between two transcripts, 0-1.
 
-    Word-level rather than character-level so that spelling and punctuation
-    disagreements between the two models don't swamp the signal we care about,
-    which is *missing speech*.
+    Word-level rather than character-level so that spelling disagreements
+    between the two models don't swamp the signal we care about, which is
+    *missing speech*. Punctuation is stripped for the same reason and not just
+    tokenised around: the models disagree about it constantly, and a word-level
+    diff scores `plumbing` against `plumbing.` as a total mismatch — enough to
+    put a short, clean act under the warn threshold on commas alone.
     """
-    intended_words = intended.lower().split()
-    rendered_words = rendered.lower().split()
+    intended_words = _words(intended)
+    rendered_words = _words(rendered)
     if not intended_words and not rendered_words:
         return 1.0
     if not intended_words or not rendered_words:

@@ -10,6 +10,7 @@ work intact.
 import json
 import pathlib
 
+import anyio
 import pytest
 from pydantic import ValidationError
 
@@ -563,6 +564,36 @@ class TestSimulate:
         assert result.output_file == "chosen.mp3"
         assert (media_dir / "chosen.mp3").exists()
 
+    async def test_the_briefs_producer_knobs_reach_every_act(self, rundown, media_dir, monkeypatch):
+        """`turn_timeout_s` and friends are documented brief-level overrides.
+
+        Nothing else in the suite crosses the brief → SimulationSettings seam:
+        the producer tests build `SimulationSettings` directly, so dropping the
+        forwarding line here left every one of them green.
+        """
+        seen = []
+
+        async def capture_settings(brief, hosts, settings, **kwargs):
+            seen.append(settings)
+            return _fake_act(brief.id)
+
+        monkeypatch.setattr(sim, "run_act", capture_settings)
+        await sim.simulate_podcast(
+            sim.SimulationBrief(
+                rundown=rundown,
+                qc=False,
+                run_id="testrun",
+                turn_timeout_s=12.0,
+                turn_seconds=9.0,
+                turn_tokens=77,
+                model="gpt-realtime-2.1-mini",
+            )
+        )
+        assert len(seen) == 3
+        assert {(s.turn_timeout_s, s.turn_seconds, s.max_turn_tokens, s.model) for s in seen} == {
+            (12.0, 9.0, 77, "gpt-realtime-2.1-mini")
+        }
+
     async def test_upcoming_is_filled_in_before_recording(self, rundown, media_dir, stub_run_act):
         result = await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))
         assert result.rundown is not None
@@ -702,6 +733,49 @@ class TestResumeRestoresSettings:
         assert wide.duration_seconds == tight.duration_seconds  # the act audio itself is unchanged
         # Two 2s gaps between three acts, which the manifest's act_gap_ms=0 omits.
         assert milliseconds(wide.output_file) - milliseconds(tight.output_file) == pytest.approx(4000, abs=60)
+
+    async def test_a_new_container_renames_the_restored_filename(self, rundown, media_dir, stub_run_act):
+        """`-o ep1.mp3` puts a name in the manifest that `--format wav` outdates.
+
+        The filename is restored independently of the format, so the resumed run
+        wrote RIFF bytes into a file still called `.mp3` — newly reachable the
+        moment `--format` started taking effect on resume at all.
+        """
+        await self._record(rundown, filename="ep1.mp3")
+        result = await sim.simulate_podcast(
+            sim.SimulationBrief(resume=True, run_id="testrun", qc=False, output_format="wav")
+        )
+        assert result.output_file == "ep1.wav"
+        assert (media_dir / "ep1.wav").read_bytes()[:4] == b"RIFF"
+
+    async def test_a_filename_passed_on_the_resume_is_left_alone(self, rundown, media_dir, stub_run_act):
+        # Only a *restored* name is corrected; one the caller typed this time is
+        # theirs, extension and all.
+        await self._record(rundown, filename="ep1.mp3")
+        result = await sim.simulate_podcast(
+            sim.SimulationBrief(resume=True, run_id="testrun", qc=False, output_format="wav", filename="mine.mp3")
+        )
+        assert result.output_file == "mine.mp3"
+
+    async def test_a_manifest_written_before_voices_were_assigned_still_gets_them(
+        self, rundown, media_dir, stub_run_act
+    ):
+        """Manifests outlive the version that wrote them.
+
+        The resume path never calls `resolve_rundown`, so a manifest whose hosts
+        have no voice — every one written before voice assignment existed —
+        would replay with the whole cast in the default voice.
+        """
+        await self._record(rundown)
+        manifest_path = media_dir / "simrun_testrun.json"
+        manifest = json.loads(manifest_path.read_text())
+        for host in manifest["rundown"]["hosts"]:
+            host["voice"] = ""
+        manifest_path.write_text(json.dumps(manifest))
+
+        result = await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="testrun", qc=False))
+        assert result.rundown is not None
+        assert [h.voice for h in result.rundown.hosts] == ["marin", "cedar"]
 
     async def test_settings_the_caller_did_not_pass_come_from_the_manifest(self, rundown, media_dir, stub_run_act):
         await self._record(rundown, output_format="wav", turn_seconds=42.0)
@@ -880,6 +954,155 @@ class TestCostCeiling:
         assert result.cost.limit_usd == 100.0
         assert len(result.acts) == 3
 
+    async def test_every_checkpointed_act_is_named_when_the_replay_trips_the_ceiling(
+        self, rundown, media_dir, stub_run_act
+    ):
+        """ "N act(s) checkpointed and safe" is what the user decides to resume on.
+
+        Replaying the checkpointed spend can trip the ceiling partway through
+        the list, and marking each act as it was charged left every act after
+        the one that raised out of the count — while its checkpoint sat on disk.
+        """
+        from sanzaru.exceptions import CostCeilingError
+
+        await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))
+
+        # Below even one act's replayed spend, so the first charge aborts.
+        with pytest.raises(CostCeilingError) as excinfo:
+            await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="testrun", qc=False, max_cost_usd=0.001))
+        assert sorted(excinfo.value.completed_acts) == ["act1", "act2", "act3"]
+
+    async def test_a_finished_act_keeps_its_whole_checkpoint_when_a_sibling_aborts(
+        self, rundown, media_dir, monkeypatch
+    ):
+        """A checkpoint is two files, and a resume needs both.
+
+        The ceiling cancels the acts recording alongside the one that tripped
+        it, and an act cancelled between its mp3 and its sidecar leaves an
+        orphan that `_load_checkpoint` discards — audio that was recorded,
+        billed, and then paid for a second time on the resume that was supposed
+        to recover it.
+        """
+        from sanzaru.cli._runtime import find_in_group
+        from sanzaru.exceptions import CostCeilingError
+        from sanzaru.infrastructure import FileSystemRepository
+
+        act1_audio_written = anyio.Event()
+        write_audio_file = FileSystemRepository.write_audio_file
+
+        async def instrumented(self, filename, data):
+            if filename.endswith("act1.json"):
+                # Widen the gap between act1's two writes to a window the
+                # sibling's abort is certain to land inside.
+                await anyio.sleep(0.05)
+            written = await write_audio_file(self, filename, data)
+            if filename.endswith("act1.mp3"):
+                act1_audio_written.set()
+            return written
+
+        calls: list[str] = []
+
+        async def fake_run_act(brief, hosts, settings, **kwargs):
+            calls.append(brief.id)
+            if brief.id == "act3":
+                await act1_audio_written.wait()
+                kwargs["budget"].charge(RealtimeUsage(output_audio_tokens=500_000), settings.model)
+            return _fake_act(brief.id)
+
+        monkeypatch.setattr(FileSystemRepository, "write_audio_file", instrumented)
+        monkeypatch.setattr(sim, "run_act", fake_run_act)
+
+        with pytest.raises(BaseException) as excinfo:  # noqa: PT011 — anyio wraps it in a group
+            await sim.simulate_podcast(
+                sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun", max_cost_usd=0.02)
+            )
+        ceiling = find_in_group(excinfo.value, CostCeilingError)
+        assert ceiling is not None
+        assert (media_dir / "Stitch_Test_testrun_act1.mp3").exists()
+        assert (media_dir / "Stitch_Test_testrun_act1.json").exists()
+        # act1 finished checkpointing *after* the ceiling snapshotted its list,
+        # and "N act(s) checkpointed and safe" has to count it anyway.
+        assert "act1" in ceiling.completed_acts
+
+        # The point of the pair landing together: the resume reuses act1 instead
+        # of paying for it again.
+        monkeypatch.setattr(FileSystemRepository, "write_audio_file", write_audio_file)
+        calls.clear()
+        resumed = await sim.simulate_podcast(
+            sim.SimulationBrief(resume=True, run_id="testrun", qc=False, max_cost_usd=100.0)
+        )
+        assert "act1" not in calls
+        assert next(a.reused for a in resumed.acts if a.act_id == "act1") is True
+
+
+@pytest.mark.integration
+class TestResumeUnderTheRestoredCeiling:
+    """A resume replays the checkpointed spend against the restored ceiling.
+
+    That is what makes the ceiling survive a bare `--resume` — and what makes
+    the abort's own hint a money-burning loop unless the ceiling is raised with
+    it: the same acts are charged again, the missing ones are re-recorded, and
+    the run trips at the same total having checkpointed nothing new.
+    """
+
+    async def _record(self, rundown, **kwargs):
+        await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun", **kwargs))
+
+    def _drop_act(self, media_dir, act_id):
+        for suffix in ("mp3", "json"):
+            (media_dir / f"Stitch_Test_testrun_{act_id}.{suffix}").unlink()
+
+    async def test_a_resume_that_cannot_finish_refuses_before_recording(self, rundown, media_dir, stub_run_act):
+        from sanzaru.exceptions import CostCeilingError
+
+        await self._record(rundown, max_cost_usd=100.0)
+        self._drop_act(media_dir, "act2")
+        stub_run_act.clear()
+
+        # Above the $0.0128 the two surviving acts replay, below what the run
+        # needs in total — exactly the shape a restored ceiling has after an abort.
+        with pytest.raises(CostCeilingError) as excinfo:
+            await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="testrun", qc=False, max_cost_usd=0.015))
+        assert stub_run_act == []  # not one session opened, not one dollar spent
+        assert "max_cost_usd" in str(excinfo.value)
+        assert excinfo.value.suggested_limit_usd is not None
+        assert excinfo.value.suggested_limit_usd > 0.015
+
+    async def test_the_suggested_ceiling_is_one_the_resume_completes_under(self, rundown, media_dir, stub_run_act):
+        """The whole point of the number: following it has to end the loop."""
+        from sanzaru.exceptions import CostCeilingError
+
+        await self._record(rundown, max_cost_usd=100.0)
+        self._drop_act(media_dir, "act2")
+
+        with pytest.raises(CostCeilingError) as excinfo:
+            await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="testrun", qc=False, max_cost_usd=0.015))
+        result = await sim.simulate_podcast(
+            sim.SimulationBrief(resume=True, run_id="testrun", qc=False, max_cost_usd=excinfo.value.suggested_limit_usd)
+        )
+        assert len(result.acts) == 3
+
+    async def test_a_ceiling_that_still_fits_records_the_missing_act(self, rundown, media_dir, stub_run_act):
+        """The guard must not block a resume that would have finished."""
+        await self._record(rundown, max_cost_usd=100.0)
+        self._drop_act(media_dir, "act2")
+        stub_run_act.clear()
+
+        result = await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="testrun", qc=False))
+        assert stub_run_act == ["act2"]
+        assert result.cost.limit_usd == 100.0
+
+    async def test_an_unpriceable_model_is_not_blocked_by_a_projection_it_cannot_make(
+        self, rundown, media_dir, stub_run_act
+    ):
+        await self._record(rundown, max_cost_usd=100.0, model="some-future-model")
+        self._drop_act(media_dir, "act2")
+        stub_run_act.clear()
+
+        result = await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="testrun", qc=False))
+        assert stub_run_act == ["act2"]
+        assert result.cost.usd is None
+
 
 @pytest.mark.unit
 class TestNaming:
@@ -1038,3 +1261,16 @@ class TestSimulationBriefValidation:
         stored = brief.model_copy(update={"rundown": None, "resume": True})
         manifest = sim.RunManifest(run_id="testrun", slug="s", created=0.0, rundown=rundown, brief=stored)
         assert sim.RunManifest.model_validate_json(manifest.model_dump_json()).brief.resume is True
+
+    def test_a_long_episodes_manifest_brief_survives_the_strip(self, rundown):
+        """acts/target_minutes are pre-production inputs a rundown makes moot.
+
+        Pydantic revalidates the nested brief when the manifest is built, and
+        stripping the rundown is what re-arms the guard: a brief that was legal
+        when it carried its own rundown died with a raw ValidationError at
+        manifest-write time, after pre-production and before any recording.
+        """
+        brief = sim.SimulationBrief(rundown=rundown, run_id="testrun", acts=2, target_minutes=200.0)
+        stored = brief.model_copy(update={"rundown": None, "resume": True})
+        manifest = sim.RunManifest(run_id="testrun", slug="s", created=0.0, rundown=rundown, brief=stored)
+        assert sim.RunManifest.model_validate_json(manifest.model_dump_json()).brief.target_minutes == 200.0

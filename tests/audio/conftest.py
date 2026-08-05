@@ -5,7 +5,23 @@ and iterates the result, so these fakes need no SDK import — every test using
 them runs without the optional [elevenlabs] extra installed.
 """
 
+import os
+
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def clean_realtime_env(monkeypatch):
+    """Start every test from an empty SANZARU_REALTIME_* environment.
+
+    These variables (turn timeout, session cap, price overrides) are read
+    straight from `os.environ` by the code under test, so a developer who set
+    one to debug a stalled session — or who runs the documented
+    `dotenv-cli -- pytest` workflow with them in `.env` — would watch the tests
+    that pin their defaults fail for reasons that have nothing to do with them.
+    """
+    for name in [key for key in os.environ if key.startswith("SANZARU_REALTIME_")]:
+        monkeypatch.delenv(name, raising=False)
 
 
 class FakeElevenLabsTTS:

@@ -224,7 +224,12 @@ parallel act, not once per act:
 sanzaru podcast simulate @rundown.json --max-cost 2.00
 ```
 
-Crossing it exits **6** with the run id, what was spent, and which acts are safe on disk.
+Crossing it exits **6** with the run id, what was spent, which acts are safe on disk, and a
+`resume` command that carries a **raised** `--max-cost`. That last part matters: the ceiling is
+restored from the manifest and a resumed run replays the spend of the acts it reads back, so a
+bare `--resume` would abort at the same total after paying to re-record the same acts. It does
+not get the chance to — a resume whose projected total cannot fit under the restored ceiling
+refuses before opening a session, and names the ceiling that would work.
 
 Prices live in `audio/realtime/pricing.py` (list prices captured 2026-08-05). They go stale;
 override without waiting for a release:
@@ -278,7 +283,11 @@ Three things this depends on, all of them deliberate:
   as one workflow; they have to compose.
 - **A bare `--resume` reinstates the run's settings.** Anything you pass this time wins;
   everything else — including `--max-cost` — is restored from the manifest. Following the
-  ceiling abort's own hint must not re-run uncapped.
+  ceiling abort's own hint must not re-run uncapped, and must not re-run into the same wall
+  either: that is why the abort prints a resume command with a higher `--max-cost`, and why a
+  resume that provably cannot finish under the restored ceiling stops before recording. An act
+  checkpoint is also written under a shield, so a sibling act's abort cannot cancel it halfway
+  and leave an mp3 with no sidecar for the next resume to discard.
 - Checkpoints are **not** deleted after a successful run — the storage backend has no delete
   operation. They are safe to remove by hand once you have the episode.
 
@@ -290,8 +299,11 @@ encoding. Acts recorded in the same run go to the mixer as raw PCM with no round
 Nothing in the Realtime protocol bounds a turn, so a session that stops answering would hold
 its slot forever inside a blocking tool. Each turn runs under `anyio.fail_after`; the bound
 defaults to 6x `--turn-seconds` (never under a minute) and a breach surfaces as a
-`RealtimeAPIError`, which the act-level machinery already knows how to checkpoint around.
-Override it with `SANZARU_REALTIME_TURN_TIMEOUT` (seconds) or `turn_timeout_s` in the brief.
+`RealtimeAPIError`. That fails the run — it is not retried, and it cancels the acts recording
+alongside it — but acts that already finished keep their checkpoints, and the failure envelope
+carries the `run_id` and a `resume` command, so the recovery path is the same as any other
+interrupt. Override the bound with `SANZARU_REALTIME_TURN_TIMEOUT` (seconds) or `turn_timeout_s`
+in the brief.
 
 ---
 

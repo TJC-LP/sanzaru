@@ -276,7 +276,9 @@ This composes with `-o`: the episode and stems go where you asked, while the man
 checkpoints always stay in the media dir, so the printed resume command works verbatim with no
 `-o` of its own. A resume also reinstates the run's settings from the manifest — including
 `--max-cost`, so following the ceiling abort's hint does not re-run uncapped. Anything you pass on
-the resume itself wins.
+the resume itself wins. Because the restored ceiling also counts the spend replayed from the
+checkpoints, the ceiling abort prints a resume command with a *raised* `--max-cost`, and a resume
+that cannot fit under the restored one stops before it records anything.
 
 Options: `-p/--premise`, `--acts`, `-m/--target-minutes`, `--title`, `--style`, `--host`,
 `--model`, `--planner-model`, `--turn-seconds`, `--turn-tokens`, `--max-cost`, `--max-sessions`,
@@ -284,7 +286,8 @@ Options: `-p/--premise`, `--acts`, `-m/--target-minutes`, `--title`, `--style`, 
 `--bitrate`, `-o`.
 
 Exit codes are the usual contract plus one: **6** means the cost ceiling stopped the run — the
-envelope carries `spent_usd`, `completed_acts`, and a `resume` command.
+envelope carries `spent_usd`, `suggested_limit_usd`, `completed_acts`, and a `resume` command.
+Every other failure after recording starts carries `run_id` and a `resume` command too.
 
 Full rationale, measured numbers, and tuning notes:
 [`docs/audio/simulated-podcasts.md`](audio/simulated-podcasts.md).

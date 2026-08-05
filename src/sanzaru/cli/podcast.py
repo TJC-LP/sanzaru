@@ -22,7 +22,7 @@ import click
 
 from ._io import PathSession, finalize_output, install_overrides, plan_output, read_content_arg
 from ._output import EXIT_CONFIG, EXIT_PARTIAL, EXIT_USAGE, emit, note, success_envelope
-from ._runtime import CLIError, find_in_group, get_state, run_async
+from ._runtime import CLIError, _classify, find_in_group, get_state, run_async
 from .audio import _ELEVENLABS_MODELS, _PROVIDERS, _TTS_MODELS, resolve_tts_model
 
 if TYPE_CHECKING:
@@ -525,21 +525,37 @@ async def podcast_simulate(
 
     try:
         result = await sim.simulate_podcast(simulation, on_progress=progress)
-    except Exception as raised:  # noqa: BLE001 — re-raised below unless it is the ceiling
+    except Exception as raised:  # noqa: BLE001 — reclassified below, never swallowed
         # Acts record inside an anyio task group, so the ceiling arrives wrapped
         # in an ExceptionGroup — and if several acts trip it in the same
         # scheduling window, one error per act.
         ceiling = find_in_group(raised, CostCeilingError)
         if ceiling is None:
-            raise
+            # Any other failure — a stalled turn, a dropped session — still
+            # leaves the finished acts checkpointed. The run id is the only way
+            # back to them, so it goes in the envelope rather than in a stderr
+            # line the caller has already scrolled past.
+            other = _classify(raised)
+            other.resume = f"sanzaru podcast simulate --resume {run_id}"
+            other.extra = {**(other.extra or {}), "run_id": run_id}
+            raise other from raised
+        # A resumed run restores this ceiling from the manifest and replays the
+        # spend already on disk against it, so a bare `--resume` would abort at
+        # the same total having paid to re-record the same acts. The command we
+        # print has to be one that can actually finish.
+        resume_command = f"sanzaru podcast simulate --resume {run_id}"
+        if ceiling.suggested_limit_usd is not None:
+            resume_command += f" --max-cost {ceiling.suggested_limit_usd:g}"
         raise CLIError(
             "cost_limit",
-            f"{ceiling} — {len(ceiling.completed_acts)} act(s) checkpointed and safe, resume to finish",
+            f"{ceiling} — {len(ceiling.completed_acts)} act(s) checkpointed and safe. The run's ceiling is "
+            f"restored on resume, so raise it to finish: {resume_command}",
             exit_code=EXIT_PARTIAL,
-            resume=f"sanzaru podcast simulate --resume {run_id}",
+            resume=resume_command,
             extra={
                 "spent_usd": round(ceiling.spent_usd, 4),
                 "limit_usd": ceiling.limit_usd,
+                "suggested_limit_usd": ceiling.suggested_limit_usd,
                 "completed_acts": ceiling.completed_acts,
                 "run_id": run_id,
             },

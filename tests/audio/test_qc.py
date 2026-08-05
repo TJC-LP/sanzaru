@@ -119,13 +119,20 @@ class TestSimilarity:
         rendered = "one two three four five six"
         assert similarity(intended, rendered) < SIMILARITY_WARN_THRESHOLD
 
+    def test_punctuation_is_not_divergence(self):
+        # What two models actually differ on. A word-level diff scores
+        # `plumbing` against `plumbing.` as a total mismatch, which put a short,
+        # clean act at 0.5 — under the warn threshold on a full stop alone.
+        assert similarity("the plumbing", "the plumbing.") == 1.0
+        assert similarity("so, then — we shipped", "so then we shipped!") == 1.0
+
     def test_ordinary_transcription_disagreement_stays_above_it(self):
-        # Punctuation and a stray filler are what two models normally differ on;
-        # scoring those as failures would make the threshold useless.
-        words = [f"word{i}" for i in range(50)]
+        # A stray filler and one misheard word are the residue after
+        # punctuation: real divergence, but nowhere near a dropped tail.
+        words = [f"word{i}" for i in range(20)]
         rendered = list(words)
-        rendered[3] = "word3,"
-        rendered[20] = "word20."
+        rendered[3] = "werd3"
+        rendered.insert(10, "um")
         assert similarity(" ".join(words), " ".join(rendered)) > SIMILARITY_WARN_THRESHOLD
 
     def test_two_silences_agree(self):

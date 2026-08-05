@@ -273,6 +273,52 @@ class TestPodcastSimulate:
         assert envelope["completed_acts"] == ["act1"]
         assert envelope["resume"].startswith("sanzaru podcast simulate --resume ")
 
+    def test_the_ceiling_resume_command_raises_the_ceiling(self, runner, mocker, tmp_path):
+        """The printed command has to be one that can finish.
+
+        A resume restores the run's ceiling and replays the spend already on
+        disk against it, so `--resume <id>` alone re-records the missing acts,
+        trips at the same total, and prints itself again — a loop that bills
+        every lap.
+        """
+        from sanzaru.exceptions import CostCeilingError
+
+        mocker.patch(
+            "sanzaru.tools.simulate_podcast.simulate_podcast",
+            side_effect=CostCeilingError(
+                "cost ceiling reached: $2.10 spent of $2.00 limit",
+                spent_usd=2.10,
+                limit_usd=2.00,
+                completed_acts=["act1"],
+                suggested_limit_usd=2.63,
+            ),
+        )
+        result = runner.invoke(cli, ["podcast", "simulate", "-p", "p", "-o", str(tmp_path / "ep.mp3")])
+        assert result.exit_code == 6
+        envelope = _envelope(result.stdout)
+        assert envelope["resume"].endswith("--max-cost 2.63")
+        assert envelope["suggested_limit_usd"] == 2.63
+        assert "--max-cost" in envelope["error"]["message"]
+
+    def test_any_other_failure_still_hands_back_the_run_id(self, runner, mocker, tmp_path):
+        """Acts checkpointed before the failure are only reachable by run id.
+
+        A stalled turn cancels the acts recording alongside it and fails the
+        run; without this the envelope carried no way back to what survived.
+        """
+        from sanzaru.exceptions import RealtimeAPIError
+
+        mocker.patch(
+            "sanzaru.tools.simulate_podcast.simulate_podcast",
+            side_effect=RealtimeAPIError("act2: turn 1 made no progress for 90s - stalled"),
+        )
+        result = runner.invoke(cli, ["podcast", "simulate", "-p", "p", "-o", str(tmp_path / "ep.mp3")])
+        assert result.exit_code == 1
+        envelope = _envelope(result.stdout)
+        assert envelope["error"]["type"] == "api_error"
+        assert envelope["resume"].startswith("sanzaru podcast simulate --resume ")
+        assert envelope["run_id"] == envelope["resume"].split()[-1]
+
     def test_cost_ceiling_inside_a_task_group_is_still_recognised(self, runner, mocker, tmp_path):
         from sanzaru.exceptions import CostCeilingError
 
@@ -416,6 +462,53 @@ class TestSimulateRecovery:
         assert result.exit_code == 0, result.stderr
         voices = [h["voice"] for h in _envelope(result.stdout)["result"]["rundown"]["hosts"]]
         assert voices == ["marin", "cedar"]
+
+    def test_a_bare_resume_keeps_the_container_the_first_run_asked_for(self, runner, tmp_path, media_dir, stub_run_act):
+        """Every simulate option defaults to None so the manifest can fill it in.
+
+        A click-supplied `"mp3"` is indistinguishable from the user typing it,
+        so the resume the CLI itself prints would silently downgrade the
+        container. No `-o` here on purpose: an `-o` basename goes into the brief
+        as `filename`, which the manifest then restores and which would mask the
+        format entirely.
+        """
+        rundown_file = tmp_path / "r.json"
+        rundown_file.write_text(json.dumps(RUNDOWN))
+
+        first = runner.invoke(cli, ["podcast", "simulate", f"@{rundown_file}", "--no-qc", "--format", "wav"])
+        assert first.exit_code == 0, first.stderr
+        assert _envelope(first.stdout)["result"]["file"]["path"].endswith(".wav")
+
+        run_id = self._run_id(first.stderr)
+        second = runner.invoke(cli, ["podcast", "simulate", "--resume", run_id, "--no-qc"])
+        assert second.exit_code == 0, second.stderr
+        assert _envelope(second.stdout)["result"]["file"]["path"].endswith(".wav")
+
+    def test_a_bare_resume_keeps_the_bitrate_the_first_run_asked_for(self, runner, tmp_path, media_dir, stub_run_act):
+        rundown_file = tmp_path / "r.json"
+        rundown_file.write_text(json.dumps(RUNDOWN))
+
+        first = runner.invoke(
+            cli,
+            [
+                "podcast",
+                "simulate",
+                f"@{rundown_file}",
+                "--no-qc",
+                "--bitrate",
+                "320k",
+                "-o",
+                str(tmp_path / "out" / "ep1.mp3"),
+            ],
+        )
+        assert first.exit_code == 0, first.stderr
+
+        run_id = self._run_id(first.stderr)
+        second = runner.invoke(cli, ["podcast", "simulate", "--resume", run_id, "--no-qc"])
+        assert second.exit_code == 0, second.stderr
+        # The resumed run rewrites the manifest from its own effective brief.
+        manifest = json.loads((media_dir / f"simrun_{run_id}.json").read_text())
+        assert manifest["brief"]["output_bitrate"] == "320k"
 
     def test_the_ceiling_from_the_first_run_still_applies_on_resume(self, runner, tmp_path, media_dir, stub_run_act):
         rundown_file = tmp_path / "r.json"
