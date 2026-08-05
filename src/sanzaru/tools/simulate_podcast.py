@@ -30,6 +30,7 @@ records only what is missing.
 
 from __future__ import annotations
 
+import math
 import os
 import time
 from collections.abc import Callable, Sequence
@@ -66,8 +67,9 @@ from ..audio.realtime.mixdown import (
 from ..audio.realtime.pricing import prices_for, project_usage, usage_cost
 from ..audio.realtime.producer import DEFAULT_REALTIME_MODEL, DEFAULT_TURN_SECONDS, DEFAULT_TURN_TOKENS
 from ..audio.realtime.qc import DEFAULT_JUDGE_MODEL, DEFAULT_TRANSCRIBE_MODEL, QCReport, run_qc
-from ..audio.realtime.rundown import DEFAULT_PLANNER_MODEL
+from ..audio.realtime.rundown import DEFAULT_PLANNER_MODEL, assign_rundown_voices
 from ..audio.realtime.types import (
+    MAX_ACT_SECONDS,
     MAX_ACTS,
     MAX_EPISODE_MINUTES,
     MAX_TURN_TOKENS,
@@ -153,6 +155,27 @@ class SimulationBrief(BaseModel):
         return self
 
     @model_validator(mode="after")
+    def _check_the_acts_can_hold_the_episode(self) -> SimulationBrief:
+        """Same guard `RundownRequest` carries, applied before the planner runs.
+
+        `acts` and `target_minutes` only feed pre-production, so this is moot
+        once a rundown exists — but when one does not, the quotient becomes each
+        act's `target_seconds`, and letting an impossible pair through means
+        paying for a planner call whose result cannot be constructed.
+        """
+        if self.rundown is not None:
+            return self
+        seconds_each = self.target_minutes * 60.0 / self.acts
+        if seconds_each > MAX_ACT_SECONDS:
+            raise ValueError(
+                f"{self.acts} act(s) over {self.target_minutes:.0f} minutes is {seconds_each:.0f}s per act, "
+                f"above the {MAX_ACT_SECONDS:.0f}s ceiling a single realtime session can hold - "
+                f"raise acts to at least {math.ceil(self.target_minutes * 60.0 / MAX_ACT_SECONDS)} "
+                f"or lower target_minutes"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _warn_on_unpriced_model(self) -> SimulationBrief:
         """A ceiling that cannot price the model cannot enforce anything.
 
@@ -199,8 +222,12 @@ class CostReport(BaseModel):
     """What the run cost, or is projected to cost."""
 
     usd: float | None = None
-    """None when the model has no known price — see audio/realtime/pricing.py."""
+    """What the run actually charged, as the budget counted it turn by turn.
+    None when nothing could be priced at all — see audio/realtime/pricing.py.
+    It can exceed what `usage` implies: a take discarded by `--qc-retry` was
+    still billed."""
     usage: RealtimeUsage = Field(default_factory=RealtimeUsage)
+    """Tokens behind the audio that shipped. A breakdown, not the bill."""
     limit_usd: float | None = None
     unpriced_models: list[str] = Field(default_factory=list)
     estimated: bool = False
@@ -334,7 +361,10 @@ async def resolve_rundown(brief: SimulationBrief) -> Rundown:
             raise ValueError("rundown has no hosts")
         if not rundown.acts:
             raise ValueError("rundown has no acts")
-        return rundown
+        # A supplied rundown gets the same treatment as a planned one. It skips
+        # `_merge_hosts` entirely, so this is the only place a hand-written
+        # rundown's voiceless hosts are given distinct voices.
+        return assign_rundown_voices(rundown)
     if not brief.premise.strip():
         raise ValueError("simulate_podcast needs either a rundown or a premise")
     return await plan_rundown(
@@ -587,17 +617,34 @@ async def _record_all(
 # ---------- assembly ----------
 
 
-def _build_timeline(recorded: Sequence[_RecordedAct], act_gap_ms: int) -> list[TimelineItem]:
-    """Speaker-attributed timeline for the whole episode, for stems."""
+def _build_timeline(
+    recorded: Sequence[_RecordedAct],
+    act_gap_ms: int,
+    *,
+    intro_ms: int = 0,
+    outro_ms: int = 0,
+) -> list[TimelineItem]:
+    """Speaker-attributed timeline for the whole episode, for stems.
+
+    Every stretch the master has, this has — including the head and tail silence
+    the stitch step adds. `render_stem` promises a track that lines up with the
+    master sample-for-sample, and an omitted intro shifts every stem earlier by
+    exactly `intro_silence_ms`, which is the kind of drift you only notice once
+    the tracks are already on an editor timeline.
+    """
     from ..audio.realtime.types import pcm_silence
 
     gap = pcm_silence(act_gap_ms)
     timeline: list[TimelineItem] = []
+    if intro_ms > 0:
+        timeline.append((None, pcm_silence(intro_ms)))
     for index, act in enumerate(recorded):
         for turn_audio, pcm in zip(act.result.audio, act.turn_pcm, strict=False):
             timeline.append((turn_audio.turn.speaker_id, pcm))
         if gap and index < len(recorded) - 1:
             timeline.append((None, gap))
+    if outro_ms > 0:
+        timeline.append((None, pcm_silence(outro_ms)))
     return timeline
 
 
@@ -639,7 +686,12 @@ async def _write_stems(
     Sequential on purpose: each stem is a full-length copy of the episode in raw
     PCM, and holding all of them at once is what would actually hurt.
     """
-    timeline = _build_timeline(recorded, brief.act_gap_ms)
+    timeline = _build_timeline(
+        recorded,
+        brief.act_gap_ms,
+        intro_ms=brief.intro_silence_ms,
+        outro_ms=brief.outro_silence_ms,
+    )
     stems: dict[str, str] = {}
     for host in rundown.hosts:
         data = await anyio.to_thread.run_sync(render_stem, timeline, host.id, brief.output_format, brief.output_bitrate)
@@ -715,6 +767,10 @@ async def simulate_podcast(
 
     if rundown is None:
         rundown = await resolve_rundown(effective)
+    # Idempotent for anything `resolve_rundown` produced; the resume path skips
+    # that call entirely and can be replaying a manifest written before voices
+    # were assigned at all.
+    rundown = assign_rundown_voices(rundown)
     rundown = annotate_upcoming(rundown)
 
     slug = _safe_title(rundown.title)
@@ -866,7 +922,14 @@ async def simulate_podcast(
     total_usage = RealtimeUsage()
     for recorded_act in recorded:
         total_usage = total_usage + recorded_act.result.usage
-    spent = usage_cost(total_usage, effective.model)
+    # The budget is the only figure that matches the invoice. It charged each
+    # turn at the model that actually produced it (`HostSpec.model` overrides the
+    # episode's), and it still holds the spend of a take `--qc-retry` discarded —
+    # audio that was billed but no longer appears in `recorded` at all. Re-pricing
+    # pooled usage at `effective.model`, as this used to, gets both wrong.
+    # `usage` stays as the token breakdown of what shipped, which is a different
+    # question and worth reporting on its own.
+    spent = None if budget.unpriced_models and budget.spent_usd == 0.0 else budget.spent_usd
 
     logger.info(
         "Simulation complete: %d acts, %d turns, %.0fs audio in %.0fs wall clock",

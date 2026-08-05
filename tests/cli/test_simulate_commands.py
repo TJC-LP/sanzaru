@@ -137,6 +137,25 @@ class TestPodcastRundown:
         assert [h.name for h in request.hosts] == ["Avery", "Rory"]
         assert [h.voice for h in request.hosts] == ["marin", "cedar"]
 
+    def test_a_host_who_names_no_voice_leaves_the_choice_open(self, runner, mocker):
+        """`--host NAME` must reach pre-production with no voice at all.
+
+        This path is the reason the marin-for-everyone bug stayed invisible: the
+        CLI has always sent an empty voice, so it alone got distinct voices while
+        every other way in collapsed onto the default.
+        """
+        from sanzaru.audio.realtime.rundown import assign_voices
+        from sanzaru.audio.realtime.types import Rundown
+
+        patched = mocker.patch(
+            "sanzaru.audio.realtime.rundown.plan_rundown", return_value=Rundown.model_validate(RUNDOWN)
+        )
+        result = runner.invoke(cli, ["podcast", "rundown", "p", "--host", "Avery::You host.", "--host", "Rory"])
+        assert result.exit_code == 0
+        request = patched.call_args.args[0]
+        assert [h.voice for h in request.hosts] == ["", ""]
+        assert [h.voice for h in assign_voices(request.hosts)] == ["marin", "cedar"]
+
     def test_rejects_an_unknown_voice(self, runner):
         result = runner.invoke(cli, ["podcast", "rundown", "p", "--host", "Avery:notavoice:x"])
         assert result.exit_code == 2
@@ -376,6 +395,27 @@ class TestSimulateRecovery:
         assert second.exit_code == 0, second.stderr
         assert stub_run_act == []
         assert all(act["reused"] for act in _envelope(second.stdout)["result"]["acts"])
+
+    def test_a_hand_written_rundown_without_voices_records_in_distinct_ones(
+        self, runner, tmp_path, media_dir, stub_run_act
+    ):
+        """The workflow the docs push: plan, hand-edit the JSON, record it.
+
+        Omitting `voice` is the obvious thing to do in that file, and it used to
+        put the whole cast in one voice — audible only after the recording.
+        """
+        voiceless = json.loads(json.dumps(RUNDOWN))
+        for host in voiceless["hosts"]:
+            del host["voice"]
+        rundown_file = tmp_path / "r.json"
+        rundown_file.write_text(json.dumps(voiceless))
+
+        result = runner.invoke(
+            cli, ["podcast", "simulate", f"@{rundown_file}", "--no-qc", "-o", str(tmp_path / "out" / "ep.mp3")]
+        )
+        assert result.exit_code == 0, result.stderr
+        voices = [h["voice"] for h in _envelope(result.stdout)["result"]["rundown"]["hosts"]]
+        assert voices == ["marin", "cedar"]
 
     def test_the_ceiling_from_the_first_run_still_applies_on_resume(self, runner, tmp_path, media_dir, stub_run_act):
         rundown_file = tmp_path / "r.json"

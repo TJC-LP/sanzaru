@@ -124,6 +124,70 @@ class TestPointSchedule:
         schedule = _point_schedule(brief)
         assert len(schedule) == len(set(schedule.values()))
 
+    @pytest.mark.parametrize("max_turns", range(3, 13))
+    @pytest.mark.parametrize("point_count", range(2, 9))
+    def test_every_point_is_either_scheduled_or_reported(self, caplog, max_turns, point_count):
+        """The one guarantee: no point disappears without anyone being told.
+
+        `len(schedule) == len(set(values))` cannot see the old failure — an
+        overwrite keeps both sides of that equal while losing a point — so this
+        checks coverage against the brief instead of against the schedule.
+        """
+        points = [f"talking point {i}" for i in range(point_count)]
+        brief = ActBrief(id="a", title="t", topic="x", talking_points=points, max_turns=max_turns, target_seconds=30.0)
+
+        with caplog.at_level("WARNING", logger="sanzaru"):
+            schedule = _point_schedule(brief)
+
+        # Point 0 rides the opening note, so turns only ever carry points 1..N-1.
+        assert len(schedule) == len(set(schedule.values()))
+        for index in set(range(1, point_count)) - set(schedule.values()):
+            assert points[index] in caplog.text
+
+    @pytest.mark.parametrize(("max_turns", "point_count"), [(4, 3), (6, 5), (8, 4), (12, 8)])
+    def test_places_every_point_when_the_act_has_room(self, max_turns, point_count):
+        brief = ActBrief(
+            id="a",
+            title="t",
+            topic="x",
+            talking_points=[f"p{i}" for i in range(point_count)],
+            max_turns=max_turns,
+            target_seconds=30.0,
+        )
+        assert set(_point_schedule(brief).values()) == set(range(1, point_count))
+
+    def test_points_stay_in_brief_order(self):
+        brief = ActBrief(id="a", title="t", topic="x", talking_points=[f"p{i}" for i in range(5)], max_turns=8)
+        schedule = _point_schedule(brief)
+        by_turn = [point for _, point in sorted(schedule.items())]
+        assert by_turn == sorted(by_turn)
+
+    def test_an_act_too_short_for_its_points_names_what_it_will_drop(self, caplog):
+        # max_turns=3 leaves exactly one steerable turn: turn 0 opens, turn 2 lands.
+        brief = ActBrief(
+            id="crowded",
+            title="t",
+            topic="x",
+            talking_points=["the first thing", "the second thing", "the third thing"],
+            max_turns=3,
+            target_seconds=30.0,
+        )
+        with caplog.at_level("WARNING", logger="sanzaru"):
+            schedule = _point_schedule(brief)
+        assert schedule == {1: 1}
+        assert "the third thing" in caplog.text
+        assert "crowded" in caplog.text
+
+
+@pytest.mark.unit
+class TestVoiceTable:
+    def test_the_producer_and_the_validator_read_one_table(self):
+        """Two byte-identical tuples in one package drift; then `HostSpec` warns
+        about a voice `assign_voices` handed out itself."""
+        from sanzaru.audio.realtime import producer, types
+
+        assert producer.DEFAULT_VOICES is types.REALTIME_VOICES
+
 
 # ---------- the agent ----------
 

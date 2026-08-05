@@ -25,7 +25,7 @@ from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 from ...config import logger
 from .producer import DEFAULT_TURN_SECONDS, DEFAULT_VOICES
-from .types import MAX_ACTS, MAX_EPISODE_MINUTES, ActBrief, HostSpec, Rundown
+from .types import MAX_ACT_SECONDS, MAX_ACTS, MAX_EPISODE_MINUTES, ActBrief, HostSpec, Rundown
 
 DEFAULT_PLANNER_MODEL = "gpt-5.5"
 """A text model, not a realtime one. One call per episode, and its output shapes
@@ -85,6 +85,25 @@ class RundownRequest(BaseModel):
             raise ValueError("premise is required to plan a rundown")
         return self
 
+    @model_validator(mode="after")
+    def _check_the_acts_can_hold_the_episode(self) -> RundownRequest:
+        """Reject an act length that `build_rundown` could never construct.
+
+        `acts` and `target_minutes` are each individually legal, but their
+        quotient becomes `ActBrief.target_seconds`, which is bounded. Catching
+        that only in `build_rundown` means the planner call is paid for first and
+        the error arrives after the money is gone.
+        """
+        seconds_each = self.target_minutes * 60.0 / self.acts
+        if seconds_each > MAX_ACT_SECONDS:
+            raise ValueError(
+                f"{self.acts} act(s) over {self.target_minutes:.0f} minutes is {seconds_each:.0f}s per act, "
+                f"above the {MAX_ACT_SECONDS:.0f}s ceiling a single realtime session can hold - "
+                f"raise acts to at least {math.ceil(self.target_minutes * 60.0 / MAX_ACT_SECONDS)} "
+                f"or lower target_minutes"
+            )
+        return self
+
 
 def slugify(value: str, fallback: str = "host") -> str:
     """Lowercase identifier from a display name."""
@@ -116,6 +135,20 @@ def assign_voices(hosts: Sequence[HostSpec]) -> list[HostSpec]:
         voice = available.pop(0) if available else DEFAULT_VOICES[len(assigned) % len(DEFAULT_VOICES)]
         assigned.append(host.model_copy(update={"voice": voice}))
     return assigned
+
+
+def assign_rundown_voices(rundown: Rundown) -> Rundown:
+    """Fill in any host a rundown left without a voice.
+
+    A hand-edited rundown is the path the docs push hardest, and it never went
+    through `_merge_hosts` — so without this every host who omitted `voice`
+    records in the same voice, which you only find out by listening to audio you
+    have already paid for.
+    """
+    hosts = assign_voices(rundown.hosts)
+    if hosts == list(rundown.hosts):
+        return rundown
+    return rundown.model_copy(update={"hosts": hosts})
 
 
 def _merge_hosts(planned: Sequence[PlannedHost], supplied: Sequence[HostSpec]) -> list[HostSpec]:

@@ -10,13 +10,14 @@ from sanzaru.audio.realtime.rundown import (
     RundownRequest,
     _merge_hosts,
     _prompt,
+    assign_rundown_voices,
     assign_voices,
     build_rundown,
     plan_rundown,
     slugify,
     turns_for,
 )
-from sanzaru.audio.realtime.types import MAX_ACTS, HostSpec
+from sanzaru.audio.realtime.types import MAX_ACT_SECONDS, MAX_ACTS, ActBrief, HostSpec, Rundown
 
 pytestmark = pytest.mark.audio
 
@@ -80,6 +81,45 @@ class TestAssignVoices:
         assert assigned[0].voice == "cedar"
         assert assigned[1].voice != "cedar"
 
+    def test_a_host_who_states_no_voice_is_not_a_host_who_chose_marin(self):
+        """The default `voice` has to be empty, or nothing here can fire.
+
+        A named default made every unspecified host truthy, so `assign_voices`
+        read all three as deliberate choices and the whole cast recorded in one
+        voice — a failure you can only hear, after paying for the audio.
+        """
+        hosts = [HostSpec(id=f"h{i}", name=f"H{i}") for i in range(3)]
+        assert [h.voice for h in assign_voices(hosts)] == ["marin", "cedar", "alloy"]
+
+
+@pytest.mark.unit
+class TestAssignRundownVoices:
+    def _rundown(self, hosts):
+        return Rundown(title="t", hosts=hosts, acts=[ActBrief(id="act1", title="One", topic="x")])
+
+    def test_a_hand_written_rundown_gets_distinct_voices(self):
+        # Exactly what `podcast rundown -o plan.json`, hand-edited, parses to:
+        # names and personas, no voices.
+        rundown = Rundown.model_validate(
+            {
+                "title": "Stitch",
+                "hosts": [{"id": "avery", "name": "Avery"}, {"id": "rory", "name": "Rory"}],
+                "acts": [{"id": "act1", "title": "One", "topic": "x"}],
+            }
+        )
+        voices = [h.voice for h in assign_rundown_voices(rundown).hosts]
+        assert voices == ["marin", "cedar"]
+
+    def test_an_explicit_voice_survives_and_is_not_handed_out_twice(self):
+        rundown = self._rundown([HostSpec(id="a", name="A", voice="cedar"), HostSpec(id="b", name="B")])
+        voices = [h.voice for h in assign_rundown_voices(rundown).hosts]
+        assert voices[0] == "cedar"
+        assert voices[1] != "cedar"
+
+    def test_a_fully_voiced_rundown_is_returned_untouched(self):
+        rundown = self._rundown([HostSpec(id="a", name="A", voice="ash"), HostSpec(id="b", name="B", voice="echo")])
+        assert assign_rundown_voices(rundown) is rundown
+
 
 @pytest.mark.unit
 class TestMergeHosts:
@@ -98,6 +138,16 @@ class TestMergeHosts:
         planned = [PlannedHost(name="Sam", role="a", persona="p1"), PlannedHost(name="Sam", role="b", persona="p2")]
         merged = _merge_hosts(planned, [])
         assert len({h.id for h in merged}) == 2
+
+    def test_planner_invented_hosts_get_distinct_voices(self):
+        merged = _merge_hosts(_planned().hosts, [])
+        assert len({h.voice for h in merged}) == len(merged)
+
+    def test_supplied_hosts_who_named_no_voice_get_distinct_ones(self):
+        # `--host "Avery::persona"` and a hand-written brief both land here.
+        supplied = [HostSpec(id="x", name="Xavier"), HostSpec(id="y", name="Yvonne")]
+        merged = _merge_hosts(_planned().hosts, supplied)
+        assert [h.voice for h in merged] == ["marin", "cedar"]
 
 
 @pytest.mark.unit
@@ -182,6 +232,25 @@ class TestRundownRequestValidation:
     def test_accepts_the_boundaries(self):
         assert RundownRequest(premise="p", acts=MAX_ACTS).acts == MAX_ACTS
         assert RundownRequest(premise="p", acts=1).acts == 1
+
+    def test_an_act_length_no_act_could_hold_is_rejected_before_the_planner_call(self):
+        """`acts` and `target_minutes` are each legal; their quotient is not.
+
+        `build_rundown` divides one by the other into `ActBrief.target_seconds`,
+        which is bounded — so without this the planner call is paid for and
+        *then* the request turns out to have been impossible all along.
+        """
+        with pytest.raises(ValidationError, match="per act"):
+            RundownRequest(premise="p", acts=2, target_minutes=200.0)
+
+    def test_the_same_episode_split_into_enough_acts_is_fine(self):
+        request = RundownRequest(premise="p", acts=6, target_minutes=200.0)
+        assert request.target_minutes * 60.0 / request.acts <= MAX_ACT_SECONDS
+
+    async def test_the_impossible_split_never_reaches_the_client(self, mocker):
+        mocker.patch("sanzaru.config.get_client", side_effect=AssertionError("planner must not be called"))
+        with pytest.raises(ValidationError):
+            await plan_rundown(RundownRequest(premise="p", acts=1, target_minutes=120.0))
 
     async def test_plan_rundown_no_longer_needs_its_own_guards(self, mocker):
         """A valid request reaches the API; an invalid one never gets built."""

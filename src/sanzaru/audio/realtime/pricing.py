@@ -17,10 +17,13 @@ Two honest caveats, both surfaced to the user rather than hidden:
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass
 
 from .types import RealtimeUsage
+
+logger = logging.getLogger("sanzaru")
 
 # ---------- measured generation rates ----------
 # From live recordings on gpt-realtime-2.1 and -mini. Used only to project a dry
@@ -95,23 +98,35 @@ TRANSCRIBE_USD_PER_MINUTE = 0.0045
 
 
 def _env_override(model: str) -> ModelPrices | None:
-    """Read `SANZARU_REALTIME_PRICE_<MODEL>` — five comma-separated USD/1M values.
+    """Read `SANZARU_REALTIME_PRICE_<MODEL>` — six comma-separated USD/1M values.
 
     Order matches ModelPrices:
     text_in,cached_text_in,audio_in,cached_audio_in,audio_out,text_out.
     The model name is upper-cased with `-`/`.` becoming `_`, e.g.
     `SANZARU_REALTIME_PRICE_GPT_REALTIME_2_1=4,0.4,32,0.4,64,24`.
+
+    A malformed value warns and falls through to the table: someone who set this
+    variable wanted it to take effect, and silently billing them at list price is
+    the one outcome they were trying to avoid.
     """
     key = "SANZARU_REALTIME_PRICE_" + model.upper().replace("-", "_").replace(".", "_")
     raw = os.getenv(key)
     if not raw:
         return None
     parts = [p.strip() for p in raw.split(",")]
-    if len(parts) != 6:
-        return None
     try:
+        if len(parts) != 6:
+            raise ValueError(f"expected 6 comma-separated values, got {len(parts)}")
         values = [float(p) for p in parts]
-    except ValueError:
+    except ValueError as exc:
+        logger.warning(
+            "%s=%r is not usable (%s) - falling back to table prices for %r. Expected "
+            "text_in,cached_text_in,audio_in,cached_audio_in,audio_out,text_out",
+            key,
+            raw,
+            exc,
+            model,
+        )
         return None
     return ModelPrices(*values)
 
@@ -123,11 +138,13 @@ def prices_for(model: str) -> ModelPrices | None:
         return override
     if model in PRICES:
         return PRICES[model]
-    # Dated snapshots (gpt-realtime-2025-08-28) bill like their base model.
-    for known, prices in PRICES.items():
-        if model.startswith(known):
-            return prices
-    return None
+    # Dated snapshots (gpt-realtime-2025-08-28) bill like their base model. The
+    # *longest* match wins, not the first: "gpt-realtime-2.1" is a prefix of
+    # "gpt-realtime-2.1-mini", so insertion order priced every dated -mini
+    # snapshot at the full tier — 3.2x over on audio output, silently, in both
+    # the dry-run projection and the cost ceiling.
+    base = max((known for known in PRICES if model.startswith(known)), key=len, default="")
+    return PRICES[base] if base else None
 
 
 def usage_cost(usage: RealtimeUsage, model: str) -> float | None:

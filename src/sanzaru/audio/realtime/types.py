@@ -98,9 +98,13 @@ class HostSpec(BaseModel):
 
     id: Identifier
     name: Annotated[str, StringConstraints(min_length=1, max_length=120)]
-    voice: str = "marin"
+    voice: str = ""
     """A Realtime API voice (marin, cedar, alloy, ash, ballad, coral, echo, sage,
-    shimmer, verse) — not a TTS voice and not an ElevenLabs voice id."""
+    shimmer, verse) — not a TTS voice and not an ElevenLabs voice id.
+
+    Empty means "you pick": `assign_voices` hands out a distinct voice per host.
+    Defaulting to a *named* voice instead made every host who did not state one
+    speak as marin, which is only audible after the recording is paid for."""
     persona: str = ""
     model: str | None = None
     """Per-host model override; falls back to the episode model."""
@@ -314,7 +318,9 @@ class ActResult:
     audio: list[TurnAudio] = field(default_factory=list)
     usage: RealtimeUsage = field(default_factory=RealtimeUsage)
     stop_reason: str = "complete"
-    """Why the act ended: complete | max_turns | target_seconds | budget."""
+    """Why the act ended: complete | max_turns | target_seconds. A cost abort is
+    not one of these — `CostCeilingError` cancels the act rather than ending it,
+    so no result is ever built for it."""
 
     @property
     def turns(self) -> list[Turn]:

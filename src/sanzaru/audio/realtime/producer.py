@@ -46,6 +46,7 @@ from .pricing import OUTPUT_TOKENS_PER_SECOND
 from .types import (
     DEFAULT_TURN_SECONDS,
     REALTIME_SAMPLE_RATE,
+    REALTIME_VOICES,
     ActBrief,
     ActResult,
     HostSpec,
@@ -63,20 +64,13 @@ if TYPE_CHECKING:
 
 DEFAULT_REALTIME_MODEL = "gpt-realtime-2.1"
 
-DEFAULT_VOICES: tuple[str, ...] = (
-    "marin",
-    "cedar",
-    "alloy",
-    "sage",
-    "verse",
-    "coral",
-    "ash",
-    "ballad",
-    "echo",
-    "shimmer",
-)
-"""Realtime API voices, in assignment order. marin/cedar lead because they are the
-most natural of the set in conversation — that pairing is what the spike used."""
+DEFAULT_VOICES: tuple[str, ...] = REALTIME_VOICES
+"""Alias, kept because this is the name the assignment code reads.
+
+It must stay the same object as `REALTIME_VOICES`: `HostSpec` validates an
+unknown voice against that tuple while `assign_voices` draws from this one, so
+two hand-maintained copies would eventually warn about a voice we ourselves
+assigned."""
 
 TURN_TOKEN_HEADROOM = 1.5
 """How far past the target a turn may run before the token cap stops it.
@@ -284,15 +278,34 @@ def _point_schedule(brief: ActBrief) -> dict[int, int]:
     points = brief.talking_points
     if len(points) <= 1 or brief.max_turns <= 2:
         return {}
-    usable = max(1, brief.max_turns - 1)
+    usable = brief.max_turns - 1
+    # Turn 0 opens the act and turn `usable` lands it, so points ride in between.
+    slots = list(range(1, usable))
+    to_place = min(len(points) - 1, len(slots))
+    if to_place < len(points) - 1:
+        # A short act with a long list genuinely cannot cover it. Say which
+        # points go uncovered rather than quietly overwriting one on its turn,
+        # which is what this did before and nothing downstream could detect.
+        logger.warning(
+            "act %r: %d turns leave room for %d of %d talking points, so these will not be "
+            "introduced: %s - raise max_turns or cut points",
+            brief.id,
+            brief.max_turns,
+            to_place + 1,
+            len(points),
+            "; ".join(points[to_place + 1 :]),
+        )
+
     schedule: dict[int, int] = {}
-    for point_index in range(1, len(points)):
-        turn = round(point_index * usable / len(points))
-        turn = min(max(turn, 1), usable - 1) if usable > 1 else 1
-        # Never overwrite: two points landing on one turn would drop one.
-        while turn in schedule and turn + 1 < usable:
-            turn += 1
+    previous = 0
+    for position, point_index in enumerate(range(1, to_place + 1)):
+        # Spread proportionally, but never later than the last turn that still
+        # leaves a slot for every point behind this one, and never on a turn
+        # already spoken for. Both bounds together make every point land.
+        latest = slots[len(slots) - (to_place - position)]
+        turn = min(max(round(point_index * usable / len(points)), previous + 1), latest)
         schedule[turn] = point_index
+        previous = turn
     return schedule
 
 

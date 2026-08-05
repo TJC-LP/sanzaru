@@ -232,6 +232,30 @@ class TestPricing:
     def test_dated_snapshots_bill_like_their_base_model(self):
         assert prices_for("gpt-realtime-2.1-2026-01-01") == prices_for("gpt-realtime-2.1")
 
+    def test_a_dated_mini_snapshot_bills_at_the_mini_tier(self):
+        """The longest matching base wins, not the first one in the table.
+
+        "gpt-realtime-2.1" is a prefix of "gpt-realtime-2.1-mini", so scanning in
+        insertion order priced every dated -mini snapshot 3.2x over — silently,
+        in both the dry-run projection and the cost ceiling.
+        """
+        prices = prices_for("gpt-realtime-2.1-mini-2026-01-01")
+        assert prices == prices_for("gpt-realtime-2.1-mini")
+        assert prices is not None
+        assert prices.audio_output == pytest.approx(20.0)
+
+    @pytest.mark.parametrize(
+        ("model", "base"),
+        [
+            ("gpt-realtime-2.1-2026-01-01", "gpt-realtime-2.1"),
+            ("gpt-realtime-2.1-mini-2026-01-01", "gpt-realtime-2.1-mini"),
+            ("gpt-realtime-mini-2025-08-28", "gpt-realtime-mini"),
+            ("gpt-realtime-2-2025-08-28", "gpt-realtime-2"),
+        ],
+    )
+    def test_every_dated_snapshot_finds_its_own_tier(self, model, base):
+        assert prices_for(model) is prices_for(base)
+
     def test_unknown_model_has_no_price_rather_than_a_wrong_one(self):
         assert prices_for("some-future-model") is None
         assert usage_cost(RealtimeUsage(output_audio_tokens=10), "some-future-model") is None
@@ -243,6 +267,15 @@ class TestPricing:
     def test_malformed_env_override_is_ignored(self, monkeypatch):
         monkeypatch.setenv("SANZARU_REALTIME_PRICE_GPT_REALTIME_2_1", "not,a,price")
         assert prices_for("gpt-realtime-2.1") == ModelPrices(4.0, 0.40, 32.0, 0.40, 64.0, 24.0)
+
+    @pytest.mark.parametrize("raw", ["not,a,price", "1,2,3,4,5", "1,2,3,4,5,6,7", "4,0.4,32,0.4,64,cheap"])
+    def test_a_malformed_env_override_says_so(self, monkeypatch, caplog, raw):
+        # Someone who set this variable wanted it to take effect; billing them at
+        # list price without a word is the outcome they were trying to avoid.
+        monkeypatch.setenv("SANZARU_REALTIME_PRICE_GPT_REALTIME_2_1", raw)
+        with caplog.at_level("WARNING", logger="sanzaru"):
+            assert prices_for("gpt-realtime-2.1") == ModelPrices(4.0, 0.40, 32.0, 0.40, 64.0, 24.0)
+        assert "SANZARU_REALTIME_PRICE_GPT_REALTIME_2_1" in caplog.text
 
     def test_projection_scales_input_with_listeners_not_hosts(self):
         solo = project_usage(seconds=100, turns=10, hosts=1)
@@ -310,6 +343,32 @@ class TestResolveRundown:
 
     async def test_passes_a_usable_rundown_straight_through(self, rundown):
         assert await sim.resolve_rundown(sim.SimulationBrief(rundown=rundown)) is rundown
+
+    async def test_a_supplied_rundown_still_gets_its_voices_assigned(self):
+        """The hand-edited-rundown path is the one the docs push hardest.
+
+        It never goes through `_merge_hosts`, so before this it was the one path
+        where every voiceless host recorded in the same voice — and the rundown
+        came back from here completely untouched, so nothing later could fix it.
+        """
+        supplied = Rundown.model_validate(
+            {
+                "title": "Stitch",
+                "hosts": [{"id": "avery", "name": "Avery"}, {"id": "rory", "name": "Rory"}],
+                "acts": [{"id": "act1", "title": "One", "topic": "x"}],
+            }
+        )
+        resolved = await sim.resolve_rundown(sim.SimulationBrief(rundown=supplied))
+        assert [h.voice for h in resolved.hosts] == ["marin", "cedar"]
+
+    async def test_a_voice_the_author_chose_is_left_alone(self):
+        supplied = Rundown(
+            title="Stitch",
+            hosts=[HostSpec(id="avery", name="Avery", voice="cedar"), HostSpec(id="rory", name="Rory")],
+            acts=[ActBrief(id="act1", title="One", topic="x")],
+        )
+        resolved = await sim.resolve_rundown(sim.SimulationBrief(rundown=supplied))
+        assert [h.voice for h in resolved.hosts] == ["cedar", "marin"]
 
 
 @pytest.mark.unit
@@ -448,6 +507,54 @@ class TestSimulate:
             format="wav",
         )
         assert len(stem) == pytest.approx(len(master), abs=30)
+
+    async def test_stems_stay_aligned_when_the_episode_has_head_and_tail_silence(
+        self, rundown, media_dir, stub_run_act
+    ):
+        """`render_stem` promises sample-for-sample alignment with the master.
+
+        The stitch step prepends `intro_silence_ms` to the master, so a timeline
+        built from turns and act gaps alone shifts every stem earlier by exactly
+        that much — drift you only find once the tracks are on an editor
+        timeline. The older length test only ever ran with intro=0.
+        """
+        from io import BytesIO
+
+        from pydub import AudioSegment
+
+        result = await sim.simulate_podcast(
+            sim.SimulationBrief(
+                rundown=rundown,
+                qc=False,
+                run_id="testrun",
+                stems=True,
+                output_format="wav",
+                intro_silence_ms=1500,
+                outro_silence_ms=800,
+            )
+        )
+
+        def milliseconds(name):
+            return len(AudioSegment.from_file(BytesIO((media_dir / name).read_bytes()), format="wav"))
+
+        master = milliseconds(result.output_file)
+        for name in result.stems.values():
+            assert milliseconds(name) == pytest.approx(master, abs=30)
+
+    async def test_the_intro_silence_is_silent_in_a_stem_too(self, rundown, media_dir, stub_run_act):
+        # Alignment by length alone would also pass if the intro were filled with
+        # the first turn's audio, which is the opposite of a stem.
+        from io import BytesIO
+
+        from pydub import AudioSegment
+
+        result = await sim.simulate_podcast(
+            sim.SimulationBrief(
+                rundown=rundown, qc=False, run_id="testrun", stems=True, output_format="wav", intro_silence_ms=1500
+            )
+        )
+        stem = AudioSegment.from_file(BytesIO((media_dir / result.stems["avery"]).read_bytes()), format="wav")
+        assert max(stem[:1400].raw_data) == 0
 
     async def test_output_filename_is_honoured(self, rundown, media_dir, stub_run_act):
         result = await sim.simulate_podcast(
@@ -602,6 +709,108 @@ class TestResumeRestoresSettings:
         assert result.output_file.endswith(".wav")
         manifest = json.loads((media_dir / "simrun_testrun.json").read_text())
         assert manifest["brief"]["turn_seconds"] == 42.0
+
+
+@pytest.mark.integration
+class TestReportedCost:
+    """`cost.usd` is the number a user reconciles against their bill.
+
+    It used to be recomputed from pooled usage at the episode model, which is a
+    different number from the one the budget charged the moment either a host
+    overrides the model or `--qc-retry` throws a paid take away.
+    """
+
+    @pytest.fixture
+    def mixed_model_rundown(self):
+        return Rundown(
+            title="Stitch Test",
+            premise="the plumbing",
+            hosts=[
+                HostSpec(id="avery", name="Avery", voice="marin"),
+                # ~3x cheaper: pooling the two and pricing at the episode model
+                # cannot produce the right answer for this episode.
+                HostSpec(id="rory", name="Rory", voice="cedar", model="gpt-realtime-2.1-mini"),
+            ],
+            acts=[
+                ActBrief(
+                    id=f"act{i + 1}", title=f"Act {i + 1}", topic=f"topic {i + 1}", target_seconds=4.0, max_turns=2
+                )
+                for i in range(3)
+            ],
+        )
+
+    async def test_a_mixed_model_episode_reports_what_was_actually_charged(
+        self, mixed_model_rundown, media_dir, monkeypatch
+    ):
+        async def fake_run_act(brief, hosts, settings, **kwargs):
+            result = _fake_act(brief.id)
+            by_id = {h.id: h for h in hosts}
+            # Mirrors run_act: each turn is charged at the model that spoke it.
+            for turn_audio in result.audio:
+                host = by_id[turn_audio.turn.speaker_id]
+                kwargs["budget"].charge(RealtimeUsage(output_audio_tokens=500_000), host.model or settings.model)
+            return result
+
+        monkeypatch.setattr(sim, "run_act", fake_run_act)
+        result = await sim.simulate_podcast(
+            sim.SimulationBrief(rundown=mixed_model_rundown, qc=False, run_id="testrun")
+        )
+
+        # Per act: 0.5M audio-out at $64/1M (avery) + 0.5M at $20/1M (rory).
+        assert result.cost.usd == pytest.approx(3 * (32.0 + 10.0))
+
+    async def test_a_take_discarded_by_qc_retry_is_still_billed(self, rundown, media_dir, monkeypatch):
+        """--qc-retry drops the bad take from `recorded`, but not from the bill."""
+        from sanzaru.audio.realtime.qc import ActVerdict, QCReport
+
+        takes: list[str] = []
+
+        async def fake_run_act(brief, hosts, settings, **kwargs):
+            takes.append(brief.id)
+            kwargs["budget"].charge(RealtimeUsage(output_audio_tokens=1_000_000), settings.model)
+            return _fake_act(brief.id)
+
+        reports = iter(
+            [
+                QCReport(verdict="warn", acts=[ActVerdict(act_id="act2", similarity=0.1)], flagged_acts=["act2"]),
+                QCReport(verdict="pass"),
+            ]
+        )
+
+        async def fake_run_qc(*args, **kwargs):
+            return next(reports)
+
+        monkeypatch.setattr(sim, "run_act", fake_run_act)
+        monkeypatch.setattr(sim, "run_qc", fake_run_qc)
+
+        result = await sim.simulate_podcast(
+            sim.SimulationBrief(rundown=rundown, run_id="testrun", qc=True, qc_retry=True)
+        )
+
+        assert takes == ["act1", "act2", "act3", "act2"]
+        assert len(result.acts) == 3
+        # Four takes at 1M audio-out tokens each, $64/1M — the discarded one included.
+        assert result.cost.usd == pytest.approx(4 * 64.0)
+
+    async def test_a_resumed_run_reports_the_spend_it_replayed(self, rundown, media_dir, stub_run_act):
+        first = await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))
+        resumed = await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="testrun", qc=False))
+        assert first.cost.usd is not None
+        assert first.cost.usd > 0
+        # Every act came off disk, so the run cost nothing new — but reporting
+        # zero for a recovered episode would be just as wrong as double-counting.
+        assert resumed.cost.usd == pytest.approx(first.cost.usd)
+
+    async def test_an_unpriceable_model_reports_no_figure_rather_than_zero(self, rundown, media_dir, stub_run_act):
+        result = await sim.simulate_podcast(
+            sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun", model="some-future-model")
+        )
+        assert result.cost.usd is None
+        assert result.cost.unpriced_models == ["some-future-model"]
+
+    async def test_the_token_breakdown_still_describes_what_shipped(self, rundown, media_dir, stub_run_act):
+        result = await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))
+        assert result.cost.usage.output_audio_tokens == 300
 
 
 @pytest.mark.integration
@@ -794,6 +1003,19 @@ class TestSimulationBriefValidation:
     def test_out_of_range_values_are_rejected(self, kwargs):
         with pytest.raises(ValidationError):
             sim.SimulationBrief(premise="p", **kwargs)
+
+    def test_an_act_length_no_act_could_hold_is_rejected_up_front(self):
+        # Same cross-field guard RundownRequest carries: legal apart, impossible
+        # together, and only discovered after the planner call is paid for.
+        with pytest.raises(ValidationError, match="per act"):
+            sim.SimulationBrief(premise="p", acts=2, target_minutes=200.0)
+
+    def test_enough_acts_for_the_same_episode_is_accepted(self):
+        assert sim.SimulationBrief(premise="p", acts=6, target_minutes=200.0).acts == 6
+
+    def test_a_supplied_rundown_owns_its_own_act_lengths(self, rundown):
+        # acts/target_minutes only feed pre-production, which a rundown skips.
+        assert sim.SimulationBrief(rundown=rundown, acts=2, target_minutes=200.0).rundown is rundown
 
     def test_a_ceiling_on_an_unpriceable_model_warns_loudly(self, caplog):
         with caplog.at_level("WARNING", logger="sanzaru"):
