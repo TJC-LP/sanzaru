@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import functools
 import os
+import sys
 import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
@@ -19,6 +20,10 @@ from typing import ParamSpec
 
 import anyio
 import click
+
+if sys.version_info < (3, 11):  # pragma: no cover - 3.11+ has it as a builtin
+    # anyio already requires this backport below 3.11, so it is always present.
+    from exceptiongroup import BaseExceptionGroup
 
 from ._output import (
     EXIT_CONFIG,
@@ -64,17 +69,45 @@ class CLIError(Exception):
         self.extra = extra
 
 
+def _unwrap(exc: Exception) -> Exception:
+    """Peel single-error ExceptionGroups so the real failure can be classified.
+
+    Tools that fan out with `anyio.create_task_group()` (podcast segments, TTS
+    chunks, multi-file transcription) surface a failing child as an
+    ExceptionGroup. Without this, an actionable message — "lower
+    SANZARU_ELEVENLABS_MAX_CONCURRENCY" — is reported as
+    "internal: ExceptionGroup: unhandled errors in a TaskGroup".
+
+    Groups with several distinct failures are left intact: picking one to
+    represent the rest would hide the others.
+    """
+    seen = 0
+    while isinstance(exc, BaseExceptionGroup) and len(exc.exceptions) == 1 and seen < 10:
+        inner = exc.exceptions[0]
+        if not isinstance(inner, Exception):
+            break
+        exc = inner
+        seen += 1
+    return exc
+
+
 def _classify(exc: Exception) -> CLIError:
     """Map uncaught exceptions from the tool layer onto the error contract."""
     # Imported lazily so `sanzaru --help` never pays the openai import.
     from openai import APIConnectionError, APIStatusError
 
+    from ..exceptions import TTSError
     from ..polling import WaitTimeoutError
+
+    exc = _unwrap(exc)
 
     if isinstance(exc, CLIError):
         return exc
     if isinstance(exc, WaitTimeoutError):
         return CLIError("timeout", str(exc), exit_code=4)
+    if isinstance(exc, TTSError):
+        # Provider-side failures (e.g. an ElevenLabs 429 after retries).
+        return CLIError("api_error", str(exc))
     if isinstance(exc, APIStatusError):
         error_type = "not_found" if exc.status_code == 404 else "api_error"
         return CLIError(error_type, exc.message, extra={"status_code": exc.status_code})
@@ -87,6 +120,14 @@ def _classify(exc: Exception) -> CLIError:
     if isinstance(exc, ValueError):
         # Tool-layer validation guards (e.g. transparent + gpt-image-2).
         return CLIError("usage", str(exc), exit_code=EXIT_USAGE)
+    if isinstance(exc, BaseExceptionGroup):
+        # Several parallel tasks failed differently — name each one rather than
+        # reporting the opaque "unhandled errors in a TaskGroup".
+        causes = "; ".join(f"{type(e).__name__}: {e}" for e in exc.exceptions[:5])
+        extra_count = len(exc.exceptions) - 5
+        if extra_count > 0:
+            causes += f"; (+{extra_count} more)"
+        return CLIError("internal", f"{len(exc.exceptions)} parallel tasks failed - {causes}")
     return CLIError("internal", f"{type(exc).__name__}: {exc}")
 
 
@@ -132,6 +173,12 @@ def run_async(command: str) -> Callable[[Callable[P, Coroutine[None, None, int]]
 
                         set_client(None)
                         await client.close()
+                    # The ElevenLabs client is built lazily on first use rather
+                    # than installed here, so this is a no-op (and costs no
+                    # import) for every command that never touched it.
+                    from ..config import close_elevenlabs_client
+
+                    await close_elevenlabs_client()
                     from ..storage import set_storage_backend
 
                     set_storage_backend(None)

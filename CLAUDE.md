@@ -86,6 +86,11 @@ src/sanzaru/
 │   └── text_utils.py   # split_text_for_tts and text chunking
 ├── audio/              # Audio domain logic and services
 │   ├── processor.py    # AudioProcessor (format conversion, concatenation)
+│   ├── providers/      # Pluggable TTS backends
+│   │   ├── base.py               # SpeechRequest, TTSProvider protocol, synthesize_speech
+│   │   ├── openai_provider.py    # client.audio.speech (default)
+│   │   ├── elevenlabs_provider.py # client.text_to_speech.convert (optional extra)
+│   │   └── __init__.py           # get_provider() registry (lazy imports)
 │   └── services/       # TTSService, FileService, AudioService, TranscriptionService
 ├── tools/              # Tool implementations
 │   ├── video.py        # 7 video tools
@@ -126,6 +131,40 @@ back-compat for every existing config is guarded by tests. Key design points:
   never pays the openai/FastMCP import cost (enforced by a startup-weight test); missing
   optional extras surface as `config` envelopes (exit 3) with the install command.
 - CLI tests live in `tests/cli/` (CliRunner; mock at the `sanzaru.tools.*` layer).
+
+### TTS Providers
+
+Speech generation goes through `audio/providers/`, never straight to an SDK. Both TTS entry points
+(`TTSService.create_speech` → `create_audio`, and `generate_podcast`) build a `SpeechRequest` and
+call `synthesize_speech(provider, request, limiter=...)`.
+
+Division of labour: **a provider synthesizes one chunk and returns mp3 bytes**; `base.py` owns
+splitting long text, the bounded parallel fan-out, and concatenation. mp3 is a contract, not a
+detail — `podcast._stitch_audio` decodes every segment with `AudioSegment.from_mp3`.
+
+| | openai (default) | elevenlabs |
+|---|---|---|
+| Default model | `gpt-4o-mini-tts` | `eleven_v3` |
+| Voice | named (`alloy`, `onyx`, …) | opaque voice id, required |
+| `instructions` | supported | **ignored** — use inline audio tags (`[whispers]`) with eleven_v3 |
+| `voice_settings` | rejected | stability / similarity_boost / style / use_speaker_boost / speed |
+| Speed | 0.25–4.0 | 0.7–1.2; **eleven_v3 rejects any change** |
+| Chunk limit | 4000 chars | 3000 (v3) / 10000 (multilingual) / 40000 (flash, turbo) |
+| Concurrency | unbounded | 2, or 4 on flash/turbo (Free-tier caps), per subscription tier |
+
+Speed ranges are **not** rescaled across providers — an out-of-range value is a `ValueError`, so
+`speed=2.0` never silently means two different things.
+
+Provider selection in podcasts resolves `speaker.provider` → `config.provider` → the tool's
+`provider` argument, so one episode can mix providers. Concurrency uses one
+`anyio.CapacityLimiter` per provider, built per invocation (a limiter binds to its event loop —
+never cache one at module scope) and shared between segment- and chunk-level fan-out, because that
+is what ElevenLabs' cap actually counts.
+
+Client seam: `config.get_elevenlabs_client()` mirrors `get_client()`, but builds lazily and caches
+rather than being installed eagerly by the CLI runtime, so `sanzaru --help` never imports the SDK.
+Missing key raises `RuntimeError`, missing extra raises `ImportError` — both map to CLI exit 3 via
+`_classify`. `ConfigurationError` would *not* (it falls through to exit 1).
 
 ### Runtime Path Configuration
 Paths are validated lazily via the `get_path()` function when tools are called:
@@ -281,6 +320,11 @@ Individual paths take precedence over `SANZARU_MEDIA_PATH` when both are set.
 Optional:
 ```bash
 LOG_LEVEL="INFO"  # DEBUG, INFO, WARNING, ERROR (defaults to INFO)
+
+# ElevenLabs TTS provider — needs `uv pip install 'sanzaru[elevenlabs]'`
+ELEVENLABS_API_KEY="..."
+SANZARU_ELEVENLABS_MAX_CONCURRENCY=2  # Free-tier cap (4 on flash/turbo); raise on a paid tier
+SANZARU_OPENAI_MAX_CONCURRENCY=0      # 0 = unbounded (default)
 ```
 
 **For MCP servers (Claude Desktop):**

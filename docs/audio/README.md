@@ -21,6 +21,34 @@ export AUDIO_PATH=/path/to/your/audio/files
 export OPENAI_API_KEY=sk-...
 ```
 
+### ElevenLabs (optional second TTS provider)
+
+`create_audio` and `generate_podcast` accept `provider="elevenlabs"` alongside the default
+`"openai"`. Speakers in a podcast choose independently, so an episode can mix both.
+
+```bash
+uv add "sanzaru[elevenlabs]"
+export ELEVENLABS_API_KEY=...
+# Optional: defaults are the Free-tier caps (2, or 4 on flash/turbo). Raise it on
+# a paid tier; lower it if renders still hit HTTP 429.
+export SANZARU_ELEVENLABS_MAX_CONCURRENCY=2
+```
+
+Differences that matter when switching:
+
+- **Voice** is an opaque voice id from your library, not a name like `alloy`, and it is required.
+- **`instructions` is ignored.** ElevenLabs has no equivalent parameter — put inline audio tags
+  (`[whispers]`, `[excited]`) directly in the text with the default `eleven_v3` model.
+- **Speed** is 0.7–1.2, and `eleven_v3` rejects any change at all; use `eleven_multilingual_v2`
+  when you need speed control. Out-of-range values raise rather than being rescaled from OpenAI's
+  0.25–4.0 range.
+- **`voice_settings`** (`stability`, `similarity_boost`, `style`, `use_speaker_boost`, `speed`) is
+  accepted here and rejected by the OpenAI provider.
+
+Implementation lives in `src/sanzaru/audio/providers/`. A provider synthesizes one chunk and
+returns mp3 bytes; `providers/base.py` owns text splitting, the bounded parallel fan-out, and
+concatenation.
+
 ## Available Tools
 
 ### File Management

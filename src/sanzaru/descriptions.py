@@ -652,16 +652,25 @@ Example workflows:
 4. Speech analysis:
    transcribe_with_enhancement("speech.wav", enhancement_type="analytical")"""
 
-CREATE_AUDIO = """Generate text-to-speech audio using OpenAI TTS API.
+CREATE_AUDIO = """Generate text-to-speech audio using OpenAI or ElevenLabs.
 
 Convert text to natural-sounding speech with multiple voice options and customization.
-Handles texts of any length by automatically splitting into 4096-character chunks
-and concatenating the audio seamlessly.
+Handles texts of any length by automatically splitting into chunks at natural boundaries
+and concatenating the audio seamlessly (the per-request limit is provider-specific).
+
+Providers:
+- openai (DEFAULT): named voices, `instructions` style control, speed 0.25-4.0
+- elevenlabs: voice library + `voice_settings` tuning, speed 0.7-1.2, needs ELEVENLABS_API_KEY
+  and the [elevenlabs] extra
 
 Model recommendation:
-- gpt-4o-mini-tts: RECOMMENDED - High quality, fast, cost-effective (DEFAULT)
+- gpt-4o-mini-tts: RECOMMENDED for openai - High quality, fast, cost-effective (DEFAULT)
+- eleven_v3: default for elevenlabs - most expressive, supports inline audio tags,
+  but does NOT support speed adjustment
+- eleven_multilingual_v2: use when you need ElevenLabs speed control (0.7-1.2)
+- eleven_flash_v2_5 / eleven_turbo_v2_5: lower latency and cost
 
-Available voices (each with distinct characteristics):
+Available voices (OpenAI — each with distinct characteristics):
 - alloy: Neutral, balanced (good default)
 - ash: Authoritative, confident
 - ballad: Warm, expressive
@@ -673,13 +682,24 @@ Available voices (each with distinct characteristics):
 - sage: Calm, soothing
 - shimmer: Smooth, polished
 
+ElevenLabs voices are opaque voice ids from your own voice library (e.g. "21m00Tcm4TlvDq8ikWAM"),
+not names from the list above.
+
 Parameters:
 - text_prompt: Text to convert to speech (required, any length)
-- model: TTS model. Default: "gpt-4o-mini-tts"
-- voice: Voice to use. Default: "alloy"
-- instructions: Optional style guidance (e.g., "Speak slowly and clearly", "Use British accent", "Sound excited")
-- speed: Speech speed from 0.25 (very slow) to 4.0 (very fast). Default: 1.0
+- model: TTS model. Default: "gpt-4o-mini-tts" (openai) / "eleven_v3" (elevenlabs)
+- voice: OpenAI voice name, or an ElevenLabs voice id. Default: "alloy" (openai); elevenlabs has
+  no default and requires an explicit voice id
+- instructions: Optional style guidance (e.g., "Speak slowly and clearly", "Use British accent", "Sound excited").
+  OPENAI ONLY — ElevenLabs ignores it. For expressive ElevenLabs delivery, put inline audio tags
+  in the text itself with eleven_v3: "[whispers] this is the secret. [laughs] Got you."
+- speed: Speech speed. openai: 0.25 (very slow) to 4.0 (very fast). elevenlabs: 0.7-1.2, and
+  eleven_v3 rejects any value other than 1.0. Default: 1.0
 - output_filename: Optional custom filename (defaults to "speech_<timestamp>.mp3")
+- provider: "openai" (default) or "elevenlabs"
+- voice_settings: ELEVENLABS ONLY. Object with any of: stability (0-1), similarity_boost (0-1),
+  style (0-1), use_speaker_boost (bool), speed (0.7-1.2, overrides the `speed` param).
+  Rejected when provider is "openai".
 
 Returns TTSResult with:
 - output_file: Name of the generated audio file (use this exact filename in follow-up calls like view_media)
@@ -698,7 +718,12 @@ Example workflows:
    create_audio("An entire blog post with thousands of words...")  # Automatically chunks
 
 5. Custom filename:
-   create_audio("Welcome message", voice="shimmer", output_filename="welcome.mp3")"""
+   create_audio("Welcome message", voice="shimmer", output_filename="welcome.mp3")
+
+6. ElevenLabs with voice tuning:
+   create_audio("[excited] You are not going to believe this.",
+                provider="elevenlabs", voice="21m00Tcm4TlvDq8ikWAM",
+                voice_settings={"stability": 0.4, "similarity_boost": 0.85})"""
 
 
 # ==================== PODCAST GENERATION TOOL DESCRIPTIONS ====================
@@ -706,8 +731,11 @@ Example workflows:
 GENERATE_PODCAST = """Generate a multi-voice podcast from a structured PodcastScript.
 
 Takes a fully-specified script with speaker definitions and segment content, generates
-each segment via TTS (sequentially), and stitches them into a single audio file with
-configurable silence gaps and optional loudness normalization.
+every segment via TTS in parallel (bounded per provider), and stitches them into a single
+audio file with configurable silence gaps and optional loudness normalization.
+
+Speakers choose their provider independently, so one episode can mix OpenAI and ElevenLabs
+voices. Provider precedence: speaker.provider > config.provider > the `provider` argument.
 
 All state is in-memory — no temp files are created. The final output is written directly
 to the audio storage path.
@@ -723,10 +751,23 @@ script must be a JSON object matching this structure:
     {
       "id": string,                  // Unique identifier, referenced in segments (e.g. "host")
       "name": string,                // Display name (e.g. "Alex")
-      "voice": string,               // TTS voice: alloy|ash|ballad|coral|echo|fable|nova|onyx|sage|shimmer
-      "speed": number,               // Speed multiplier 0.25-4.0 (1.0 = normal)
-      "instructions": string,        // Style directives passed to TTS voice (e.g. "Speak confidently and clearly")
-      "role": string                 // Optional: "host"|"cohost"|"narrator"|"interviewer"|"guest"
+      "voice": string,               // openai: alloy|ash|ballad|coral|echo|fable|nova|onyx|sage|shimmer
+                                     // elevenlabs: a voice id from your library (required, no default)
+      "speed": number,               // openai 0.25-4.0; elevenlabs 0.7-1.2; eleven_v3 must be 1.0
+      "instructions": string,        // Style directives (e.g. "Speak confidently and clearly").
+                                     // OPENAI ONLY — ignored by elevenlabs speakers; use inline
+                                     // audio tags like [whispers] in segment text with eleven_v3
+      "role": string,                // Optional: "host"|"cohost"|"narrator"|"interviewer"|"guest"
+      "provider": string,            // Optional: "openai" (default) | "elevenlabs"
+      "model": string,               // Optional per-speaker model override; must belong to the
+                                     // speaker's provider
+      "voice_settings": {            // Optional, ELEVENLABS ONLY
+        "stability": number,         //   0-1
+        "similarity_boost": number,  //   0-1
+        "style": number,             //   0-1
+        "use_speaker_boost": boolean,
+        "speed": number              //   0.7-1.2, overrides "speed" above
+      }
     }
   ],
   "segments": [                      // Ordered list of spoken segments (required)
@@ -734,7 +775,8 @@ script must be a JSON object matching this structure:
       "speaker": string,             // Must match a speaker id (required)
       "text": string,                // Spoken content (required, max ~40000 chars)
       "pause_after": number,         // Silence in ms after this segment (optional, overrides default)
-      "speed_override": number,      // Override speaker speed for this segment (optional)
+      "speed_override": number,      // Override speaker speed for this segment (optional; also
+                                     // wins over the speaker's voice_settings "speed")
       "instruction_override": string // Override speaker instructions for this segment (optional)
     }
   ],
@@ -744,11 +786,15 @@ script must be a JSON object matching this structure:
     "outro_silence_ms": number,      // Silence after last segment (optional; 1000ms recommended)
     "normalize_loudness": boolean,   // Peak-normalize each segment for consistent volume (required)
     "output_format": "mp3"|"wav",    // Output format (required)
-    "output_bitrate": string         // MP3 bitrate (optional; default "192k")
+    "output_bitrate": string,        // MP3 bitrate (optional; default "192k")
+    "provider": string,              // Optional episode default: "openai" | "elevenlabs"
+    "max_concurrency": number        // Optional cap on parallel TTS requests (positive int).
+                                     // ElevenLabs enforces a per-tier cap (2-15, or 4-30 on
+                                     // Flash/Turbo); lower this if you see HTTP 429.
   }
 }
 
-**Voice guide:**
+**Voice guide (OpenAI):**
 - ash: Authoritative, confident — good for hosts and anchors
 - nova: Youthful, friendly — good for co-hosts and guests
 - onyx: Deep, professional — good for narrators
@@ -769,6 +815,10 @@ A 10-minute podcast needs ~1500 words of content.
 
 **Parameters:**
 - script: PodcastScript object (required)
+- model: Default model for OpenAI speakers. Default: "gpt-4o-mini-tts". ElevenLabs speakers
+  fall back to "eleven_v3" unless they set their own "model".
+- provider: Episode-wide default provider, overridden by config.provider and speaker.provider.
+  Default: "openai"
 
 **Returns** PodcastResult with:
 - output_file: Filename of the generated audio (use with view_media or list_audio_files)
@@ -797,6 +847,27 @@ A 10-minute podcast needs ~1500 words of content.
     "normalize_loudness": true,
     "output_format": "mp3",
     "output_bitrate": "192k"
+  }
+}
+
+**Example (mixed-provider episode):**
+{
+  "title": "mixed_ep1",
+  "speakers": [
+    {"id": "host", "name": "Alex", "voice": "ash", "speed": 1.0, "instructions": "Confident host"},
+    {"id": "guest", "name": "Sam", "voice": "21m00Tcm4TlvDq8ikWAM", "speed": 1.0,
+     "instructions": "", "provider": "elevenlabs",
+     "voice_settings": {"stability": 0.45, "similarity_boost": 0.85}}
+  ],
+  "segments": [
+    {"speaker": "host", "text": "Welcome back. Today we have a special guest."},
+    {"speaker": "guest", "text": "[warmly] Thanks for having me. I have been looking forward to this."}
+  ],
+  "config": {
+    "default_pause_ms": 600,
+    "normalize_loudness": true,
+    "output_format": "mp3",
+    "max_concurrency": 3
   }
 }"""
 

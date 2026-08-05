@@ -80,9 +80,14 @@ audio = [
 image = [
   "pillow>=12.0.0",
 ]
+# Optional second TTS provider. Deliberately not part of `audio` — the default
+# OpenAI path must stay installable without it.
+elevenlabs = [
+  "elevenlabs>=2.60.0",
+]
 databricks = []  # httpx already a core dep; extra exists for signaling intent
 all = [
-  "sanzaru[video,audio,image]",  # databricks intentionally excluded from "all"
+  "sanzaru[video,audio,image,elevenlabs]",  # databricks intentionally excluded from "all"
 ]
 
 [dependency-groups]
@@ -152,3 +157,9 @@ markers = [
 
 [tool.mypy]
 disable_error_code = ["import-untyped", "import-not-found"]
+# Test directories deliberately have no __init__.py, so two files named
+# conftest.py are ambiguous to mypy and it refuses to check *anything*
+# ("errors prevented further checking"). Deriving module names from the
+# directory instead fixes that without adding the __init__.py files.
+explicit_package_bases = true
+mypy_path = "src"

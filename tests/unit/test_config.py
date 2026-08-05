@@ -2,9 +2,11 @@
 """Unit tests for configuration management."""
 
 import os
+from types import SimpleNamespace
 
 import pytest
 
+from sanzaru import config
 from sanzaru.config import get_path
 
 
@@ -374,3 +376,75 @@ class TestGetPathUnifiedMediaPath:
 
         assert result == videos_dir.resolve()
         assert (result / "existing.txt").exists()
+
+
+class _FakeHttpxPool:
+    """Stands in for the httpx.AsyncClient the SDK's connection pool lives on."""
+
+    def __init__(self) -> None:
+        self.closed = False
+
+    async def aclose(self) -> None:
+        self.closed = True
+
+
+def _sdk_shaped_client(pool: _FakeHttpxPool) -> SimpleNamespace:
+    """A client shaped like elevenlabs 2.60's AsyncElevenLabs.
+
+    That class exposes no aclose() (nor any other close method): the pool is only
+    reachable through `_client_wrapper.httpx_client` (the SDK's own AsyncHttpClient
+    wrapper), which nests the real httpx client under the same attribute name.
+    """
+    return SimpleNamespace(_client_wrapper=SimpleNamespace(httpx_client=SimpleNamespace(httpx_client=pool)))
+
+
+@pytest.mark.unit
+class TestCloseElevenLabsClient:
+    """close_elevenlabs_client must actually release the pool, and never raise."""
+
+    async def test_closes_the_nested_httpx_pool(self, mocker):
+        pool = _FakeHttpxPool()
+        mocker.patch.object(config, "_elevenlabs_cached", _sdk_shaped_client(pool))
+
+        await config.close_elevenlabs_client()
+
+        assert pool.closed
+        assert config._elevenlabs_cached is None
+
+    async def test_prefers_aclose_if_a_future_sdk_grows_one(self, mocker):
+        pool = _FakeHttpxPool()
+        client = _sdk_shaped_client(pool)
+        calls: list[str] = []
+
+        async def aclose() -> None:
+            calls.append("aclose")
+
+        client.aclose = aclose
+        mocker.patch.object(config, "_elevenlabs_cached", client)
+
+        await config.close_elevenlabs_client()
+
+        assert calls == ["aclose"]
+        assert not pool.closed
+
+    async def test_unrecognized_shape_does_not_raise(self, mocker):
+        mocker.patch.object(config, "_elevenlabs_cached", SimpleNamespace())
+
+        await config.close_elevenlabs_client()
+
+        assert config._elevenlabs_cached is None
+
+    async def test_close_failure_is_swallowed(self, mocker):
+        """Teardown runs in a `finally`; raising there would mask the command's result."""
+
+        async def boom() -> None:
+            raise RuntimeError("pool already gone")
+
+        mocker.patch.object(config, "_elevenlabs_cached", SimpleNamespace(aclose=boom))
+
+        await config.close_elevenlabs_client()
+
+    async def test_no_client_is_a_no_op(self, mocker):
+        mocker.patch.object(config, "_elevenlabs_cached", None)
+
+        await config.close_elevenlabs_client()

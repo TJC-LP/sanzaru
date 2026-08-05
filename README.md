@@ -122,8 +122,9 @@ Requires `OPENAI_API_KEY` and `SANZARU_MEDIA_PATH` environment variables to be s
 uv add "sanzaru[all]"
 
 # Specific features
-uv add "sanzaru[audio]"  # With audio support
-uv add sanzaru           # Base (video + image only)
+uv add "sanzaru[audio]"       # With audio support
+uv add "sanzaru[elevenlabs]"  # ElevenLabs as a second TTS provider
+uv add sanzaru                # Base (video + image only)
 ```
 
 <details>
@@ -200,8 +201,8 @@ uv run sanzaru --transport http --port 8000
 | **Video** | `create_video`, `get_video_status`, `download_video`, `list_videos`, `list_local_videos`, `delete_video`, `remix_video` | Generate and manage Sora videos with optional reference images |
 | **Image** | `generate_image`, `edit_image`, `create_image`, `get_image_status`, `download_image` | Generate with gpt-image-2 (default, sync) or GPT-5 (polling) |
 | **Reference** | `list_reference_images`, `prepare_reference_image` | Manage and resize images for Sora compatibility |
-| **Audio** | `transcribe_audio`, `chat_with_audio`, `create_audio`, `convert_audio`, `compress_audio`, `list_audio_files`, `get_latest_audio`, `transcribe_with_enhancement` | Transcription, analysis, TTS, and file management |
-| **Podcast** | `generate_podcast` | Multi-voice podcast generation with parallel TTS and audio stitching |
+| **Audio** | `transcribe_audio`, `chat_with_audio`, `create_audio`, `convert_audio`, `compress_audio`, `list_audio_files`, `get_latest_audio`, `transcribe_with_enhancement` | Transcription, analysis, TTS (OpenAI or ElevenLabs), and file management |
+| **Podcast** | `generate_podcast` | Multi-voice podcast generation with parallel TTS and audio stitching; speakers may mix TTS providers |
 | **Media** | `view_media` | Interactive media player via MCP App protocol |
 
 > **Full API documentation**: See [docs/api-reference.md](docs/api-reference.md)

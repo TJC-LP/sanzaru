@@ -120,8 +120,39 @@ def check_databricks_storage() -> bool:
     return True
 
 
+def check_elevenlabs_available() -> bool:
+    """Check if the ElevenLabs TTS provider is usable.
+
+    Requires:
+    1. ELEVENLABS_API_KEY set
+    2. The optional `elevenlabs` extra installed
+
+    Returns:
+        True if both are present, False otherwise
+    """
+    if not os.getenv("ELEVENLABS_API_KEY"):
+        return False
+
+    from importlib.util import find_spec
+
+    try:
+        found = find_spec("elevenlabs") is not None
+    except (ImportError, ValueError):
+        # find_spec can raise rather than return None for a broken install.
+        # Feature detection runs at server startup, so it must never propagate.
+        found = False
+
+    if not found:
+        logger.info("ELEVENLABS_API_KEY set but the elevenlabs extra is not installed - provider unavailable")
+        return False
+    return True
+
+
 def get_available_features() -> dict[str, bool]:
-    """Get a dictionary of available features.
+    """Get a dictionary of available media features.
+
+    Keys are media features backed by a configured path; callers map them onto
+    path types, so provider-style capabilities belong in get_tts_providers().
 
     Returns:
         Dict mapping feature name to availability status
@@ -130,4 +161,16 @@ def get_available_features() -> dict[str, bool]:
         "video": check_video_available(),
         "audio": check_audio_available(),
         "image": check_image_available(),
+    }
+
+
+def get_tts_providers() -> dict[str, bool]:
+    """Get a dictionary of usable text-to-speech providers.
+
+    Returns:
+        Dict mapping provider name to availability status
+    """
+    return {
+        "openai": bool(os.getenv("OPENAI_API_KEY")),
+        "elevenlabs": check_elevenlabs_available(),
     }
