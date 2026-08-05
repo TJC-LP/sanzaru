@@ -82,3 +82,57 @@ def test_cli_import_is_lightweight():
     )
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
     assert proc.returncode == 0, proc.stderr
+
+
+# ==================== EXCEPTION GROUP UNWRAPPING ====================
+
+if sys.version_info < (3, 11):  # pragma: no cover - 3.11+ has it as a builtin
+    from exceptiongroup import ExceptionGroup
+
+
+@pytest.mark.unit
+def test_classify_unwraps_single_error_task_group():
+    """Parallel tools raise ExceptionGroup; the real error must still classify.
+
+    Regression: an ElevenLabs 429 inside the podcast fan-out surfaced as
+    "internal: ExceptionGroup: unhandled errors in a TaskGroup", hiding the
+    actionable "lower SANZARU_ELEVENLABS_MAX_CONCURRENCY" message.
+    """
+    from sanzaru.cli._runtime import _classify
+    from sanzaru.exceptions import TTSAPIError
+
+    group = ExceptionGroup("unhandled errors in a TaskGroup", [TTSAPIError("rate limit hit")])
+
+    error = _classify(group)
+
+    assert error.error_type == "api_error"
+    assert "rate limit hit" in str(error)
+
+
+@pytest.mark.unit
+def test_classify_unwraps_nested_task_groups():
+    """Segment fan-out nests inside chunk fan-out, so groups can nest."""
+    from sanzaru.cli._runtime import _classify
+
+    group = ExceptionGroup("outer", [ExceptionGroup("inner", [ValueError("bad speed")])])
+
+    error = _classify(group)
+
+    assert error.error_type == "usage"
+    assert error.exit_code == 2
+    assert "bad speed" in str(error)
+
+
+@pytest.mark.unit
+def test_classify_keeps_multi_error_groups_but_names_them():
+    """Several distinct failures: picking one to represent the rest hides the others."""
+    from sanzaru.cli._runtime import _classify
+
+    group = ExceptionGroup("outer", [ValueError("first"), RuntimeError("second")])
+
+    error = _classify(group)
+
+    assert error.error_type == "internal"
+    assert "2 parallel tasks failed" in str(error)
+    assert "first" in str(error)
+    assert "second" in str(error)
