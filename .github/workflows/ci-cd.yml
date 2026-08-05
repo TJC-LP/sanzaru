@@ -65,3 +65,46 @@ jobs:
         with:
           file: ./coverage.xml
           fail_ci_if_error: false
+
+  # Everything above runs against uv.lock, which pins exact versions and never
+  # travels with the published wheel. That gap shipped a broken 0.8.0: an
+  # unbounded `mcp>=1.26.0` resolved to 2.0.0, which had removed
+  # mcp.server.fastmcp, so `sanzaru serve` died on import while all six test
+  # legs stayed green. This job tests RESOLUTION rather than code — build the
+  # wheel, install it into a clean environment with no lock file, and import
+  # the entrypoint the way a new user would.
+  install:
+    name: Install from wheel (no lockfile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Set up Python
+        uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Build the wheel
+        run: uv build --wheel
+
+      - name: Install it into a clean venv, resolving dependencies freely
+        run: |
+          uv venv /tmp/fresh
+          # --no-sources / no lock: resolve from the wheel's own metadata, which
+          # is all a PyPI user gets.
+          uv pip install --python /tmp/fresh/bin/python dist/*.whl
+
+      - name: Report what resolved
+        run: /tmp/fresh/bin/python -m pip list 2>/dev/null || uv pip list --python /tmp/fresh/bin/python
+
+      - name: Import the server entrypoint
+        # The CLI lazy-imports the server, so `--help` passes even when the MCP
+        # server is unimportable. Import server.py directly — that is the failure
+        # a Claude Desktop user actually hits.
+        run: /tmp/fresh/bin/python -c "import sanzaru.server; print('sanzaru.server imports OK')"
+
+      - name: Smoke the console script
+        run: /tmp/fresh/bin/sanzaru --help > /dev/null && echo "sanzaru --help OK"
