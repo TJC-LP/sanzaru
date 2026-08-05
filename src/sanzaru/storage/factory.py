@@ -42,6 +42,18 @@ def get_storage() -> StorageBackend:
     return _default_storage()
 
 
+def get_default_storage() -> StorageBackend:
+    """Return the env-configured backend, ignoring any installed override.
+
+    The override exists so ``-o`` can repoint a whole path type for one CLI
+    invocation. Anything addressed by *identity* rather than by output path —
+    a simulated podcast's run manifest and act checkpoints, which a later
+    ``--resume RUN_ID`` has to find with no ``-o`` in hand — must resolve
+    against the media library instead, which is what this returns.
+    """
+    return _default_storage()
+
+
 @lru_cache(maxsize=1)
 def _default_storage() -> StorageBackend:
     """Build the env-configured backend (cached singleton).

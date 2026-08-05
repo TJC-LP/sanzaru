@@ -16,7 +16,7 @@ import sys
 import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
-from typing import ParamSpec
+from typing import ParamSpec, TypeVar
 
 import anyio
 import click
@@ -36,6 +36,7 @@ from ._output import (
 )
 
 P = ParamSpec("P")
+E = TypeVar("E", bound=BaseException)
 
 
 @dataclass
@@ -69,7 +70,7 @@ class CLIError(Exception):
         self.extra = extra
 
 
-def _unwrap(exc: Exception) -> Exception:
+def unwrap_exception(exc: Exception) -> Exception:
     """Peel single-error ExceptionGroups so the real failure can be classified.
 
     Tools that fan out with `anyio.create_task_group()` (podcast segments, TTS
@@ -91,15 +92,34 @@ def _unwrap(exc: Exception) -> Exception:
     return exc
 
 
+def find_in_group(exc: BaseException, wanted: type[E]) -> E | None:
+    """Find the first `wanted` anywhere inside a (possibly nested) ExceptionGroup.
+
+    `unwrap_exception` only peels groups with a single member, which is the
+    common case but not the interesting one: when several parallel acts trip the
+    same cost ceiling in one scheduling window, the group carries one error per
+    act and the caller still needs to recognise it as a ceiling rather than
+    report an opaque "3 parallel tasks failed".
+    """
+    if isinstance(exc, wanted):
+        return exc
+    if isinstance(exc, BaseExceptionGroup):
+        for inner in exc.exceptions:
+            found = find_in_group(inner, wanted)
+            if found is not None:
+                return found
+    return None
+
+
 def _classify(exc: Exception) -> CLIError:
     """Map uncaught exceptions from the tool layer onto the error contract."""
     # Imported lazily so `sanzaru --help` never pays the openai import.
     from openai import APIConnectionError, APIStatusError
 
-    from ..exceptions import TTSError
+    from ..exceptions import RealtimeError, TTSError
     from ..polling import WaitTimeoutError
 
-    exc = _unwrap(exc)
+    exc = unwrap_exception(exc)
 
     if isinstance(exc, CLIError):
         return exc
@@ -107,6 +127,11 @@ def _classify(exc: Exception) -> CLIError:
         return CLIError("timeout", str(exc), exit_code=4)
     if isinstance(exc, TTSError):
         # Provider-side failures (e.g. an ElevenLabs 429 after retries).
+        return CLIError("api_error", str(exc))
+    if isinstance(exc, RealtimeError):
+        # A realtime session or response failed, or a cost ceiling stopped the
+        # run. Commands that can say something more useful (which acts survived,
+        # how to resume) catch it before this.
         return CLIError("api_error", str(exc))
     if isinstance(exc, APIStatusError):
         error_type = "not_found" if exc.status_code == 404 else "api_error"

@@ -13,7 +13,14 @@ Usage::
     await storage.write("video", "output.mp4", video_bytes)
 """
 
-from .factory import get_storage, set_storage_backend
+from .factory import get_default_storage, get_storage, set_storage_backend
 from .protocol import FileInfo, PathType, StorageBackend
 
-__all__ = ["FileInfo", "PathType", "StorageBackend", "get_storage", "set_storage_backend"]
+__all__ = [
+    "FileInfo",
+    "PathType",
+    "StorageBackend",
+    "get_default_storage",
+    "get_storage",
+    "set_storage_backend",
+]

@@ -181,6 +181,119 @@ sanzaru audio speak "[excited] You will not believe this." \
 ```
 
 ### `sanzaru podcast`
+
+Three verbs, in the order you use them:
+
+| verb | what it does | cost |
+| --- | --- | --- |
+| `rundown PREMISE` | plans an episode into acts; emits editable JSON | one text call |
+| `simulate BRIEF` | records realtime agents actually conversing | real; see below |
+| `generate SCRIPT` | speaks a script you wrote (multi-voice TTS) | TTS rates |
+
+Reach for `simulate` when you have a **topic** and want a real conversation, `generate
+--render-mode dialogue` when you have a **script** and want it performed naturally, and
+`generate` (segments) when you need exact control over gaps and per-segment retry.
+
+#### `rundown`
+
+`rundown PREMISE` (inline text, `@file`, or `-`) expands a premise into acts and writes JSON you
+can hand-edit before spending anything. Options: `--acts`, `-m/--target-minutes`, `--title`,
+`--style`, `--host NAME[:VOICE[:PERSONA]]` (repeatable), `--turn-seconds`, `--model` (a *text*
+model, not a realtime one), `-o`.
+
+It exists as its own command because planning is cheap and recording is not. Acts record in
+parallel and cannot hear each other, so each carries `prior_context` (what earlier acts covered),
+`upcoming` (what later acts own), and `handoff` (where to leave off) — that wiring is the whole
+point of planning first, and it is easier to fix in an editor than in a prompt.
+
+```bash
+sanzaru podcast rundown "why TTS providers drop sentence tails" \
+  --acts 3 -m 6 \
+  --host "Avery::You host and translate jargon." \
+  --host "Rory:cedar:You chased the bug. Dry, specific." \
+  -o rundown.json
+```
+
+#### `simulate`
+
+`simulate [BRIEF]` records the episode. BRIEF is a rundown or a full SimulationBrief (inline JSON,
+`@file`, `-`); flags override it. Or skip BRIEF and pass `--premise` to plan and record in one go.
+
+Nothing is scripted: each host is a `gpt-realtime` session with a persona, and one host's audio is
+played into the others' ears. The transcript comes back in the envelope as an *output*.
+
+**Always `--dry-run` first.** It plans, projects turns/duration/tokens/dollars, and records
+nothing:
+
+```bash
+sanzaru podcast simulate @rundown.json --dry-run
+```
+```
+sanzaru: dry run — 'The Hard Part Isn't the Model': 3 acts, up to 27 turns
+sanzaru:   act1: The Model Is the Easy Part to Demo — 120s, up to 9 turns
+sanzaru: projected ~6 min audio, 16,593 input / 10,800 output tokens
+sanzaru: projected cost ~$0.20 (estimate, not a quote)
+sanzaru: nothing was recorded; drop --dry-run to record
+```
+
+Then record with a ceiling. `--max-cost` is checked after every turn across every parallel act:
+
+```bash
+sanzaru podcast simulate @rundown.json --model gpt-realtime-2.1-mini \
+  --max-cost 2.00 --stems -o ./out/ep1.mp3
+```
+
+Progress is one greppable stderr line per turn and per act, each carrying elapsed wall clock —
+during a multi-minute blocking run that is the only signal it is alive:
+
+```
+sanzaru: run d33730ea — resume with: sanzaru podcast simulate --resume d33730ea
+sanzaru: act 1/3 turn 4 [Rory] 14.2s t=26s
+sanzaru: act 1/3 recorded 9 turns, 122s audio (complete) t=28s
+sanzaru: qc: transcribing 3 acts with gpt-transcribe t=32s
+sanzaru: episode d33730ea: 3 acts, 26 turns, 6.8 min
+sanzaru: spend $0.21
+sanzaru: qc warn: act2 — see result.qc for why (--qc-retry re-records just those)
+```
+
+**Directing it.** A producer inside the tool gives one host the floor at a time, pushes talking
+points across each act, and steers the last turns to a landing — but those are defaults. Each act
+in the rundown takes `direction` (free text, how to play it), `turn_notes` (`{"0": "..."}` by turn
+index, replacing the generated note) and `speaking_order` (host ids, cycled, instead of strict
+alternation). `turn_notes` is the strongest lever here: it is the difference between "move onto
+the next point" and "object to what they just said". Edit them in the rundown JSON — the tool
+blocks while acts record in parallel, so there is no live steering.
+
+**Recovery.** The run id prints *before* recording starts, and every act is checkpointed to the
+audio dir the moment it finishes. An interrupt, a crash, or a `--max-cost` abort never loses audio
+you paid for:
+
+```bash
+sanzaru podcast simulate --resume d33730ea   # records only the missing acts
+```
+
+This composes with `-o`: the episode and stems go where you asked, while the manifest and the act
+checkpoints always stay in the media dir, so the printed resume command works verbatim with no
+`-o` of its own. A resume also reinstates the run's settings from the manifest — including
+`--max-cost`, so following the ceiling abort's hint does not re-run uncapped. Anything you pass on
+the resume itself wins. Because the restored ceiling also counts the spend replayed from the
+checkpoints, the ceiling abort prints a resume command with a *raised* `--max-cost`, and a resume
+that cannot fit under the restored one stops before it records anything.
+
+Options: `-p/--premise`, `--acts`, `-m/--target-minutes`, `--title`, `--style`, `--host`,
+`--model`, `--planner-model`, `--turn-seconds`, `--turn-tokens`, `--max-cost`, `--max-sessions`,
+`--resume RUN_ID`, `--stems`, `--qc/--no-qc`, `--qc-retry`, `--dry-run`, `--act-gap`, `--format`,
+`--bitrate`, `-o`.
+
+Exit codes are the usual contract plus one: **6** means the cost ceiling stopped the run — the
+envelope carries `spent_usd`, `suggested_limit_usd`, `completed_acts`, and a `resume` command.
+Every other failure after recording starts carries `run_id` and a `resume` command too.
+
+Full rationale, measured numbers, and tuning notes:
+[`docs/audio/simulated-podcasts.md`](audio/simulated-podcasts.md).
+
+#### `generate`
+
 `generate SCRIPT` renders a multi-voice podcast from a PodcastScript JSON
 (`{"title", "speakers": [...], "segments": [...], "config": {...}}`); segments TTS in parallel
 internally, bounded per provider. `config` **requires** `default_pause_ms` (int),

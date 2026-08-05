@@ -1,6 +1,6 @@
 ---
 name: sanzaru-cli
-description: Generate videos (Sora), images (gpt-image-2), speech/transcription (OpenAI or ElevenLabs), and multi-voice podcasts from the shell with the sanzaru CLI. Use for long-running media jobs (create → wait → download one-shots, resumable waits, JSON envelopes, batch fan-out) instead of loading the MCP tool surface.
+description: Generate videos (Sora), images (gpt-image-2), speech/transcription (OpenAI or ElevenLabs), scripted podcasts, and simulated podcasts (realtime agents that actually converse) from the shell with the sanzaru CLI. Use for long-running media jobs (create → wait → download one-shots, resumable waits, JSON envelopes, batch fan-out) instead of loading the MCP tool surface.
 ---
 
 # Sanzaru CLI for agents
@@ -80,6 +80,53 @@ keep working. Inside a run, `pause_after` and per-speaker `voice_settings` do no
 apply; use `config.dialogue_stability` (0–1) instead. Stay on the default `segments` when you need
 exact gaps, per-speaker tuning, or cheap per-segment retry.
 
+## Podcasts: scripted vs simulated
+
+Three verbs, and picking the wrong one wastes either quality or money.
+
+| you have | use |
+| --- | --- |
+| a **topic** and want a real conversation | `podcast rundown` then `podcast simulate` |
+| a **script** you want performed naturally | `podcast generate --render-mode dialogue` |
+| a **script** needing exact gaps / per-segment retry | `podcast generate` (default) |
+
+`simulate` is not TTS: each host is a `gpt-realtime` session with a persona, and one host's audio
+is played into the others' ears, so they react to delivery and disagree for real. The transcript
+is an *output*. It is also **the most expensive thing sanzaru does** — roughly $0.20 for 7
+minutes on `gpt-realtime-2.1-mini`, ~3x that on the full model.
+
+```bash
+# 1. Plan. One text call, and the JSON is yours to edit.
+sanzaru podcast rundown "why TTS providers drop sentence tails" --acts 3 -m 6 \
+  --host "Avery::You host and translate jargon." \
+  --host "Rory:cedar:You chased the bug. Dry, specific." -o rundown.json
+
+# 2. ALWAYS dry-run first: plans, projects turns/duration/tokens/cost, records nothing.
+sanzaru podcast simulate @rundown.json --dry-run
+
+# 3. Record with a ceiling. Acts run in parallel; ~30s of wall clock for 7 min of audio.
+sanzaru podcast simulate @rundown.json --model gpt-realtime-2.1-mini \
+  --max-cost 2.00 --stems -o ./out/ep1.mp3
+```
+
+**Recovery.** The run id prints on stderr *before* recording starts, and every act is
+checkpointed as it lands. On an interrupt, a crash, or exit 6 (cost ceiling — the envelope carries
+`spent_usd`, `completed_acts` and a `resume`), pick it back up with
+`sanzaru podcast simulate --resume RUN_ID`; only the missing acts re-record.
+
+**You are the producer.** A built-in producer handles floor control, walks the talking points, and
+lands each act — but those are defaults, and you will usually direct better. Each act in the
+rundown takes `direction` (how to play it), `turn_notes` (`{"0": "..."}` by turn index, replacing
+the generated note) and `speaking_order` (host ids, cycled, instead of strict alternation).
+`turn_notes` is the strongest lever: it is the difference between "move onto the next point" and
+"object to what they just said". Edit them in the rundown — the tool blocks while acts record in
+parallel, so there is no live steering.
+
+**QC** runs by default (~$0.005/min): it transcribes the rendered audio and judges it against the
+rundown, catching dropped audio, missed points, and the characteristic parallel-recording failure
+of two acts covering the same ground. `result.qc.flagged_acts` names what to listen to;
+`--qc-retry` re-records just those.
+
 ## Media in, media out
 
 - `-o` takes a file or directory (trailing `/`); parents are created; without it files land in the
@@ -96,6 +143,6 @@ exact gaps, per-speaker tuning, or cheap per-segment retry.
 `video` create/remix/status/wait/download/list/delete/files · `image`
 generate/edit/create/status/wait/download/prepare/files · `audio`
 transcribe(--enhance)/chat/speak(--provider)/convert/compress/files(--latest) ·
-`podcast` generate(--provider, --render-mode) ·
+`podcast` rundown/simulate/generate(--provider, --render-mode) ·
 `wait` (mixed ids) · `capabilities` · `serve` (MCP server; bare `sanzaru` does the same).
 Every command supports `-h`; details in docs/cli.md.

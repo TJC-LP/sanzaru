@@ -49,6 +49,31 @@ Implementation lives in `src/sanzaru/audio/providers/`. A provider synthesizes o
 returns mp3 bytes; `providers/base.py` owns text splitting, the bounded parallel fan-out, and
 concatenation.
 
+### Simulated podcasts (realtime)
+
+`simulate_podcast` is a third mode, and a different thing entirely: the conversation is
+**generated, not read**. N `gpt-realtime` sessions get personas and a rundown, one is given the
+floor at a time, and its audio is played into the others' ears — so they react to delivery, not
+to a transcript. No script, no TTS step.
+
+```bash
+sanzaru podcast rundown "your topic" --acts 3 -m 6 -o rundown.json
+sanzaru podcast simulate @rundown.json --dry-run            # plan + cost, spends nothing
+sanzaru podcast simulate @rundown.json --max-cost 2.00 -o ep.mp3
+sanzaru podcast simulate --resume <run_id>                  # only the missing acts
+```
+
+Needs only `OPENAI_API_KEY` and the `[audio]` extra. It is the most expensive thing sanzaru does
+(~$0.21 for a measured 7-minute episode on `gpt-realtime-2.1-mini`), so `--dry-run` and
+`--max-cost` are habits, not options. Acts record in parallel and are checkpointed as they land;
+QC transcribes the rendered audio and judges it against the plan.
+
+A producer inside the tool handles floor control, talking-point coverage and landing each act —
+but those are defaults. Each act takes `direction`, `turn_notes` and `speaking_order` so the
+caller can direct it turn by turn.
+
+Full rationale and measured numbers: [simulated-podcasts.md](simulated-podcasts.md).
+
 ### Podcast render modes
 
 `generate_podcast` accepts `config.render_mode`:
@@ -82,6 +107,10 @@ apply — use `config.dialogue_stability` (0–1) instead. Runs split at turn bo
 ### Text-to-Speech
 - `create_audio`: Generate TTS audio
 
+### Podcasts
+- `generate_podcast`: Multi-voice podcast from a script (segments or dialogue render mode)
+- `simulate_podcast`: Realtime agents conversing from a rundown — no script
+
 ## Supported Formats
 
 **Transcription:** flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav, webm
@@ -105,6 +134,7 @@ claude
 - [MCP README](mcp-readme.md) - MCP server configuration
 - [OpenAI Audio APIs](openai-audio.md) - API reference and capabilities
 - [OpenAI Realtime](openai-realtime.md) - Realtime audio features
+- [Simulated Podcasts](simulated-podcasts.md) - Realtime agents in conversation: the producer model, act chunking, cost, QC
 
 ## Attribution
 

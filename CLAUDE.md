@@ -32,6 +32,9 @@ uv run sanzaru --transport http --host 0.0.0.0 --port 8080
 uv run sanzaru capabilities
 uv run sanzaru video create "a cat stretches" --seconds 4 -o ./out/cat.mp4
 uv run sanzaru image generate "an icon" --quality high -o ./art/icon.png
+uv run sanzaru podcast rundown "why TTS drops sentence tails" --acts 3 -m 6 -o rundown.json
+uv run sanzaru podcast simulate @rundown.json --dry-run          # plan + cost, spends nothing
+uv run sanzaru podcast simulate @rundown.json --max-cost 2.00 -o ep.mp3
 
 # Lint and format code
 ruff check .
@@ -64,7 +67,7 @@ src/sanzaru/
 │   ├── video.py        # video create/remix/status/wait/download/list/delete/files
 │   ├── image.py        # image generate/edit (sync) + create/status/wait/download (async) + prepare/files
 │   ├── audio.py        # audio transcribe/chat/speak/convert/compress/files
-│   ├── podcast.py      # podcast generate
+│   ├── podcast.py      # podcast rundown (plan) / simulate (realtime) / generate (scripted TTS)
 │   ├── misc.py         # top-level `wait` (mixed job types) + `capabilities`
 │   └── serve.py        # explicit `sanzaru serve`
 ├── types.py            # TypedDict definitions
@@ -91,6 +94,15 @@ src/sanzaru/
 │   │   ├── openai_provider.py    # client.audio.speech (default)
 │   │   ├── elevenlabs_provider.py # client.text_to_speech.convert (optional extra)
 │   │   └── __init__.py           # get_provider() registry (lazy imports)
+│   ├── realtime/       # Simulated podcasts: agents that actually converse
+│   │   ├── types.py    # HostSpec/ActBrief/Rundown/Turn/RealtimeUsage + PCM16 helpers
+│   │   ├── agent.py    # one persona on one connection: configure/speak/hear/steer
+│   │   ├── producer.py # floor control, coverage steering, act budgets, prompts
+│   │   ├── rundown.py  # pre-production: premise → parallel-recordable acts
+│   │   ├── budget.py   # shared cost ceiling, charged every turn
+│   │   ├── pricing.py  # token→dollars + the measured rates a dry run projects from
+│   │   ├── mixdown.py  # PCM→AudioSegment, time-aligned stems, checkpoint decode
+│   │   └── qc.py       # transcribe rendered audio, judge it against the rundown
 │   └── services/       # TTSService, FileService, AudioService, TranscriptionService
 ├── tools/              # Tool implementations
 │   ├── video.py        # 7 video tools
@@ -98,7 +110,8 @@ src/sanzaru/
 │   ├── image.py        # 3 image generation tools (Responses API)
 │   ├── images_api.py   # 2 image tools (Images API, gpt-image-2)
 │   ├── audio.py        # 9 audio tools (list, transcribe, TTS, chat)
-│   ├── podcast.py      # 1 podcast generation tool
+│   ├── podcast.py      # 1 podcast generation tool (scripted TTS)
+│   ├── simulate_podcast.py # 1 simulated podcast tool (realtime agents, parallel acts)
 │   └── media_viewer.py # 2 media viewer tools (MCP App)
 └── app/                # Frontend assets (built, committed)
     └── media-viewer/   # React MCP App for media playback
@@ -197,6 +210,72 @@ Client seam: `config.get_elevenlabs_client()` mirrors `get_client()`, but builds
 rather than being installed eagerly by the CLI runtime, so `sanzaru --help` never imports the SDK.
 Missing key raises `RuntimeError`, missing extra raises `ImportError` — both map to CLI exit 3 via
 `_classify`. `ConfigurationError` would *not* (it falls through to exit 1).
+
+### Simulated Podcasts (realtime)
+
+A third, categorically different mode: the conversation is **generated, not read**. N
+`gpt-realtime` sessions get personas and a rundown; a producer gives one the floor and plays its
+PCM frames into the others' `input_audio_buffer`, so they respond to delivery, not to a transcript.
+`audio/realtime/` holds the machinery, `tools/simulate_podcast.py` the tool, and
+[`docs/audio/simulated-podcasts.md`](docs/audio/simulated-podcasts.md) the full rationale with
+measured numbers.
+
+Non-obvious things that are easy to break:
+
+- **The producer is load-bearing, and its output is a default, not a fixture.** Without per-turn
+  steering, agents drift to 30s turns and mutual agreement — so `producer.py` owns floor control,
+  walking talking points across the act, and landing the close (steering notes go out as system
+  messages, never heard). But the caller is usually another agent and is a better producer than
+  our f-strings, so `ActBrief.direction` / `turn_notes` / `speaking_order` each *replace* the
+  generated behavior. It can't steer live (a round-trip per turn would break parallel acts), so
+  direction is declarative and set before recording.
+- **`max_output_tokens` counts the transcript, not just the audio.** Audio is a very steady 20
+  tok/s, but the returned transcript adds another 9–17. Sizing the cap from the audio rate alone
+  truncated 17 of 29 turns mid-sentence. `turn_token_cap()` budgets both and applies
+  `TURN_TOKEN_HEADROOM` (1.5 — tuned, see the doc's table).
+- **Acts drift forward.** Each act is recorded blind to the others, so `prior_context` keeps it
+  from repeating earlier ground and `upcoming` keeps it out of *later* acts' material. Omitting
+  `upcoming` made every act off-brief and act 3 a rerun. It's derived in
+  `simulate_podcast.annotate_upcoming` (lookahead 2) so hand-edited rundowns get it too.
+- **Chunking into acts is mandatory, not an optimization.** A Realtime WebSocket dies at 60
+  minutes. Parallel acts also put a 30-minute episode at ~1 min wall clock, which is what makes a
+  blocking tool acceptable when the repo has no job registry.
+- **Every act is checkpointed before it can be lost** (mp3 + a turns/usage sidecar), plus a
+  `simrun_<id>.json` manifest written before recording so `--resume <run_id>` needs nothing else.
+  Storage has no delete op, so checkpoints persist — documented, not cleaned up.
+- **Checkpoints bypass the `-o` storage override; deliverables don't.** `-o` repoints the whole
+  "audio" path type for one invocation, but the resume hint carries no `-o`, so anything found by
+  run id alone goes through `storage.get_default_storage()` (`simulate_podcast.checkpoint_storage`).
+  Only the episode and stems follow `-o`. Loading a checkpoint decodes inside the try — a
+  truncated or zero-audio act is re-recorded, never fatal to the whole resume. The two writes
+  that make a checkpoint happen inside `anyio.CancelScope(shield=True)`: a sibling act's failure
+  cancels the task group, and an mp3 with no sidecar is paid-for audio that resume throws away.
+- **On `--resume`, caller-set fields win and the manifest fills the rest** (`model_fields_set` is
+  the signal). That is why `cli/podcast.py` gives every simulate option a `None` click default and
+  only puts what the user typed into the payload: a click-supplied `"mp3"` would be
+  indistinguishable from the user asking for mp3, and a dropped `--max-cost` would make the
+  ceiling abort's own resume hint re-run uncapped. The restored ceiling also counts the spend
+  replayed from the checkpoints, so a bare resume under it would abort at the same total after
+  paying to re-record: `_refuse_a_resume_that_cannot_finish` projects the remaining acts and
+  stops first, and the CLI's ceiling envelope prints a resume command with a raised
+  `--max-cost` (`CostBudget.suggested_limit_usd`).
+- **Every turn runs under `anyio.fail_after`.** Nothing in the Realtime protocol bounds a turn, and
+  a stalled session would hold a `CapacityLimiter` slot forever inside a blocking tool. The bound
+  is 6x `turn_seconds` (min 60s), overridable via `SANZARU_REALTIME_TURN_TIMEOUT` /
+  `turn_timeout_s`; a breach becomes `RealtimeAPIError`, which fails the run (no per-act retry)
+  but leaves finished acts checkpointed — the CLI attaches `run_id` + `resume` to *every*
+  post-recording failure envelope, not just the ceiling. Relatedly, `speak()` requires a
+  `response.done`: the SDK's `__aiter__` *returns* on `ConnectionClosedOK`, so a graceful mid-act
+  close would otherwise look like a successful silent turn.
+- **`_stitch_audio` takes a `decode` callable.** Realtime is PCM16/24k end to end with no mp3
+  round-trip; the scripted path still passes mp3. Everything downstream is shared.
+- **QC inverts the usual check.** No script means no ground truth, so verification compares the
+  API's own per-turn transcript against `gpt-transcribe` on the rendered audio (catches dropped
+  audio deterministically), then judges the transcript against the rundown. `gpt-live-transcribe`
+  is realtime-only and 404s on `/v1/audio/transcriptions` — do not swap it in.
+- **The cost ceiling is charged every turn** via a shared `CostBudget`, and arrives at the CLI
+  inside an `ExceptionGroup` — possibly one per act. `find_in_group()` in `cli/_runtime.py` is what
+  makes that still exit 6 with a resume hint instead of an opaque "3 parallel tasks failed".
 
 ### Runtime Path Configuration
 Paths are validated lazily via the `get_path()` function when tools are called:
@@ -357,6 +436,12 @@ LOG_LEVEL="INFO"  # DEBUG, INFO, WARNING, ERROR (defaults to INFO)
 ELEVENLABS_API_KEY="..."
 SANZARU_ELEVENLABS_MAX_CONCURRENCY=2  # Free-tier cap (4 on flash/turbo); raise on a paid tier
 SANZARU_OPENAI_MAX_CONCURRENCY=0      # 0 = unbounded (default)
+
+# Simulated podcasts (needs only OPENAI_API_KEY + the [audio] extra)
+SANZARU_REALTIME_MAX_SESSIONS=6       # concurrent realtime sessions across all acts
+SANZARU_REALTIME_TURN_TIMEOUT=120     # per-turn stall bound; default 6x turn_seconds, min 60s
+# Override stale list pricing: text_in,cached_text_in,audio_in,cached_audio_in,audio_out,text_out
+SANZARU_REALTIME_PRICE_GPT_REALTIME_2_1=4,0.4,32,0.4,64,24
 ```
 
 **For MCP servers (Claude Desktop):**

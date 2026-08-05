@@ -28,6 +28,7 @@ description: "Read the entirety of @docs/sora2-prompting-guide.md and await furt
 | | `chat_with_audio` | sync | GPT-4o audio analysis |
 | | `list_audio_files` | sync | List and filter audio files |
 | **Podcast** | `generate_podcast` | sync | Multi-voice episode from a script; `render_mode` `segments` (exact gaps) or `dialogue` (model paces the turns) |
+| | `simulate_podcast` | sync | **No script** — realtime agents converse from a rundown. Highest quality, real money: call with `dry_run: true` first and set `max_cost_usd` |
 
 ## Model Selection
 

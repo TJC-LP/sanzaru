@@ -53,6 +53,13 @@ jobs:
       - name: Set up uv
         uses: astral-sh/setup-uv@v7
 
+      # pydub shells out to ffmpeg for anything that is not raw PCM, so the
+      # audio tests that encode and decode for real need it on PATH. The runner
+      # image no longer ships it, and the `audio` extra requires it at runtime
+      # anyway — mocking it here would only hide that.
+      - name: Install ffmpeg
+        run: sudo apt-get update -qq && sudo apt-get install -y --no-install-recommends ffmpeg
+
       - name: Install dependencies
         run: |
           uv sync --all-extras --dev

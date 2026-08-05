@@ -36,6 +36,15 @@ A **stateless**, lightweight **MCP** server **and agent CLI** that wraps **OpenA
 - Multi-voice podcasts with up to 4 speakers and 10 TTS voices
 - Parallel segment generation with configurable pacing
 - MP3/WAV output with loudness normalization
+- ElevenLabs `dialogue` render mode: consecutive turns go out together so the model paces them
+
+### Simulated Podcasts
+- **The conversation is generated, not read** — N `gpt-realtime` agents actually talk to each other
+- Each host hears the others' audio, so they respond to delivery and timing, not to a transcript
+- Pre-production plans acts that record **in parallel**: a 30-minute episode in ~1 minute
+- Checkpointed per act and resumable; cost ceiling, dry-run projection, per-host stems
+- QC transcribes the rendered audio and judges it against the plan
+- See [`docs/audio/simulated-podcasts.md`](docs/audio/simulated-podcasts.md)
 
 ### Agent CLI
 - Every capability as a shell command: `sanzaru video create`, `sanzaru image generate`, ...
@@ -203,6 +212,7 @@ uv run sanzaru --transport http --port 8000
 | **Reference** | `list_reference_images`, `prepare_reference_image` | Manage and resize images for Sora compatibility |
 | **Audio** | `transcribe_audio`, `chat_with_audio`, `create_audio`, `convert_audio`, `compress_audio`, `list_audio_files`, `get_latest_audio`, `transcribe_with_enhancement` | Transcription, analysis, TTS (OpenAI or ElevenLabs), and file management |
 | **Podcast** | `generate_podcast` | Multi-voice podcast generation with parallel TTS and audio stitching; speakers may mix TTS providers |
+| **Simulated Podcast** | `simulate_podcast` | Realtime agents converse from a rundown — parallel acts, checkpointing, cost ceiling, QC |
 | **Media** | `view_media` | Interactive media player via MCP App protocol |
 
 > **Full API documentation**: See [docs/api-reference.md](docs/api-reference.md)
@@ -276,6 +286,24 @@ generate_podcast(script={
 })
 ```
 
+### Simulate a Podcast (no script — the agents talk)
+```bash
+# 1. Plan it. Cheap, and the JSON is yours to edit.
+sanzaru podcast rundown "why TTS providers drop sentence tails" \
+  --acts 3 -m 6 --host "Avery" --host "Rory:cedar:You chased the bug." \
+  -o rundown.json
+
+# 2. See what it would cost. Records nothing.
+sanzaru podcast simulate @rundown.json --dry-run
+
+# 3. Record it. Acts run in parallel and each is checkpointed as it lands.
+sanzaru podcast simulate @rundown.json --model gpt-realtime-2.1-mini \
+  --max-cost 2.00 --stems -o ep1.mp3
+
+# Interrupted? The run id is on stderr from the start.
+sanzaru podcast simulate --resume 6f1a9c02
+```
+
 ## Documentation
 
 - **[API Reference](docs/api-reference.md)** - Complete tool documentation with parameters and examples
@@ -283,6 +311,7 @@ generate_podcast(script={
 - **[Image Generation Guide](docs/image-generation.md)** - Generating and editing reference images
 - **[Sora Prompting Guide](docs/sora2-prompting-guide.md)** - Crafting effective video prompts
 - **[Audio Features](docs/audio/README.md)** - Audio transcription, chat, and TTS
+- **[Simulated Podcasts](docs/audio/simulated-podcasts.md)** - Realtime agents in conversation: producer model, act chunking, cost, QC
 - **[Performance & Architecture](docs/async-optimizations.md)** - Technical details and benchmarks
 
 ## Transport Modes
