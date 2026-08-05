@@ -201,14 +201,21 @@ class FakeRealtimeConnection:
 
     @property
     def heard_bytes(self) -> int:
-        return sum(int(kw["bytes"]) for name, kw in self.calls if name == "input_audio_buffer.append")
+        """Total audio this connection was fed by the producer."""
+        total = 0
+        for name, kwargs in self.calls:
+            size = kwargs.get("bytes")
+            if name == "input_audio_buffer.append" and isinstance(size, int):
+                total += size
+        return total
 
     @property
     def steers(self) -> list[str]:
-        notes = []
-        for name, kw in self.calls:
+        """Producer notes this connection received, in order."""
+        notes: list[str] = []
+        for name, kwargs in self.calls:
             if name == "conversation.item.create":
-                item = kw["item"]
+                item = kwargs["item"]
                 notes.append(item["content"][0]["text"])  # type: ignore[index]
         return notes
 
