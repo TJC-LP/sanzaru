@@ -185,10 +185,36 @@ sanzaru audio speak "[excited] You will not believe this." \
 (`{"title", "speakers": [...], "segments": [...], "config": {...}}`); segments TTS in parallel
 internally, bounded per provider. `config` **requires** `default_pause_ms` (int),
 `normalize_loudness` (bool), and `output_format` (`"mp3"|"wav"`); optional: `intro_silence_ms`,
-`outro_silence_ms`, `output_bitrate`, `provider`, `max_concurrency`. Speakers accept optional
-`provider`, `model`, and `voice_settings`, resolved as
-`speaker.provider > config.provider > --provider` — so one episode can mix OpenAI and ElevenLabs
+`outro_silence_ms`, `output_bitrate`, `provider`, `max_concurrency`, `render_mode`,
+`dialogue_stability`. Speakers accept optional `provider`, `model`, and `voice_settings`, resolved
+as `speaker.provider > config.provider > --provider` — so one episode can mix OpenAI and ElevenLabs
 voices. The envelope includes the full transcript — pipe to a file for long episodes.
+
+#### Render modes
+
+`--render-mode segments|dialogue` (or `config.render_mode`; default `segments`).
+
+- **`segments`** — one TTS request per turn, joined with your configured silence gaps. Full control,
+  and every segment is independent so a single bad render can be retried on its own.
+- **`dialogue`** — consecutive turns sharing a dialogue-capable provider and model (currently
+  ElevenLabs `eleven_v3`) are sent as **one** request, so the model paces the exchange itself.
+  Noticeably more natural back-and-forth.
+
+Grouping is per-run, not per-episode: turns that can't join a run — OpenAI speakers, other models,
+a lone turn — still render per segment, so mixed episodes keep working. On an 11-segment demo with
+an OpenAI host and two `eleven_v3` guests, 8 segments batched into 3 dialogue requests while the
+3 host turns rendered individually.
+
+Inside a dialogue run, `pause_after` is ignored (the model owns pacing) and per-speaker
+`voice_settings`/`speed` don't apply — the endpoint takes a single `config.dialogue_stability`
+(0–1) for the whole request. Runs split at turn boundaries to stay under 5000 chars.
+
+Prefer `segments` for exact gap control, per-speaker tuning, or cheap per-segment retry; prefer
+`dialogue` for natural conversation.
+
+```bash
+sanzaru podcast generate @episode.json --render-mode dialogue -o ep.mp3
+```
 
 ### Top-level
 `wait ID...` (mixed-type poller) · `capabilities` (version, per-feature availability with
