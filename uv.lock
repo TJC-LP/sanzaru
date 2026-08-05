@@ -3,7 +3,10 @@ revision = 3
 requires-python = ">=3.10"
 resolution-markers = [
     "python_full_version >= '3.15'",
-    "python_full_version >= '3.13' and python_full_version < '3.15'",
+    "python_full_version == '3.14.*' and sys_platform == 'win32'",
+    "python_full_version == '3.14.*' and sys_platform != 'win32'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version == '3.13.*' and sys_platform != 'win32'",
     "python_full_version >= '3.11' and python_full_version < '3.13'",
     "python_full_version < '3.11'",
 ]
@@ -545,7 +548,7 @@ wheels = [
 
 [[package]]
 name = "elevenlabs"
-version = "2.60.0"
+version = "2.61.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "httpx" },
@@ -556,9 +559,9 @@ dependencies = [
     { name = "websockets", version = "16.1.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
     { name = "websockets", version = "17.0.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/24/a9/d94286f7a78f2f8502dad7ee8f23f8d85fa003bb70f666504abc9bb3eb7b/elevenlabs-2.60.0.tar.gz", hash = "sha256:282b5487514a1580621717f1621d648fc9831bd47f327bb2afd183ab79281495", size = 739565, upload-time = "2026-07-30T12:02:56.716Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/99/db/66c8f66886ee8f6e748c9d53fdf031ac803c69076c2c2beaf461856205d5/elevenlabs-2.61.0.tar.gz", hash = "sha256:c110e24d73bffccdcd570106cf22ff8550f84c61836c6493372c8b83ecaf023b", size = 739411, upload-time = "2026-08-05T12:01:10.831Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/54/4d/896b22604743749278bb1e3e781c226aea11013329f3a6a91c7c72f1b111/elevenlabs-2.60.0-py3-none-any.whl", hash = "sha256:dee787d71a65ed0466ad2fdb0a962699c480b04d1060130ee248a7bd1c5e1df8", size = 1960148, upload-time = "2026-07-30T12:02:54.853Z" },
+    { url = "https://files.pythonhosted.org/packages/0c/f3/a3f4ee76b2d7aeaeb0ba4d8980e8cf88ffe51584bb488a3707e263835456/elevenlabs-2.61.0-py3-none-any.whl", hash = "sha256:fc5ca649309bb68cc0fcabb0c59d63bba04fa4cad070ade96610342ef1f2ea55", size = 1956536, upload-time = "2026-08-05T12:01:08.454Z" },
 ]
 
 [[package]]
@@ -893,7 +896,7 @@ wheels = [
 
 [[package]]
 name = "mcp"
-version = "1.27.0"
+version = "1.29.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -911,9 +914,9 @@ dependencies = [
     { name = "typing-inspection" },
     { name = "uvicorn", marker = "sys_platform != 'emscripten'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8b/eb/c0cfc62075dc6e1ec1c64d352ae09ac051d9334311ed226f1f425312848a/mcp-1.27.0.tar.gz", hash = "sha256:d3dc35a7eec0d458c1da4976a48f982097ddaab87e278c5511d5a4a56e852b83", size = 607509, upload-time = "2026-04-02T14:48:08.88Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/30/d3/f9acc21dfc886e4f78e2add1a47db46ce16884346afde53f8a064c02c891/mcp-1.29.0.tar.gz", hash = "sha256:52d01f334de1868cc3bb2d6604931126a67631f99a6c5d3b82ba47290315ec36", size = 643148, upload-time = "2026-07-28T13:41:41.939Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/9c/46/f6b4ad632c67ef35209a66127e4bddc95759649dd595f71f13fba11bdf9a/mcp-1.27.0-py3-none-any.whl", hash = "sha256:5ce1fa81614958e267b21fb2aa34e0aea8e2c6ede60d52aba45fd47246b4d741", size = 215967, upload-time = "2026-04-02T14:48:07.24Z" },
+    { url = "https://files.pythonhosted.org/packages/01/c8/248b201f6d753d69fd5d6506011abbb35a946d9142b2ae311a948fd0be3d/mcp-1.29.0-py3-none-any.whl", hash = "sha256:f5a075bb611f23d6f4d080c6a1699fa62772eebc562ba9e66b306ddde1c755f7", size = 223436, upload-time = "2026-07-28T13:41:40.337Z" },
 ]
 
 [[package]]
@@ -1703,7 +1706,7 @@ wheels = [
 
 [[package]]
 name = "sanzaru"
-version = "0.8.0"
+version = "0.8.1"
 source = { editable = "." }
 dependencies = [
     { name = "aiofiles" },
@@ -1766,7 +1769,7 @@ requires-dist = [
     { name = "elevenlabs", marker = "extra == 'elevenlabs'", specifier = ">=2.60.0" },
     { name = "ffmpeg-python", marker = "extra == 'audio'" },
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "mcp", specifier = ">=1.26.0" },
+    { name = "mcp", specifier = ">=1.26.0,<2" },
     { name = "openai", specifier = ">=2.43.0" },
     { name = "pillow", marker = "extra == 'image'", specifier = ">=12.0.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
@@ -2084,7 +2087,10 @@ version = "17.0.1"
 source = { registry = "https://pypi.org/simple" }
 resolution-markers = [
     "python_full_version >= '3.15'",
-    "python_full_version >= '3.13' and python_full_version < '3.15'",
+    "python_full_version == '3.14.*' and sys_platform == 'win32'",
+    "python_full_version == '3.14.*' and sys_platform != 'win32'",
+    "python_full_version == '3.13.*' and sys_platform == 'win32'",
+    "python_full_version == '3.13.*' and sys_platform != 'win32'",
     "python_full_version >= '3.11' and python_full_version < '3.13'",
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/f7/96/e01084f83a64bcb3a27994bd0cb0db68ff29d9c6707fae37ec19b18ba990/websockets-17.0.1.tar.gz", hash = "sha256:5baa9bc0dfbae8c507e51c8cf1b6d4628086f7a87bbd3a9952bd5f035451f1cc", size = 183298, upload-time = "2026-07-31T11:31:27.665Z" }
