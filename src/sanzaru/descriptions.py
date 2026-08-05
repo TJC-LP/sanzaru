@@ -1014,6 +1014,15 @@ against the brief (catches skipped talking points, drift, and acts repeating eac
 the characteristic failure of parallel recording). `result.qc.flagged_acts` names anything
 worth a listen; `qc_retry: true` re-records just those.
 
+**Validation.** The brief is schema-checked before anything runs, so a bad episode fails in
+milliseconds rather than mid-recording. Rejected outright: duplicate act or host ids (they would
+silently overwrite a checkpoint or collapse two speakers), a `speaking_order` naming a host that
+is not in the episode, `turn_notes` on turns the act will never reach, ids/filenames containing
+a path separator, and out-of-range budgets (`acts` 1-24, `target_minutes` <= 240,
+`target_seconds` <= 2400 per act, positive `max_cost_usd`). Warned about but allowed: an unknown
+voice, a model with no known price (the cost ceiling cannot fire), and an act with too few turns
+to fill its duration. Read stderr — the warnings are the ones that cost you a re-record.
+
 **Notes:**
 - `normalize_loudness` defaults to FALSE here, unlike generate_podcast: acts recorded by the
   same models are already level, and per-act peak normalization can introduce jumps.

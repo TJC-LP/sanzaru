@@ -136,6 +136,33 @@ cap, the seconds/turn budgets, the cost ceiling. Those are correctness and money
 
 ---
 
+## What is checked before anything runs
+
+Recording costs money, so the rundown and brief are pydantic-validated up front and the bounds
+live in the schema — which means they also reach the MCP tool description, where an agent can
+read the rule instead of discovering it by spending.
+
+**Rejected** (exit 2, with the field named):
+
+| | why it matters |
+| --- | --- |
+| duplicate act ids | two acts share one checkpoint filename; a resumed run silently loses one |
+| duplicate host ids | two hosts collapse into one speaker, breaking stems and `speaking_order` |
+| `speaking_order` naming an unknown host | previously surfaced four acts into a paid run |
+| `turn_notes` past `max_turns` | the note would never fire, silently |
+| a separator in an id, `run_id`, or `filename` | these reach filenames; storage sanitizes too, but late and confusingly |
+| out-of-range budgets | `acts` 1–24, `target_minutes` ≤ 240, `target_seconds` ≤ 2400/act, `max_cost_usd` > 0 |
+
+**Warned about, but allowed** — these go to stderr and are worth reading:
+
+- an unknown voice (OpenAI ships them faster than we do, so this must not hard-fail)
+- a model with no known price, especially with `--max-cost` set: the ceiling cannot fire
+- an act with too few turns to fill its `target_seconds` — it will stop on the duration budget
+  before its closing turn, and its last talking point never gets air. This is the exact
+  calibration bug the first live run hit.
+
+---
+
 ## Acts, and why an episode is chunked
 
 Not an optimization. Three independent forces require it:

@@ -1,9 +1,9 @@
 """Tests for pre-production: premise → parallel-recordable acts."""
 
 import pytest
+from pydantic import ValidationError
 
 from sanzaru.audio.realtime.rundown import (
-    MAX_ACTS,
     PlannedAct,
     PlannedHost,
     PlannedRundown,
@@ -16,7 +16,7 @@ from sanzaru.audio.realtime.rundown import (
     slugify,
     turns_for,
 )
-from sanzaru.audio.realtime.types import HostSpec
+from sanzaru.audio.realtime.types import MAX_ACTS, HostSpec
 
 pytestmark = pytest.mark.audio
 
@@ -159,18 +159,35 @@ class TestPrompt:
 
 
 @pytest.mark.unit
-class TestPlanRundownValidation:
-    """These guards run before any API call, so no client is needed."""
+class TestRundownRequestValidation:
+    """Bounds live on the model, so they reject before any API call *and* show
+    up in the JSON schema a caller reads."""
 
     @pytest.mark.parametrize(
         ("kwargs", "match"),
         [
             ({"premise": "  "}, "premise is required"),
-            ({"premise": "p", "acts": 0}, "acts must be >= 1"),
-            ({"premise": "p", "acts": MAX_ACTS + 1}, f"acts must be <= {MAX_ACTS}"),
-            ({"premise": "p", "target_minutes": 0}, "target_minutes must be > 0"),
+            ({"premise": ""}, "at least 1 character"),
+            ({"premise": "p", "acts": 0}, "greater than or equal to 1"),
+            ({"premise": "p", "acts": MAX_ACTS + 1}, f"less than or equal to {MAX_ACTS}"),
+            ({"premise": "p", "target_minutes": 0}, "greater than 0"),
+            ({"premise": "p", "target_minutes": 10_000}, "less than or equal to"),
+            ({"premise": "p", "turn_seconds": 0.5}, "greater than or equal to 2"),
         ],
     )
-    async def test_rejects_unusable_requests(self, kwargs, match):
-        with pytest.raises(ValueError, match=match):
-            await plan_rundown(RundownRequest(**kwargs))
+    def test_rejects_unusable_requests(self, kwargs, match):
+        with pytest.raises(ValidationError, match=match):
+            RundownRequest(**kwargs)
+
+    def test_accepts_the_boundaries(self):
+        assert RundownRequest(premise="p", acts=MAX_ACTS).acts == MAX_ACTS
+        assert RundownRequest(premise="p", acts=1).acts == 1
+
+    async def test_plan_rundown_no_longer_needs_its_own_guards(self, mocker):
+        """A valid request reaches the API; an invalid one never gets built."""
+        mocker.patch(
+            "sanzaru.config.get_client",
+            side_effect=AssertionError("should have been rejected before the client"),
+        )
+        with pytest.raises(ValidationError):
+            await plan_rundown(RundownRequest(premise="p", acts=0))

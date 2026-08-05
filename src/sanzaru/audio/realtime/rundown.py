@@ -19,12 +19,13 @@ from __future__ import annotations
 import math
 import re
 from collections.abc import Sequence
+from typing import Annotated
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, StringConstraints, model_validator
 
 from ...config import logger
 from .producer import DEFAULT_TURN_SECONDS, DEFAULT_VOICES
-from .types import ActBrief, HostSpec, Rundown
+from .types import MAX_ACTS, MAX_EPISODE_MINUTES, ActBrief, HostSpec, Rundown
 
 DEFAULT_PLANNER_MODEL = "gpt-5.5"
 """A text model, not a realtime one. One call per episode, and its output shapes
@@ -32,8 +33,6 @@ everything downstream, so this defaults to a strong model rather than a cheap on
 
 DEFAULT_ACTS = 4
 DEFAULT_TARGET_MINUTES = 12.0
-MAX_ACTS = 24
-"""Guard against a rundown that opens hundreds of concurrent sessions."""
 
 
 # ---------- planner schema ----------
@@ -63,16 +62,28 @@ class PlannedRundown(BaseModel):
 
 
 class RundownRequest(BaseModel):
-    """Everything `plan_rundown` needs, in one validated object."""
+    """Everything `plan_rundown` needs, in one validated object.
 
-    premise: str
-    acts: int = DEFAULT_ACTS
-    target_minutes: float = DEFAULT_TARGET_MINUTES
-    title: str | None = None
+    Bounds are declared here rather than checked in `plan_rundown` so they reach
+    the JSON schema: a caller reads `acts <= 24` instead of discovering it from
+    an error.
+    """
+
+    premise: Annotated[str, StringConstraints(min_length=1, max_length=20_000)]
+    acts: int = Field(default=DEFAULT_ACTS, ge=1, le=MAX_ACTS)
+    target_minutes: float = Field(default=DEFAULT_TARGET_MINUTES, gt=0, le=MAX_EPISODE_MINUTES)
+    title: str | None = Field(default=None, max_length=200)
     style: str | None = None
-    hosts: list[HostSpec] = Field(default_factory=list)
-    turn_seconds: float = DEFAULT_TURN_SECONDS
+    hosts: list[HostSpec] = Field(default_factory=list, max_length=8)
+    turn_seconds: float = Field(default=DEFAULT_TURN_SECONDS, ge=2.0, le=120.0)
     model: str = DEFAULT_PLANNER_MODEL
+
+    @model_validator(mode="after")
+    def _check_premise_is_not_blank(self) -> RundownRequest:
+        # min_length passes on "   ", which then produces a rundown about nothing.
+        if not self.premise.strip():
+            raise ValueError("premise is required to plan a rundown")
+        return self
 
 
 def slugify(value: str, fallback: str = "host") -> str:
@@ -193,17 +204,9 @@ async def plan_rundown(request: RundownRequest) -> Rundown:
     """Expand a premise into a full, recordable rundown.
 
     Raises:
-        ValueError: If the request is malformed or the planner returns no plan.
+        ValueError: If the planner returns no plan. The request itself is
+            validated by `RundownRequest` at construction.
     """
-    if not request.premise.strip():
-        raise ValueError("premise is required to plan a rundown")
-    if request.acts < 1:
-        raise ValueError(f"acts must be >= 1 (got {request.acts})")
-    if request.acts > MAX_ACTS:
-        raise ValueError(f"acts must be <= {MAX_ACTS} (got {request.acts}) — each act opens one session per host")
-    if request.target_minutes <= 0:
-        raise ValueError(f"target_minutes must be > 0 (got {request.target_minutes})")
-
     from ...config import get_client
 
     client = get_client()

@@ -40,6 +40,7 @@ from .agent import RealtimeAgent
 from .budget import CostBudget
 from .pricing import OUTPUT_TOKENS_PER_SECOND
 from .types import (
+    DEFAULT_TURN_SECONDS,
     REALTIME_SAMPLE_RATE,
     ActBrief,
     ActResult,
@@ -72,10 +73,6 @@ DEFAULT_VOICES: tuple[str, ...] = (
 )
 """Realtime API voices, in assignment order. marin/cedar lead because they are the
 most natural of the set in conversation — that pairing is what the spike used."""
-
-DEFAULT_TURN_SECONDS = 15.0
-"""Target upper bound for one turn, stated in the prompt. Enforced socially, not
-mechanically — a hard cut mid-sentence sounds far worse than a long turn."""
 
 TURN_TOKEN_HEADROOM = 1.5
 """How far past the target a turn may run before the token cap stops it.

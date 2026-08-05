@@ -11,6 +11,7 @@ import json
 import pathlib
 
 import pytest
+from pydantic import ValidationError
 
 from sanzaru.audio.realtime import mixdown
 from sanzaru.audio.realtime.pricing import ModelPrices, prices_for, project_usage, usage_cost
@@ -261,28 +262,33 @@ class TestAnnotateUpcoming:
 @pytest.mark.unit
 class TestMaxSessions:
     def test_explicit_wins(self):
-        assert sim._max_sessions(sim.SimulationBrief(max_concurrent_sessions=11)) == 11
+        assert sim._max_sessions(sim.SimulationBrief(premise="p", max_concurrent_sessions=11)) == 11
 
     def test_env_is_honoured(self, monkeypatch):
         monkeypatch.setenv("SANZARU_REALTIME_MAX_SESSIONS", "4")
-        assert sim._max_sessions(sim.SimulationBrief()) == 4
+        assert sim._max_sessions(sim.SimulationBrief(premise="p")) == 4
 
     @pytest.mark.parametrize("value", ["", "  ", "nope", "0", "-3"])
     def test_junk_falls_back_to_the_default(self, monkeypatch, value):
         monkeypatch.setenv("SANZARU_REALTIME_MAX_SESSIONS", value)
-        assert sim._max_sessions(sim.SimulationBrief()) == sim.DEFAULT_MAX_SESSIONS
+        assert sim._max_sessions(sim.SimulationBrief(premise="p")) == sim.DEFAULT_MAX_SESSIONS
 
 
 @pytest.mark.unit
 class TestResolveRundown:
-    async def test_rejects_a_brief_with_nothing_to_record(self):
-        with pytest.raises(ValueError, match="rundown or a premise"):
-            await sim.resolve_rundown(sim.SimulationBrief())
+    """The unrecordable cases are rejected by the schema, before any API call."""
 
-    async def test_rejects_a_rundown_with_no_acts(self):
-        empty = Rundown(title="t", hosts=[HostSpec(id="a", name="A")], acts=[])
-        with pytest.raises(ValueError, match="no acts"):
-            await sim.resolve_rundown(sim.SimulationBrief(rundown=empty))
+    def test_a_brief_with_nothing_to_record_is_rejected_at_parse_time(self):
+        with pytest.raises(ValidationError, match="nothing to record"):
+            sim.SimulationBrief()
+
+    def test_resume_without_a_run_id_is_rejected(self):
+        with pytest.raises(ValidationError, match="needs a run_id"):
+            sim.SimulationBrief(resume=True)
+
+    def test_a_rundown_with_no_acts_is_rejected_at_parse_time(self):
+        with pytest.raises(ValidationError):
+            Rundown(title="t", hosts=[HostSpec(id="a", name="A")], acts=[])
 
     async def test_passes_a_usable_rundown_straight_through(self, rundown):
         assert await sim.resolve_rundown(sim.SimulationBrief(rundown=rundown)) is rundown
@@ -474,3 +480,131 @@ class TestNaming:
         # Names are basenames by construction; the storage layer sanitizes anyway.
         for name in (sim._act_audio_name("show", "abc", "act1"), sim._manifest_name("abc")):
             assert pathlib.Path(name).name == name
+
+
+# ---------- schema validation ----------
+
+
+@pytest.mark.unit
+class TestRundownValidation:
+    """Guards that reject a rundown before it can cost anything."""
+
+    def _rundown(self, **overrides):
+        payload = {
+            "title": "t",
+            "hosts": [HostSpec(id="a", name="A"), HostSpec(id="b", name="B")],
+            "acts": [ActBrief(id="act1", title="One", topic="x"), ActBrief(id="act2", title="Two", topic="y")],
+        }
+        payload.update(overrides)
+        return Rundown(**payload)
+
+    def test_duplicate_act_ids_are_rejected(self):
+        # Two acts with one id overwrite each other's checkpoint, so a resumed
+        # run would silently lose one.
+        with pytest.raises(ValidationError, match="duplicate act id"):
+            self._rundown(acts=[ActBrief(id="act1", title="A", topic="x"), ActBrief(id="act1", title="B", topic="y")])
+
+    def test_duplicate_host_ids_are_rejected(self):
+        # Two hosts with one id collapse into one speaker, breaking stems.
+        with pytest.raises(ValidationError, match="duplicate host id"):
+            self._rundown(hosts=[HostSpec(id="a", name="A"), HostSpec(id="a", name="B")])
+
+    def test_speaking_order_naming_an_unknown_host_is_rejected(self):
+        act = ActBrief(id="act1", title="One", topic="x", speaking_order=["a", "ghost"])
+        with pytest.raises(ValidationError, match="ghost"):
+            self._rundown(acts=[act])
+
+    def test_a_valid_speaking_order_passes(self):
+        act = ActBrief(id="act1", title="One", topic="x", speaking_order=["a", "b", "b"])
+        assert self._rundown(acts=[act]).acts[0].speaking_order == ["a", "b", "b"]
+
+    def test_an_empty_rundown_is_rejected(self):
+        with pytest.raises(ValidationError):
+            self._rundown(acts=[])
+        with pytest.raises(ValidationError):
+            self._rundown(hosts=[])
+
+    def test_ids_that_would_escape_the_media_dir_are_rejected(self):
+        # Ids reach filenames; storage sanitizes too, but fail early and clearly.
+        for bad in ("../etc", "a/b", "a\\b", ""):
+            with pytest.raises(ValidationError):
+                ActBrief(id=bad, title="t", topic="x")
+
+    def test_turn_notes_outside_the_act_are_rejected(self):
+        with pytest.raises(ValidationError, match="would never fire"):
+            ActBrief(id="act1", title="t", topic="x", max_turns=4, turn_notes={9: "never runs"})
+
+    def test_absurd_act_budgets_are_rejected(self):
+        with pytest.raises(ValidationError):
+            ActBrief(id="act1", title="t", topic="x", target_seconds=99_999)
+        with pytest.raises(ValidationError):
+            ActBrief(id="act1", title="t", topic="x", max_turns=0)
+
+    def test_an_unknown_voice_warns_but_is_allowed(self, caplog):
+        # OpenAI ships voices faster than we do, so this must not hard-fail.
+        with caplog.at_level("WARNING", logger="sanzaru"):
+            host = HostSpec(id="a", name="A", voice="brand-new-voice")
+        assert host.voice == "brand-new-voice"
+        assert "not a known realtime voice" in caplog.text
+
+    def test_an_underbudgeted_act_warns(self, caplog):
+        with caplog.at_level("WARNING", logger="sanzaru"):
+            ActBrief(id="act1", title="t", topic="x", target_seconds=600, max_turns=4)
+        assert "stop on the duration budget" in caplog.text
+
+
+@pytest.mark.unit
+class TestSimulationBriefValidation:
+    def test_run_id_cannot_escape_the_media_dir(self):
+        for bad in ("../../etc/passwd", "a/b", "with space"):
+            with pytest.raises(ValidationError):
+                sim.SimulationBrief(premise="p", run_id=bad)
+
+    def test_filename_cannot_contain_a_separator(self):
+        with pytest.raises(ValidationError):
+            sim.SimulationBrief(premise="p", filename="../out.mp3")
+
+    def test_bitrate_must_look_like_a_bitrate(self):
+        with pytest.raises(ValidationError):
+            sim.SimulationBrief(premise="p", output_bitrate="loud")
+        assert sim.SimulationBrief(premise="p", output_bitrate="320k").output_bitrate == "320k"
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [
+            {"acts": 0},
+            {"acts": 999},
+            {"target_minutes": 0},
+            {"turn_seconds": 0},
+            {"turn_tokens": -1},
+            {"max_cost_usd": 0},
+            {"max_cost_usd": -5},
+            {"act_gap_ms": -1},
+            {"max_concurrent_sessions": -1},
+        ],
+    )
+    def test_out_of_range_values_are_rejected(self, kwargs):
+        with pytest.raises(ValidationError):
+            sim.SimulationBrief(premise="p", **kwargs)
+
+    def test_a_ceiling_on_an_unpriceable_model_warns_loudly(self, caplog):
+        with caplog.at_level("WARNING", logger="sanzaru"):
+            sim.SimulationBrief(premise="p", model="some-future-model", max_cost_usd=5.0)
+        assert "ceiling will never fire" in caplog.text
+
+    def test_an_explicit_cap_too_small_for_one_act_is_rejected(self, rundown):
+        with pytest.raises(ValidationError, match="cannot fit one act"):
+            sim.SimulationBrief(rundown=rundown, max_concurrent_sessions=1)
+
+    def test_the_default_cap_defers_to_the_environment(self, rundown, monkeypatch):
+        """A validator must not reject what SANZARU_REALTIME_MAX_SESSIONS allows."""
+        monkeypatch.setenv("SANZARU_REALTIME_MAX_SESSIONS", "16")
+        brief = sim.SimulationBrief(rundown=rundown, max_concurrent_sessions=0)
+        assert sim._max_sessions(brief) == 16
+
+    def test_the_run_manifest_brief_is_itself_valid(self, rundown):
+        """The stored brief has the rundown stripped, so it must stand alone."""
+        brief = sim.SimulationBrief(rundown=rundown, run_id="testrun")
+        stored = brief.model_copy(update={"rundown": None, "resume": True})
+        manifest = sim.RunManifest(run_id="testrun", slug="s", created=0.0, rundown=rundown, brief=stored)
+        assert sim.RunManifest.model_validate_json(manifest.model_dump_json()).brief.resume is True

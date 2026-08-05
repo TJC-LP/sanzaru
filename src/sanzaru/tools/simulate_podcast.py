@@ -38,7 +38,7 @@ from typing import Literal
 
 import anyio
 from aioresult import ResultCapture  # type: ignore[import-untyped]
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 from ..audio.realtime import (
     ActBrief,
@@ -63,10 +63,18 @@ from ..audio.realtime.mixdown import (
     render_stem,
     slice_pcm_by_durations,
 )
-from ..audio.realtime.pricing import project_usage, usage_cost
+from ..audio.realtime.pricing import prices_for, project_usage, usage_cost
 from ..audio.realtime.producer import DEFAULT_REALTIME_MODEL, DEFAULT_TURN_SECONDS, DEFAULT_TURN_TOKENS
 from ..audio.realtime.qc import DEFAULT_JUDGE_MODEL, DEFAULT_TRANSCRIBE_MODEL, QCReport, run_qc
 from ..audio.realtime.rundown import DEFAULT_PLANNER_MODEL
+from ..audio.realtime.types import (
+    MAX_ACTS,
+    MAX_EPISODE_MINUTES,
+    MAX_TURN_TOKENS,
+    Bitrate,
+    Filename,
+    RunId,
+)
 from ..config import logger
 from ..infrastructure import FileSystemRepository
 from ..storage import get_storage
@@ -93,25 +101,25 @@ class SimulationBrief(BaseModel):
     edited), or give a `premise` and let pre-production plan the acts.
     """
 
-    premise: str = ""
+    premise: str = Field(default="", max_length=20_000)
     rundown: Rundown | None = None
-    title: str | None = None
+    title: str | None = Field(default=None, max_length=200)
     style: str | None = None
-    hosts: list[HostSpec] = Field(default_factory=list)
-    acts: int = 4
-    target_minutes: float = 12.0
+    hosts: list[HostSpec] = Field(default_factory=list, max_length=8)
+    acts: int = Field(default=4, ge=1, le=MAX_ACTS)
+    target_minutes: float = Field(default=12.0, gt=0, le=MAX_EPISODE_MINUTES)
 
     model: str = DEFAULT_REALTIME_MODEL
     planner_model: str = DEFAULT_PLANNER_MODEL
-    turn_seconds: float = DEFAULT_TURN_SECONDS
-    turn_tokens: int = DEFAULT_TURN_TOKENS
+    turn_seconds: float = Field(default=DEFAULT_TURN_SECONDS, ge=2.0, le=120.0)
+    turn_tokens: int = Field(default=DEFAULT_TURN_TOKENS, ge=0, le=MAX_TURN_TOKENS)
     """0 → derived from `turn_seconds`; see `producer.turn_token_cap`."""
 
-    max_concurrent_sessions: int = 0
+    max_concurrent_sessions: int = Field(default=0, ge=0, le=64)
     """0 → SANZARU_REALTIME_MAX_SESSIONS, else DEFAULT_MAX_SESSIONS."""
-    max_cost_usd: float | None = None
+    max_cost_usd: float | None = Field(default=None, gt=0)
 
-    run_id: str | None = None
+    run_id: RunId | None = None
     resume: bool = False
     stems: bool = False
     dry_run: bool = False
@@ -122,15 +130,66 @@ class SimulationBrief(BaseModel):
     judge_model: str = DEFAULT_JUDGE_MODEL
 
     output_format: Literal["mp3", "wav"] = "mp3"
-    output_bitrate: str = "192k"
-    filename: str | None = None
-    act_gap_ms: int = DEFAULT_ACT_GAP_MS
-    intro_silence_ms: int = 0
-    outro_silence_ms: int = 0
+    output_bitrate: Bitrate = "192k"
+    filename: Filename | None = None
+    act_gap_ms: int = Field(default=DEFAULT_ACT_GAP_MS, ge=0, le=60_000)
+    intro_silence_ms: int = Field(default=0, ge=0, le=60_000)
+    outro_silence_ms: int = Field(default=0, ge=0, le=60_000)
     normalize_loudness: bool = False
     """Off by default, unlike scripted podcasts. Peak-normalizing each act
     separately can *introduce* level jumps between acts recorded by the same
     models at consistent levels."""
+
+    @model_validator(mode="after")
+    def _check_there_is_something_to_record(self) -> SimulationBrief:
+        """Reject a brief with no episode in it before anything else happens."""
+        if not (self.premise.strip() or self.rundown is not None or self.resume):
+            raise ValueError("nothing to record: give a premise, a rundown, or resume=true with a run_id")
+        if self.resume and not self.run_id and self.rundown is None:
+            raise ValueError("resume=true needs a run_id (or a rundown to record from scratch)")
+        return self
+
+    @model_validator(mode="after")
+    def _warn_on_unpriced_model(self) -> SimulationBrief:
+        """A ceiling that cannot price the model cannot enforce anything.
+
+        Not an error — a new model should still be usable the day it ships — but
+        silently accepting `max_cost_usd` against a model we cannot price would
+        be the worst of both worlds.
+        """
+        if prices_for(self.model) is not None:
+            return self
+        env_name = "SANZARU_REALTIME_PRICE_" + self.model.upper().replace("-", "_").replace(".", "_")
+        if self.max_cost_usd is not None:
+            logger.warning(
+                "max_cost_usd=%.2f is set, but no price is known for model %r, so the ceiling "
+                "will never fire - set %s to enable it",
+                self.max_cost_usd,
+                self.model,
+                env_name,
+            )
+        else:
+            logger.info("No price known for model %r; spend will be reported as unknown (set %s)", self.model, env_name)
+        return self
+
+    @model_validator(mode="after")
+    def _check_explicit_session_cap_can_fit_an_act(self) -> SimulationBrief:
+        """An act is indivisible: it needs one session per host, all at once.
+
+        Only checked when the cap is set explicitly. The default is resolved
+        against SANZARU_REALTIME_MAX_SESSIONS at run time, and a schema
+        validator that second-guessed the environment would reject episodes
+        that are perfectly runnable.
+        """
+        if self.rundown is None or self.max_concurrent_sessions <= 0:
+            return self
+        hosts = len(self.rundown.hosts)
+        if hosts > self.max_concurrent_sessions:
+            raise ValueError(
+                f"max_concurrent_sessions={self.max_concurrent_sessions} cannot fit one act: "
+                f"{hosts} hosts need {hosts} sessions at once"
+            )
+        return self
 
 
 class CostReport(BaseModel):
@@ -437,7 +496,18 @@ async def _record_all(
     ]
 
     sessions = _max_sessions(brief)
-    parallel_acts = max(1, sessions // max(1, len(rundown.hosts)))
+    hosts = max(1, len(rundown.hosts))
+    # An act is indivisible — it opens one session per host — so a cap below
+    # that is exceeded rather than honoured. Say so instead of quietly going over.
+    if hosts > sessions:
+        logger.warning(
+            "%d hosts need %d concurrent sessions but the cap is %d; running one act at a time "
+            "and exceeding the cap (raise SANZARU_REALTIME_MAX_SESSIONS)",
+            hosts,
+            hosts,
+            sessions,
+        )
+    parallel_acts = max(1, sessions // hosts)
     if todo:
         logger.info(
             "Recording %d act(s) with up to %d in parallel (%d sessions / %d hosts)",
@@ -647,7 +717,10 @@ async def simulate_podcast(
             slug=slug,
             created=time.time(),
             rundown=rundown,
-            brief=effective.model_copy(update={"run_id": run_id, "rundown": None}),
+            # The rundown is stripped so the manifest has one source of truth,
+            # and `resume` is set so what remains is still a valid brief on its
+            # own — it describes exactly the invocation that picks this run up.
+            brief=effective.model_copy(update={"run_id": run_id, "rundown": None, "resume": True}),
         )
         .model_dump_json(indent=2)
         .encode(),
