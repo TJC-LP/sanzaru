@@ -243,6 +243,22 @@ Non-obvious things that are easy to break:
 - **Every act is checkpointed before it can be lost** (mp3 + a turns/usage sidecar), plus a
   `simrun_<id>.json` manifest written before recording so `--resume <run_id>` needs nothing else.
   Storage has no delete op, so checkpoints persist — documented, not cleaned up.
+- **Checkpoints bypass the `-o` storage override; deliverables don't.** `-o` repoints the whole
+  "audio" path type for one invocation, but the resume hint carries no `-o`, so anything found by
+  run id alone goes through `storage.get_default_storage()` (`simulate_podcast.checkpoint_storage`).
+  Only the episode and stems follow `-o`. Loading a checkpoint decodes inside the try — a
+  truncated or zero-audio act is re-recorded, never fatal to the whole resume.
+- **On `--resume`, caller-set fields win and the manifest fills the rest** (`model_fields_set` is
+  the signal). That is why `cli/podcast.py` gives every simulate option a `None` click default and
+  only puts what the user typed into the payload: a click-supplied `"mp3"` would be
+  indistinguishable from the user asking for mp3, and a dropped `--max-cost` would make the
+  ceiling abort's own resume hint re-run uncapped.
+- **Every turn runs under `anyio.fail_after`.** Nothing in the Realtime protocol bounds a turn, and
+  a stalled session would hold a `CapacityLimiter` slot forever inside a blocking tool. The bound
+  is 6x `turn_seconds` (min 60s), overridable via `SANZARU_REALTIME_TURN_TIMEOUT` /
+  `turn_timeout_s`; a breach becomes `RealtimeAPIError`. Relatedly, `speak()` requires a
+  `response.done`: the SDK's `__aiter__` *returns* on `ConnectionClosedOK`, so a graceful mid-act
+  close would otherwise look like a successful silent turn.
 - **`_stitch_audio` takes a `decode` callable.** Realtime is PCM16/24k end to end with no mp3
   round-trip; the scripted path still passes mp3. Everything downstream is shared.
 - **QC inverts the usual check.** No script means no ground truth, so verification compares the
@@ -415,6 +431,7 @@ SANZARU_OPENAI_MAX_CONCURRENCY=0      # 0 = unbounded (default)
 
 # Simulated podcasts (needs only OPENAI_API_KEY + the [audio] extra)
 SANZARU_REALTIME_MAX_SESSIONS=6       # concurrent realtime sessions across all acts
+SANZARU_REALTIME_TURN_TIMEOUT=120     # per-turn stall bound; default 6x turn_seconds, min 60s
 # Override stale list pricing: text_in,cached_text_in,audio_in,cached_audio_in,audio_out,text_out
 SANZARU_REALTIME_PRICE_GPT_REALTIME_2_1=4,0.4,32,0.4,64,24
 ```

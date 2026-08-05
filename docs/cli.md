@@ -272,6 +272,12 @@ you paid for:
 sanzaru podcast simulate --resume d33730ea   # records only the missing acts
 ```
 
+This composes with `-o`: the episode and stems go where you asked, while the manifest and the act
+checkpoints always stay in the media dir, so the printed resume command works verbatim with no
+`-o` of its own. A resume also reinstates the run's settings from the manifest — including
+`--max-cost`, so following the ceiling abort's hint does not re-run uncapped. Anything you pass on
+the resume itself wins.
+
 Options: `-p/--premise`, `--acts`, `-m/--target-minutes`, `--title`, `--style`, `--host`,
 `--model`, `--planner-model`, `--turn-seconds`, `--turn-tokens`, `--max-cost`, `--max-sessions`,
 `--resume RUN_ID`, `--stems`, `--qc/--no-qc`, `--qc-retry`, `--dry-run`, `--act-gap`, `--format`,

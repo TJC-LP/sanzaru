@@ -66,6 +66,24 @@ def media_dir(tmp_path, monkeypatch):
     get_path.cache_clear()
 
 
+@pytest.fixture
+def output_override():
+    """Repoint the whole "audio" path type, exactly the way the CLI's `-o` does.
+
+    `plan_output`/`install_overrides` turn `-o ./out/ep.mp3` into a
+    `LocalStorageBackend(path_overrides={"audio": ./out})`, so this is the seam
+    where checkpoints could get dragged out of the media dir.
+    """
+    from sanzaru.storage import set_storage_backend
+    from sanzaru.storage.local import LocalStorageBackend
+
+    def point_at(directory=None):
+        set_storage_backend(None if directory is None else LocalStorageBackend(path_overrides={"audio": directory}))
+
+    yield point_at
+    set_storage_backend(None)
+
+
 def _fake_act(act_id: str, *, seconds: float = 2.0, turns: int = 2) -> ActResult:
     """A recorded act with distinguishable per-speaker audio."""
     speakers = [("avery", b"\x10\x20"), ("rory", b"\x30\x40")]
@@ -382,6 +400,28 @@ class TestSimulate:
         assert stub_run_act == ["act3"]
         assert len(result.acts) == 3
 
+    async def test_undecodable_audio_is_re_recorded_rather_than_fatal(self, rundown, media_dir, stub_run_act):
+        # LocalStorageBackend.write is a plain open+write, so a crash mid-write
+        # leaves a truncated mp3 that `exists()` happily reports.
+        await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))
+        stub_run_act.clear()
+        (media_dir / "Stitch_Test_testrun_act2.mp3").write_bytes(b"\xff\xfb" + b"truncated" * 8)
+
+        result = await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="testrun", qc=False))
+        assert stub_run_act == ["act2"]
+        assert result.turn_count == 6
+
+    async def test_a_zero_audio_checkpoint_is_re_recorded_rather_than_fatal(self, rundown, media_dir, stub_run_act):
+        # What a turn that produced no audio used to leave behind: a ~500-byte
+        # mp3 with no decodable frame. One of those must not kill every resume.
+        await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))
+        stub_run_act.clear()
+        (media_dir / "Stitch_Test_testrun_act1.mp3").write_bytes(mixdown.encode_pcm(b"", "mp3"))
+
+        result = await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="testrun", qc=False))
+        assert stub_run_act == ["act1"]
+        assert result.turn_count == 6
+
     async def test_resume_without_a_manifest_or_rundown_is_an_error(self, media_dir):
         with pytest.raises(ValueError, match="no run manifest"):
             await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="nope", qc=False))
@@ -424,6 +464,147 @@ class TestSimulate:
 
 
 @pytest.mark.integration
+class TestOutputOverrideAndResume:
+    """`-o` and `--resume RUN_ID` are documented as one workflow; they compose.
+
+    `-o` repoints the whole "audio" path type for one invocation, but the resume
+    hint it prints carries no `-o` — so anything a later run has to find by run
+    id alone belongs in the media dir regardless.
+    """
+
+    async def test_the_episode_follows_the_override(self, rundown, media_dir, tmp_path, stub_run_act, output_override):
+        out = tmp_path / "out"
+        out.mkdir()
+        output_override(out)
+        result = await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))
+        assert (out / result.output_file).exists()
+
+    async def test_the_manifest_and_checkpoints_stay_in_the_media_dir(
+        self, rundown, media_dir, tmp_path, stub_run_act, output_override
+    ):
+        out = tmp_path / "out"
+        out.mkdir()
+        output_override(out)
+        result = await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))
+        assert (media_dir / "simrun_testrun.json").exists()
+        assert (media_dir / "Stitch_Test_testrun_act1.mp3").exists()
+        # And the user's output directory holds the episode, not 2N+1 intermediates.
+        assert {p.name for p in out.iterdir()} == {result.output_file}
+
+    async def test_stems_still_follow_the_override(self, rundown, media_dir, tmp_path, stub_run_act, output_override):
+        out = tmp_path / "out"
+        out.mkdir()
+        output_override(out)
+        result = await sim.simulate_podcast(
+            sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun", stems=True, output_format="wav")
+        )
+        for name in result.stems.values():
+            assert (out / name).exists()
+
+    async def test_a_run_recorded_with_an_override_resumes_without_one(
+        self, rundown, media_dir, tmp_path, stub_run_act, output_override
+    ):
+        out = tmp_path / "out"
+        out.mkdir()
+        output_override(out)
+        await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))
+
+        output_override(None)  # the recovery command carries no -o
+        stub_run_act.clear()
+        result = await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="testrun", qc=False))
+        assert stub_run_act == []
+        assert all(act.reused for act in result.acts)
+        assert (media_dir / result.output_file).exists()
+
+    async def test_no_media_dir_at_all_still_records(self, rundown, tmp_path, monkeypatch, stub_run_act):
+        """The CLI falls back to cwd when nothing is configured; so do we."""
+        from sanzaru.config import get_path
+
+        monkeypatch.delenv("AUDIO_PATH", raising=False)
+        monkeypatch.delenv("SANZARU_MEDIA_PATH", raising=False)
+        get_path.cache_clear()
+        out = tmp_path / "cwd"
+        out.mkdir()
+        try:
+            from sanzaru.storage import set_storage_backend
+            from sanzaru.storage.local import LocalStorageBackend
+
+            set_storage_backend(LocalStorageBackend(path_overrides={"audio": out}))
+            result = await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))
+        finally:
+            set_storage_backend(None)
+            get_path.cache_clear()
+        # Nowhere more durable exists, so the checkpoints land beside the episode.
+        assert (out / result.output_file).exists()
+        assert (out / "simrun_testrun.json").exists()
+
+
+@pytest.mark.integration
+class TestResumeRestoresSettings:
+    """What `--resume RUN_ID` alone must reinstate, and what it must not."""
+
+    async def _record(self, rundown, **kwargs):
+        await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun", **kwargs))
+
+    async def test_the_cost_ceiling_survives_a_bare_resume(self, rundown, media_dir, stub_run_act):
+        # The ceiling abort's own resume hint carries no flags, so a resume that
+        # dropped max_cost_usd would re-run uncapped — disabling the exact
+        # safety that produced the hint.
+        await self._record(rundown, max_cost_usd=100.0)
+        result = await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="testrun", qc=False))
+        assert result.cost.limit_usd == 100.0
+
+    async def test_a_caller_supplied_ceiling_still_wins(self, rundown, media_dir, stub_run_act):
+        await self._record(rundown, max_cost_usd=100.0)
+        result = await sim.simulate_podcast(
+            sim.SimulationBrief(resume=True, run_id="testrun", qc=False, max_cost_usd=5.0)
+        )
+        assert result.cost.limit_usd == 5.0
+
+    async def test_the_output_format_can_be_changed_on_resume(self, rundown, media_dir, stub_run_act):
+        await self._record(rundown, output_format="mp3")
+        result = await sim.simulate_podcast(
+            sim.SimulationBrief(resume=True, run_id="testrun", qc=False, output_format="wav")
+        )
+        assert result.output_file.endswith(".wav")
+        assert (media_dir / result.output_file).exists()
+
+    async def test_the_act_gap_can_be_changed_on_resume(self, rundown, media_dir, stub_run_act):
+        from io import BytesIO
+
+        from pydub import AudioSegment
+
+        await self._record(rundown, act_gap_ms=0, output_format="wav")
+
+        def milliseconds(name):
+            return len(AudioSegment.from_file(BytesIO((media_dir / name).read_bytes()), format="wav"))
+
+        tight = await sim.simulate_podcast(
+            sim.SimulationBrief(resume=True, run_id="testrun", qc=False, output_format="wav", filename="tight.wav")
+        )
+        wide = await sim.simulate_podcast(
+            sim.SimulationBrief(
+                resume=True,
+                run_id="testrun",
+                qc=False,
+                output_format="wav",
+                filename="wide.wav",
+                act_gap_ms=2000,
+            )
+        )
+        assert wide.duration_seconds == tight.duration_seconds  # the act audio itself is unchanged
+        # Two 2s gaps between three acts, which the manifest's act_gap_ms=0 omits.
+        assert milliseconds(wide.output_file) - milliseconds(tight.output_file) == pytest.approx(4000, abs=60)
+
+    async def test_settings_the_caller_did_not_pass_come_from_the_manifest(self, rundown, media_dir, stub_run_act):
+        await self._record(rundown, output_format="wav", turn_seconds=42.0)
+        result = await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="testrun", qc=False))
+        assert result.output_file.endswith(".wav")
+        manifest = json.loads((media_dir / "simrun_testrun.json").read_text())
+        assert manifest["brief"]["turn_seconds"] == 42.0
+
+
+@pytest.mark.integration
 class TestCostCeiling:
     async def test_aborts_and_leaves_finished_acts_on_disk(self, rundown, media_dir, monkeypatch):
         from sanzaru.exceptions import CostCeilingError
@@ -455,6 +636,33 @@ class TestCostCeiling:
         assert ceiling.limit_usd == 0.02
         # The run manifest is written before any recording, so resume works.
         assert (media_dir / "simrun_testrun.json").exists()
+
+    async def test_reused_acts_count_as_checkpointed_and_safe(self, rundown, media_dir, stub_run_act, monkeypatch):
+        """The ceiling message is "N act(s) checkpointed and safe" — N must be true.
+
+        A resumed act is on disk by definition; reporting 0 tells the user their
+        recovered work is gone and invites them to start over.
+        """
+        from sanzaru.exceptions import CostCeilingError
+
+        await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))
+        for suffix in ("mp3", "json"):
+            (media_dir / f"Stitch_Test_testrun_act2.{suffix}").unlink()
+
+        async def blow_the_budget(brief, hosts, settings, **kwargs):
+            kwargs["budget"].charge(RealtimeUsage(output_audio_tokens=500_000), settings.model)
+            return _fake_act(brief.id)
+
+        monkeypatch.setattr(sim, "run_act", blow_the_budget)
+
+        with pytest.raises(BaseException) as excinfo:  # noqa: PT011 — anyio wraps it in a group
+            await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="testrun", qc=False, max_cost_usd=0.02))
+
+        from sanzaru.cli._runtime import find_in_group
+
+        ceiling = find_in_group(excinfo.value, CostCeilingError)
+        assert ceiling is not None
+        assert sorted(ceiling.completed_acts) == ["act1", "act3"]
 
     async def test_a_generous_ceiling_does_not_fire(self, rundown, media_dir, stub_run_act):
         result = await sim.simulate_podcast(

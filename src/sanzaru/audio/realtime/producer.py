@@ -31,11 +31,15 @@ declaratively instead, via `ActBrief.direction`, `turn_notes` and
 from __future__ import annotations
 
 import contextlib
+import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+import anyio
+
 from ...config import logger
+from ...exceptions import RealtimeAPIError
 from .agent import RealtimeAgent
 from .budget import CostBudget
 from .pricing import OUTPUT_TOKENS_PER_SECOND
@@ -98,6 +102,38 @@ def turn_token_cap(turn_seconds: float) -> int:
     return max(256, int(turn_seconds * OUTPUT_TOKENS_PER_SECOND * TURN_TOKEN_HEADROOM))
 
 
+TURN_TIMEOUT_FACTOR = 6.0
+TURN_TIMEOUT_FLOOR = 60.0
+TURN_TIMEOUT_ENV = "SANZARU_REALTIME_TURN_TIMEOUT"
+
+
+def turn_timeout_seconds(turn_seconds: float, explicit: float = 0.0) -> float:
+    """Wall-clock bound for one turn: generous, but finite.
+
+    A realtime session that stops answering has nothing else to stop it — it
+    holds a `CapacityLimiter` slot forever, inside a blocking MCP tool, in a
+    server with no job registry. That is the one failure the act checkpoints
+    were advertised as surviving and did not.
+
+    A turn is generated at roughly speaking rate plus a couple of round-trips,
+    so 6x the target (never under a minute) only fires on a genuine stall.
+    Precedence: an explicit setting, then SANZARU_REALTIME_TURN_TIMEOUT, then
+    the derived bound.
+    """
+    if explicit > 0:
+        return explicit
+    raw = os.getenv(TURN_TIMEOUT_ENV, "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            logger.warning("%s=%r is not a number - deriving the turn timeout instead", TURN_TIMEOUT_ENV, raw)
+        else:
+            if value > 0:
+                return value
+    return max(TURN_TIMEOUT_FLOOR, turn_seconds * TURN_TIMEOUT_FACTOR)
+
+
 @dataclass(frozen=True, slots=True)
 class SimulationSettings:
     """Episode-wide knobs the producer needs for every act."""
@@ -109,6 +145,8 @@ class SimulationSettings:
     max_turn_tokens: int = DEFAULT_TURN_TOKENS
     turn_seconds: float = DEFAULT_TURN_SECONDS
     sample_rate: int = REALTIME_SAMPLE_RATE
+    turn_timeout_s: float = 0.0
+    """0 → SANZARU_REALTIME_TURN_TIMEOUT, else derived; see `turn_timeout_seconds`."""
 
 
 # ---------- prompts ----------
@@ -322,6 +360,7 @@ async def run_act(
     result = ActResult(act_id=brief.id)
     schedule = _point_schedule(brief)
     max_turn_tokens = settings.max_turn_tokens or turn_token_cap(settings.turn_seconds)
+    turn_timeout = turn_timeout_seconds(settings.turn_seconds, settings.turn_timeout_s)
     order = _resolve_order(brief, hosts, start_index)
 
     async with contextlib.AsyncExitStack() as stack:
@@ -375,32 +414,45 @@ async def run_act(
                 is_last_act=is_last_act,
                 point_index=schedule.get(turn_index),
             )
-            if note:
-                await agent.steer(note)
+            # One bound over the whole turn rather than over `speak()` alone: a
+            # stalled session hangs on the steer, or on feeding the others, just
+            # as readily. Everything downstream — the act's checkpoint, the
+            # resume path, the CLI's exit code — only needs a hung turn to end
+            # in *some* exception instead of holding a limiter slot forever.
+            try:
+                with anyio.fail_after(turn_timeout):
+                    if note:
+                        await agent.steer(note)
 
-            spoken = await agent.speak()
-            turn = Turn(
-                act_id=brief.id,
-                index=turn_index,
-                speaker_id=agent.id,
-                speaker_name=agent.name,
-                text=spoken.text,
-                seconds=round(spoken.seconds, 2),
-                truncated=spoken.truncated,
-            )
-            result.audio.append(TurnAudio(turn=turn, pcm=spoken.pcm))
-            result.usage = result.usage + spoken.usage
-            logger.debug("%s turn %d [%s] %.1fs", brief.id, turn_index + 1, agent.name, turn.seconds)
-            if on_turn is not None:
-                on_turn(turn)
-            if budget is not None:
-                budget.charge(spoken.usage, agent.model)
+                    spoken = await agent.speak()
+                    turn = Turn(
+                        act_id=brief.id,
+                        index=turn_index,
+                        speaker_id=agent.id,
+                        speaker_name=agent.name,
+                        text=spoken.text,
+                        seconds=round(spoken.seconds, 2),
+                        truncated=spoken.truncated,
+                    )
+                    result.audio.append(TurnAudio(turn=turn, pcm=spoken.pcm))
+                    result.usage = result.usage + spoken.usage
+                    logger.debug("%s turn %d [%s] %.1fs", brief.id, turn_index + 1, agent.name, turn.seconds)
+                    if on_turn is not None:
+                        on_turn(turn)
+                    if budget is not None:
+                        budget.charge(spoken.usage, agent.model)
 
-            # Everyone else hears it. This is what makes it a conversation
-            # rather than N monologues interleaved.
-            for other in agents:
-                if other is not agent:
-                    await other.hear(spoken.pcm)
+                    # Everyone else hears it. This is what makes it a
+                    # conversation rather than N monologues interleaved.
+                    for other in agents:
+                        if other is not agent:
+                            await other.hear(spoken.pcm)
+            except TimeoutError as exc:
+                raise RealtimeAPIError(
+                    f"{brief.id}: {agent.name}'s turn {turn_index + 1} made no progress for "
+                    f"{turn_timeout:.0f}s — the realtime session looks stalled "
+                    f"(raise {TURN_TIMEOUT_ENV} if turns legitimately run this long)"
+                ) from exc
 
             if is_final_turn:
                 closing_delivered = True

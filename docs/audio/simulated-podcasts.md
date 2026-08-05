@@ -266,14 +266,32 @@ sanzaru podcast simulate --resume d33730ea
 ```
 
 Measured: resuming a 3-act episode with one act missing re-recorded only that act, in 31
-seconds. A corrupt or partial checkpoint is re-recorded rather than treated as fatal.
+seconds. A checkpoint that is corrupt, truncated, or holds no decodable audio is re-recorded
+rather than treated as fatal — one bad act must not take the whole resume down with it.
 
-Two caveats:
+Three things this depends on, all of them deliberate:
 
+- **`-o` moves the episode, never the bookkeeping.** `-o ./out/ep1.mp3` repoints the whole
+  audio path type for that one invocation, but the resume command it prints carries no `-o`.
+  So the manifest and the act checkpoints are always written through the *default* backend
+  (the media dir), and only the episode and stems follow `-o`. The two flags are documented
+  as one workflow; they have to compose.
+- **A bare `--resume` reinstates the run's settings.** Anything you pass this time wins;
+  everything else — including `--max-cost` — is restored from the manifest. Following the
+  ceiling abort's own hint must not re-run uncapped.
 - Checkpoints are **not** deleted after a successful run — the storage backend has no delete
   operation. They are safe to remove by hand once you have the episode.
-- A resumed act is decoded from its mp3 checkpoint, so it carries one extra generation of
-  encoding. Acts recorded in the same run go to the mixer as raw PCM with no round-trip.
+
+A resumed act is decoded from its mp3 checkpoint, so it carries one extra generation of
+encoding. Acts recorded in the same run go to the mixer as raw PCM with no round-trip.
+
+### Turn timeouts
+
+Nothing in the Realtime protocol bounds a turn, so a session that stops answering would hold
+its slot forever inside a blocking tool. Each turn runs under `anyio.fail_after`; the bound
+defaults to 6x `--turn-seconds` (never under a minute) and a breach surfaces as a
+`RealtimeAPIError`, which the act-level machinery already knows how to checkpoint around.
+Override it with `SANZARU_REALTIME_TURN_TIMEOUT` (seconds) or `turn_timeout_s` in the brief.
 
 ---
 

@@ -311,6 +311,98 @@ class TestPodcastSimulate:
         assert _envelope(result.stdout)["result"]["file"]["path"] == str(tmp_path / "ep.mp3")
 
 
+@pytest.mark.audio
+class TestSimulateRecovery:
+    """The one pair of flags `docs/cli.md` documents together, end to end.
+
+    Everything else in this file stubs `simulate_podcast` itself; this class
+    deliberately does not, because the bug it guards lives in the seam between
+    the CLI's `-o` path override and the tool's checkpoint bookkeeping. Only
+    `run_act` is stubbed, so no session is opened and nothing is spent.
+    """
+
+    @pytest.fixture
+    def media_dir(self, tmp_path, monkeypatch):
+        from sanzaru.config import get_path
+
+        path = tmp_path / "media"
+        path.mkdir()
+        monkeypatch.setenv("AUDIO_PATH", str(path))
+        get_path.cache_clear()
+        yield path
+        get_path.cache_clear()
+
+    @pytest.fixture
+    def stub_run_act(self, mocker):
+        """Replace recording with instant two-turn acts; returns the call log."""
+        from sanzaru.audio.realtime.types import ActResult, RealtimeUsage, Turn, TurnAudio
+
+        recorded: list[str] = []
+
+        async def fake_run_act(brief, hosts, settings, **kwargs):
+            recorded.append(brief.id)
+            audio = [
+                TurnAudio(
+                    turn=Turn(act_id=brief.id, index=i, speaker_id="avery", speaker_name="Avery", text="hi", seconds=1),
+                    pcm=b"\x10\x20" * 24000,
+                )
+                for i in range(2)
+            ]
+            return ActResult(act_id=brief.id, audio=audio, usage=RealtimeUsage(), stop_reason="complete")
+
+        mocker.patch("sanzaru.tools.simulate_podcast.run_act", fake_run_act)
+        return recorded
+
+    @staticmethod
+    def _run_id(stderr: str) -> str:
+        return stderr.split("--resume ")[1].split()[0].strip()
+
+    def test_recording_with_o_then_resuming_without_it(self, runner, tmp_path, media_dir, stub_run_act):
+        rundown_file = tmp_path / "r.json"
+        rundown_file.write_text(json.dumps(RUNDOWN))
+        out = tmp_path / "out" / "ep1.mp3"
+
+        first = runner.invoke(cli, ["podcast", "simulate", f"@{rundown_file}", "--no-qc", "-o", str(out)])
+        assert first.exit_code == 0, first.stderr
+        assert out.exists()
+        assert stub_run_act == ["act1", "act2"]
+        # -o carries the episode, not 2N+1 intermediates.
+        assert [p.name for p in out.parent.iterdir()] == ["ep1.mp3"]
+
+        run_id = self._run_id(first.stderr)
+        stub_run_act.clear()
+        # Verbatim the command the CLI just printed: no -o anywhere.
+        second = runner.invoke(cli, ["podcast", "simulate", "--resume", run_id, "--no-qc"])
+        assert second.exit_code == 0, second.stderr
+        assert stub_run_act == []
+        assert all(act["reused"] for act in _envelope(second.stdout)["result"]["acts"])
+
+    def test_the_ceiling_from_the_first_run_still_applies_on_resume(self, runner, tmp_path, media_dir, stub_run_act):
+        rundown_file = tmp_path / "r.json"
+        rundown_file.write_text(json.dumps(RUNDOWN))
+
+        first = runner.invoke(
+            cli,
+            [
+                "podcast",
+                "simulate",
+                f"@{rundown_file}",
+                "--no-qc",
+                "--max-cost",
+                "9.5",
+                "-o",
+                str(tmp_path / "out" / "ep1.mp3"),
+            ],
+        )
+        assert first.exit_code == 0, first.stderr
+
+        run_id = self._run_id(first.stderr)
+        second = runner.invoke(cli, ["podcast", "simulate", "--resume", run_id, "--no-qc"])
+        assert second.exit_code == 0, second.stderr
+        # Following the printed hint must not silently re-run uncapped.
+        assert _envelope(second.stdout)["result"]["cost"]["limit_usd"] == 9.5
+
+
 class TestHelp:
     """The help text is the schema an agent reads before spending money."""
 

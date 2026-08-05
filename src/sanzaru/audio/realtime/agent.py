@@ -155,6 +155,7 @@ class RealtimeAgent:
         text = ""
         usage = RealtimeUsage()
         truncated = False
+        completed = False
 
         async for event in self._conn:
             event_type = getattr(event, "type", "")
@@ -180,6 +181,17 @@ class RealtimeAgent:
                         self.name,
                         reason,
                     )
+                completed = True
                 break
+
+        if not completed:
+            # `AsyncRealtimeConnection.__aiter__` *returns* on ConnectionClosedOK
+            # rather than raising, so a graceful mid-act close — including the
+            # Realtime API's 60-minute session ceiling — would otherwise look
+            # like a successful turn with no audio, no text and zero usage. The
+            # act would then be checkpointed as complete, which is both a silent
+            # hole in the episode and exactly the zero-audio checkpoint that
+            # used to poison every later `--resume`.
+            raise RealtimeAPIError(f"{self.name}: realtime stream ended before response.done (session closed?)")
 
         return SpokenTurn(pcm=bytes(pcm), text=text.strip(), usage=usage, truncated=truncated)

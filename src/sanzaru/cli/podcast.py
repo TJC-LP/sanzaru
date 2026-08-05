@@ -367,8 +367,18 @@ async def podcast_rundown(
 @click.option("--qc-retry", is_flag=True, help="Re-record acts QC flags, once. Only the flagged acts are re-run.")
 @click.option("--dry-run", is_flag=True, help="Plan and project turns, duration, tokens and cost. Records nothing.")
 @click.option("--act-gap", type=int, default=None, metavar="MS", help="Silence between acts [default: 700].")
-@click.option("--format", "output_format", type=click.Choice(["mp3", "wav"]), default="mp3", show_default=True)
-@click.option("--bitrate", default="192k", show_default=True, help="MP3 bitrate. Ignored for WAV.")
+# Like every other option here, these default to None rather than to their
+# value: on `--resume` the tool restores from the run manifest whatever the
+# caller did not pass, and click filling in "mp3" would be indistinguishable
+# from the user asking for mp3.
+@click.option(
+    "--format",
+    "output_format",
+    type=click.Choice(["mp3", "wav"]),
+    default=None,
+    help="Container for the episode [default: mp3].",
+)
+@click.option("--bitrate", default=None, help="MP3 bitrate [default: 192k]. Ignored for WAV.")
 @click.option("-o", "--output", default=None, help="Output file or directory (default: media dir).")
 @click.pass_context
 @run_async("podcast.simulate")
@@ -393,8 +403,8 @@ async def podcast_simulate(
     qc_retry: bool,
     dry_run: bool,
     act_gap: int | None,
-    output_format: str,
-    bitrate: str,
+    output_format: str | None,
+    bitrate: str | None,
     output: str | None,
 ) -> int:
     """Record a podcast by having realtime agents actually talk to each other.
@@ -461,16 +471,18 @@ async def podcast_simulate(
         ("max_cost_usd", max_cost),
         ("max_concurrent_sessions", max_sessions),
         ("act_gap_ms", act_gap),
+        ("output_format", output_format),
+        ("output_bitrate", bitrate),
     ):
         if value is not None:
             payload[key] = value
 
+    # Flags, unlike the options above, always carry a value the user can see in
+    # --help, so passing them through unconditionally is honest intent.
     payload["stems"] = stems
     payload["qc"] = qc
     payload["qc_retry"] = qc_retry
     payload["dry_run"] = dry_run
-    payload["output_format"] = output_format
-    payload["output_bitrate"] = bitrate
     if resume_id:
         payload["resume"] = True
         payload["run_id"] = resume_id

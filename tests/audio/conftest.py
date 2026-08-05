@@ -184,6 +184,8 @@ class FakeRealtimeConnection:
         error: str | None = None,
         status: str = "completed",
         usage: FakeEvent | None = None,
+        end_early: bool = False,
+        hang: bool = False,
     ) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
         self.seconds = seconds
@@ -192,6 +194,11 @@ class FakeRealtimeConnection:
         self.error = error
         self.status = status
         self.usage = usage
+        # The SDK's __aiter__ returns cleanly on ConnectionClosedOK, so a
+        # graceful mid-turn close looks exactly like a stream that just ran out.
+        self.end_early = end_early
+        # A session that accepted response.create and then went quiet.
+        self.hang = hang
         self.turn = 0
         self._pending: list[FakeEvent] = []
         self.session = _SessionResource(self.calls, "session.")
@@ -243,8 +250,14 @@ class FakeRealtimeConnection:
                 ),
             ),
         ]
+        if self.end_early:
+            self._pending.pop()
 
     async def __aiter__(self):  # type: ignore[no-untyped-def]
+        if self.hang:
+            import anyio
+
+            await anyio.sleep_forever()
         while self._pending:
             yield self._pending.pop(0)
 

@@ -77,7 +77,7 @@ from ..audio.realtime.types import (
 )
 from ..config import logger
 from ..infrastructure import FileSystemRepository
-from ..storage import get_storage
+from ..storage import StorageBackend, get_default_storage, get_storage
 from .podcast import _safe_title, _stitch_audio
 
 DEFAULT_MAX_SESSIONS = 6
@@ -114,6 +114,9 @@ class SimulationBrief(BaseModel):
     turn_seconds: float = Field(default=DEFAULT_TURN_SECONDS, ge=2.0, le=120.0)
     turn_tokens: int = Field(default=DEFAULT_TURN_TOKENS, ge=0, le=MAX_TURN_TOKENS)
     """0 → derived from `turn_seconds`; see `producer.turn_token_cap`."""
+    turn_timeout_s: float = Field(default=0.0, ge=0, le=3600.0)
+    """Wall clock a single turn may take before the act is declared stalled.
+    0 → SANZARU_REALTIME_TURN_TIMEOUT, else derived from `turn_seconds`."""
 
     max_concurrent_sessions: int = Field(default=0, ge=0, le=64)
     """0 → SANZARU_REALTIME_MAX_SESSIONS, else DEFAULT_MAX_SESSIONS."""
@@ -252,6 +255,38 @@ class RunManifest(BaseModel):
     brief: SimulationBrief
 
 
+def checkpoint_storage() -> StorageBackend:
+    """Where the run manifest and act checkpoints live — never the ``-o`` target.
+
+    ``-o ./out/ep1.mp3`` repoints the entire "audio" path type at ``./out`` for
+    that one invocation, but the resume hint the CLI prints (and the ``resume``
+    field in the ceiling envelope) carries no ``-o``. Writing the bookkeeping
+    under the override would put it somewhere ``simulate --resume <id>`` never
+    looks, on exactly the runs that need to be resumed. It also keeps 2N+1
+    intermediate files out of the user's output directory.
+
+    Deliverables — the episode and the stems — still follow ``-o``; only what is
+    addressed by run id alone is pinned here.
+    """
+    from ..config import is_path_configured
+    from ..storage.local import LocalStorageBackend
+
+    default = get_default_storage()
+    if isinstance(default, LocalStorageBackend) and not is_path_configured("audio"):
+        # No media dir at all: there is nowhere more durable than wherever this
+        # run is already writing, so keep the checkpoints beside the episode
+        # rather than failing a recording that would otherwise succeed. Say so —
+        # resume then only works from the same working directory.
+        active = get_storage()
+        if active is not default:
+            logger.warning(
+                "No media directory configured (set SANZARU_MEDIA_PATH or AUDIO_PATH), so this run's "
+                "checkpoints go to the output directory - resume will need the same -o"
+            )
+        return active
+    return default
+
+
 def _manifest_name(run_id: str) -> str:
     return f"simrun_{run_id}.json"
 
@@ -375,7 +410,7 @@ class _RecordedAct:
 
 
 async def _load_checkpoint(
-    repo: FileSystemRepository,
+    storage: StorageBackend,
     slug: str,
     run_id: str,
     brief_act: ActBrief,
@@ -383,18 +418,21 @@ async def _load_checkpoint(
     """Read one act back from disk, or None when it is not (fully) there."""
     audio_name = _act_audio_name(slug, run_id, brief_act.id)
     meta_name = _act_meta_name(slug, run_id, brief_act.id)
-    storage = get_storage()
     if not (await storage.exists("audio", audio_name) and await storage.exists("audio", meta_name)):
         return None
     try:
-        mp3 = await repo.read_audio_file(audio_name)
+        mp3 = await storage.read("audio", audio_name)
         meta = ActCheckpoint.model_validate_json((await storage.read("audio", meta_name)).decode())
+        # Decoding belongs inside the guard, not after it. A truncated write —
+        # LocalStorageBackend.write is a plain open+write, so a crash leaves one
+        # reachable — and a zero-audio act both fail here rather than at the
+        # read, and one bad act must not make every later --resume exit 1.
+        pcm = await anyio.to_thread.run_sync(decode_to_pcm, mp3, "mp3")
+        parts = await anyio.to_thread.run_sync(slice_pcm_by_durations, pcm, [t.seconds for t in meta.turns])
     except Exception as exc:  # noqa: BLE001 — a corrupt checkpoint just means re-record
-        logger.warning("Checkpoint for %s unreadable (%s) - re-recording", brief_act.id, exc)
+        logger.warning("Checkpoint for %s unusable (%s) - re-recording", brief_act.id, exc)
         return None
 
-    pcm = await anyio.to_thread.run_sync(decode_to_pcm, mp3, "mp3")
-    parts = await anyio.to_thread.run_sync(slice_pcm_by_durations, pcm, [t.seconds for t in meta.turns])
     result = ActResult(
         act_id=meta.act_id,
         audio=[TurnAudio(turn=turn, pcm=part) for turn, part in zip(meta.turns, parts, strict=False)],
@@ -418,7 +456,7 @@ async def _record_act(
     brief: SimulationBrief,
     settings: SimulationSettings,
     *,
-    repo: FileSystemRepository,
+    checkpoints: FileSystemRepository,
     slug: str,
     run_id: str,
     budget: CostBudget,
@@ -450,7 +488,7 @@ async def _record_act(
     mp3 = await anyio.to_thread.run_sync(encode_pcm, result.join_pcm(), "mp3", brief.output_bitrate)
 
     audio_name = _act_audio_name(slug, run_id, act.id)
-    await repo.write_audio_file(audio_name, mp3)
+    await checkpoints.write_audio_file(audio_name, mp3)
     meta = ActCheckpoint(
         act_id=act.id,
         title=act.title,
@@ -458,7 +496,7 @@ async def _record_act(
         usage=result.usage,
         turns=result.turns,
     )
-    await repo.write_audio_file(_act_meta_name(slug, run_id, act.id), meta.model_dump_json(indent=2).encode())
+    await checkpoints.write_audio_file(_act_meta_name(slug, run_id, act.id), meta.model_dump_json(indent=2).encode())
     budget.mark_act_complete(act.id)
 
     _note(
@@ -473,7 +511,7 @@ async def _record_all(
     brief: SimulationBrief,
     settings: SimulationSettings,
     *,
-    repo: FileSystemRepository,
+    checkpoints: FileSystemRepository,
     slug: str,
     run_id: str,
     budget: CostBudget,
@@ -525,7 +563,7 @@ async def _record_all(
             rundown,
             brief,
             settings,
-            repo=repo,
+            checkpoints=checkpoints,
             slug=slug,
             run_id=run_id,
             budget=budget,
@@ -636,8 +674,11 @@ async def simulate_podcast(
             finished are already checkpointed and named in the exception.
     """
     started = time.monotonic()
+    # Deliverables follow whatever storage this invocation configured (`-o`);
+    # bookkeeping does not. See `checkpoint_storage`.
     repo = FileSystemRepository()
-    storage = get_storage()
+    ckpt_storage = checkpoint_storage()
+    checkpoints = FileSystemRepository(ckpt_storage)
 
     run_id = brief.run_id or new_run_id()
     rundown: Rundown | None = None
@@ -647,22 +688,25 @@ async def simulate_podcast(
     # and the settings the run started with.
     if brief.resume:
         manifest_name = _manifest_name(run_id)
-        if await storage.exists("audio", manifest_name):
-            manifest = RunManifest.model_validate_json((await storage.read("audio", manifest_name)).decode())
+        if await ckpt_storage.exists("audio", manifest_name):
+            manifest = RunManifest.model_validate_json((await ckpt_storage.read("audio", manifest_name)).decode())
             rundown = manifest.rundown
-            # Keep the caller's resume/qc/output intent, restore everything else.
-            effective = manifest.brief.model_copy(
-                update={
-                    "resume": True,
-                    "run_id": run_id,
-                    "qc": brief.qc,
-                    "qc_retry": brief.qc_retry,
-                    "stems": brief.stems,
-                    "dry_run": brief.dry_run,
-                    "max_cost_usd": brief.max_cost_usd,
-                    "filename": brief.filename,
-                }
-            )
+            # One rule, both directions: a field the caller actually passed this
+            # time wins, everything else is restored from the manifest.
+            #
+            # Enumerating the caller's fields by hand got both halves wrong.
+            # `max_cost_usd` was taken unconditionally, so following the ceiling
+            # abort's own resume hint — which carries no flags — re-ran the job
+            # uncapped, disabling the exact safety that fired. `output_format`,
+            # `output_bitrate` and `act_gap_ms` were dropped unconditionally, so
+            # passing them on resume did nothing. `model_fields_set` is the only
+            # honest signal of caller intent, which is why the CLI leaves flags
+            # the user did not type out of the payload entirely.
+            restored = {name: getattr(brief, name) for name in brief.model_fields_set}
+            # The manifest owns the rundown; its stored brief keeps `rundown`
+            # empty so it stays a valid standalone description of this run.
+            restored.update({"resume": True, "run_id": run_id, "rundown": None})
+            effective = manifest.brief.model_copy(update=restored)
             logger.info("Resuming run %s: %s", run_id, rundown.title)
         elif brief.rundown is None:
             raise ValueError(
@@ -681,6 +725,7 @@ async def simulate_podcast(
         style=rundown.style,
         max_turn_tokens=effective.turn_tokens,
         turn_seconds=effective.turn_seconds,
+        turn_timeout_s=effective.turn_timeout_s,
     )
     resume_command = f"sanzaru podcast simulate --resume {run_id}"
 
@@ -710,7 +755,7 @@ async def simulate_podcast(
 
     # Written before any recording starts so an interrupted first act is still
     # resumable.
-    await repo.write_audio_file(
+    await checkpoints.write_audio_file(
         _manifest_name(run_id),
         RunManifest(
             run_id=run_id,
@@ -729,7 +774,7 @@ async def simulate_podcast(
     reuse: dict[str, _RecordedAct] = {}
     if effective.resume:
         for act in rundown.acts:
-            loaded = await _load_checkpoint(repo, slug, run_id, act)
+            loaded = await _load_checkpoint(ckpt_storage, slug, run_id, act)
             if loaded is not None:
                 reuse[act.id] = loaded
         if reuse and on_progress is not None:
@@ -737,13 +782,17 @@ async def simulate_podcast(
 
     budget = CostBudget(effective.max_cost_usd)
     for existing in reuse.values():
+        # Marked before charging: a reused act's checkpoint is already on disk,
+        # so it counts as safe even if replaying its spend is what trips the
+        # ceiling on this very line.
+        budget.mark_act_complete(existing.result.act_id)
         budget.charge(existing.result.usage, effective.model)
 
     recorded = await _record_all(
         rundown,
         effective,
         settings,
-        repo=repo,
+        checkpoints=checkpoints,
         slug=slug,
         run_id=run_id,
         budget=budget,
@@ -770,7 +819,7 @@ async def simulate_podcast(
                 rundown,
                 effective,
                 settings,
-                repo=repo,
+                checkpoints=checkpoints,
                 slug=slug,
                 run_id=run_id,
                 budget=budget,

@@ -14,6 +14,7 @@ from sanzaru.audio.realtime.producer import (
     _point_schedule,
     build_instructions,
     run_act,
+    turn_timeout_seconds,
     turn_token_cap,
 )
 from sanzaru.audio.realtime.types import ActBrief, HostSpec, RealtimeUsage
@@ -153,6 +154,14 @@ class TestRealtimeAgent:
         conn = fake_realtime.Connection(error="rate limited")
         agent = RealtimeAgent(hosts[0], conn, model="m", max_turn_tokens=400, sample_rate=24000)
         with pytest.raises(RealtimeAPIError, match="rate limited"):
+            await agent.speak()
+
+    async def test_a_stream_that_ends_without_response_done_raises(self, fake_realtime, hosts):
+        # The SDK returns cleanly from __aiter__ on ConnectionClosedOK, so a
+        # graceful mid-act close would otherwise be a silent zero-usage turn.
+        conn = fake_realtime.Connection(seconds=1.0, end_early=True)
+        agent = RealtimeAgent(hosts[0], conn, model="m", max_turn_tokens=400, sample_rate=24000)
+        with pytest.raises(RealtimeAPIError, match="ended before response.done"):
             await agent.speak()
 
     async def test_hear_is_a_noop_for_empty_audio(self, fake_realtime, hosts):
@@ -317,6 +326,45 @@ class TestRunAct:
         await run_act(brief, hosts, settings, connect=factory)
         assert handed[0].calls[0][1]["session"]["max_output_tokens"] == 99
 
+    async def test_a_hung_turn_fails_the_act_instead_of_hanging_forever(
+        self, fake_realtime, connect_factory, brief, hosts
+    ):
+        # Without a bound this test would never return: the act holds a limiter
+        # slot inside a blocking tool with no job registry to cancel it.
+        settings = SimulationSettings(turn_seconds=10.0, turn_timeout_s=0.05)
+        factory, _ = connect_factory(fake_realtime.Connection(hang=True), fake_realtime.Connection(seconds=1.0))
+        with pytest.raises(RealtimeAPIError, match="looks stalled"):
+            await run_act(brief, hosts, settings, connect=factory)
+
+    async def test_a_stream_that_ends_early_fails_the_act(self, fake_realtime, connect_factory, brief, hosts, settings):
+        factory, _ = connect_factory(
+            fake_realtime.Connection(seconds=1.0, end_early=True), fake_realtime.Connection(seconds=1.0)
+        )
+        with pytest.raises(RealtimeAPIError, match="ended before response.done"):
+            await run_act(brief, hosts, settings, connect=factory)
+
+
+@pytest.mark.unit
+class TestTurnTimeout:
+    def test_derives_a_generous_bound_from_the_target_turn_length(self):
+        assert turn_timeout_seconds(120.0) == pytest.approx(720.0)
+
+    def test_has_a_floor_so_short_turns_still_get_room(self):
+        assert turn_timeout_seconds(5.0) == 60.0
+
+    def test_an_explicit_setting_wins(self, monkeypatch):
+        monkeypatch.setenv("SANZARU_REALTIME_TURN_TIMEOUT", "300")
+        assert turn_timeout_seconds(15.0, explicit=12.0) == 12.0
+
+    def test_the_env_var_overrides_the_derived_bound(self, monkeypatch):
+        monkeypatch.setenv("SANZARU_REALTIME_TURN_TIMEOUT", "300")
+        assert turn_timeout_seconds(15.0) == 300.0
+
+    @pytest.mark.parametrize("value", ["", "  ", "nope", "0", "-5"])
+    def test_junk_falls_back_to_the_derived_bound(self, monkeypatch, value):
+        monkeypatch.setenv("SANZARU_REALTIME_TURN_TIMEOUT", value)
+        assert turn_timeout_seconds(30.0) == pytest.approx(180.0)
+
 
 # ---------- budget ----------
 
@@ -342,3 +390,17 @@ class TestCostBudget:
             budget.charge(RealtimeUsage(output_audio_tokens=1_000_000), "gpt-realtime-2.1-mini")
         assert excinfo.value.completed_acts == ["act1"]
         assert excinfo.value.limit_usd == 0.001
+
+    def test_marking_one_act_twice_does_not_double_count_it(self):
+        # --qc-retry re-records and re-checkpoints an act that is already there;
+        # "2 act(s) checkpointed and safe" for one act is a number users act on.
+        budget = CostBudget()
+        budget.mark_act_complete("act1")
+        budget.mark_act_complete("act1")
+        assert budget.completed_acts == ["act1"]
+
+    def test_completed_acts_keeps_the_order_they_landed_in(self):
+        budget = CostBudget()
+        for act_id in ("act2", "act1", "act2"):
+            budget.mark_act_complete(act_id)
+        assert budget.completed_acts == ["act2", "act1"]

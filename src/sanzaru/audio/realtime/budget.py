@@ -26,11 +26,23 @@ class CostBudget:
         self.limit_usd = limit_usd
         self._spent = 0.0
         self._unpriced_models: set[str] = set()
-        self.completed_acts: list[str] = []
+        # dict-as-ordered-set: an act id appears once, in the order it landed.
+        self._completed_acts: dict[str, None] = {}
 
     @property
     def spent_usd(self) -> float:
         return self._spent
+
+    @property
+    def completed_acts(self) -> list[str]:
+        """Act ids whose checkpoint is on disk right now.
+
+        This is the number the CLI prints on a ceiling abort ("N act(s)
+        checkpointed and safe"), and the user decides whether to resume on it,
+        so it has to be a set of what is actually there — not a running tally of
+        writes.
+        """
+        return list(self._completed_acts)
 
     @property
     def unpriced_models(self) -> list[str]:
@@ -53,9 +65,14 @@ class CostBudget:
                 f"cost ceiling reached: ${self._spent:.2f} spent of ${self.limit_usd:.2f} limit",
                 spent_usd=self._spent,
                 limit_usd=self.limit_usd,
-                completed_acts=list(self.completed_acts),
+                completed_acts=self.completed_acts,
             )
 
     def mark_act_complete(self, act_id: str) -> None:
-        """Record an act whose checkpoint is safely written."""
-        self.completed_acts.append(act_id)
+        """Record an act whose checkpoint is safely written.
+
+        Idempotent: `--qc-retry` re-records and re-checkpoints an act that is
+        already on disk, and a resumed run marks the checkpoints it read back.
+        Neither may inflate the count.
+        """
+        self._completed_acts[act_id] = None
