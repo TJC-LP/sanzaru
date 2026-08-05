@@ -31,11 +31,24 @@ def podcast() -> None:
     help=f"openai: {', '.join(_TTS_MODELS)} [default: gpt-4o-mini-tts]  |  "
     f"elevenlabs: {', '.join(_ELEVENLABS_MODELS)} [default: eleven_v3]",
 )
+@click.option(
+    "--render-mode",
+    type=click.Choice(["segments", "dialogue"]),
+    default=None,
+    help="segments (default): one request per turn, joined with silence gaps. "
+    "dialogue: consecutive ElevenLabs eleven_v3 turns go out together so the model paces them. "
+    "Overrides config.render_mode.",
+)
 @click.option("-o", "--output", default=None, help="Output file or directory (default: media dir).")
 @click.pass_context
 @run_async("podcast.generate")
 async def podcast_generate(
-    ctx: click.Context, script: str, provider: str, model: str | None, output: str | None
+    ctx: click.Context,
+    script: str,
+    provider: str,
+    model: str | None,
+    render_mode: str | None,
+    output: str | None,
 ) -> int:
     """Render a podcast from a PodcastScript JSON. SCRIPT is inline JSON, @file, or - (stdin).
 
@@ -49,7 +62,15 @@ async def podcast_generate(
        "config": {"default_pause_ms": int, "normalize_loudness": bool,
                   "output_format": "mp3"|"wav",                 (all three REQUIRED)
                   "intro_silence_ms"?, "outro_silence_ms"?, "output_bitrate"?,
-                  "provider"?, "max_concurrency"?}}
+                  "provider"?, "max_concurrency"?,
+                  "render_mode"?: "segments"|"dialogue", "dialogue_stability"?}}
+    \b
+    render_mode="dialogue" batches consecutive eleven_v3 turns into one request so
+    the model paces the exchange itself — noticeably more natural than fixed gaps.
+    Turns that cannot join a run (OpenAI speakers, other models, lone turns,
+    stretches in one voice, turns over the 2000-char request budget) still render per segment, so
+    mixed episodes keep working. Inside a dialogue run, pause_after and
+    per-speaker voice_settings do not apply.
     \b
     Provider precedence: speaker.provider > config.provider > --provider. Speakers
     may differ, so one episode can mix OpenAI and ElevenLabs voices. ElevenLabs
@@ -79,6 +100,15 @@ async def podcast_generate(
         raise CLIError("usage", f"SCRIPT is not valid JSON: {exc}", exit_code=EXIT_USAGE) from exc
     if not isinstance(parsed, dict):
         raise CLIError("usage", "SCRIPT must be a JSON object (PodcastScript)", exit_code=EXIT_USAGE)
+
+    # The flag is an override, so it wins over config.render_mode. Only merged
+    # into a config that is already there: fabricating one would mask
+    # _validate_script's "missing required field: 'config'" with whatever
+    # unrelated error it hits next.
+    if render_mode is not None and "config" in parsed:
+        if not isinstance(parsed["config"], dict):
+            raise CLIError("usage", "SCRIPT 'config' must be a JSON object", exit_code=EXIT_USAGE)
+        parsed["config"]["render_mode"] = render_mode
 
     session = PathSession()
     plan = plan_output(session, output, "audio", quiet=state.quiet)

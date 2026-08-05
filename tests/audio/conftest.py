@@ -63,3 +63,31 @@ class _FakeElevenLabs:
 def fake_elevenlabs():
     """ElevenLabs test doubles: `.Client`, `.TTS`, `.ApiError`."""
     return _FakeElevenLabs
+
+
+# ---------- podcast scripts ----------
+
+
+@pytest.fixture
+def minimal_script():
+    """Minimal valid PodcastScript for testing."""
+    return {
+        "title": "test_podcast",
+        "speakers": [
+            {
+                "id": "host",
+                "name": "Alex",
+                "voice": "ash",
+                "speed": 1.0,
+                "instructions": "Confident host",
+            }
+        ],
+        "segments": [
+            {"speaker": "host", "text": "Welcome to the show."},
+        ],
+        "config": {
+            "default_pause_ms": 600,
+            "normalize_loudness": True,
+            "output_format": "mp3",
+        },
+    }

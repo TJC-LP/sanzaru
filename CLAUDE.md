@@ -161,6 +161,38 @@ Provider selection in podcasts resolves `speaker.provider` → `config.provider`
 never cache one at module scope) and shared between segment- and chunk-level fan-out, because that
 is what ElevenLabs' cap actually counts.
 
+### Podcast Render Modes
+
+`config.render_mode` picks how turns become TTS requests. Default `"segments"` — unchanged
+behavior, one request per segment joined with configured silence.
+
+`"dialogue"` batches maximal runs of consecutive turns sharing a dialogue-capable provider **and**
+model into a single `/v1/text-to-dialogue` request, so the model paces the conversation. Grouping
+happens in `_plan_render_units`, which returns `RenderUnit`s — each either one segment or a run.
+Everything downstream (limiters, stitching, pause list) works in units, and a unit's pause comes
+from its *last* segment.
+
+Turns that cannot join a run fall back to segment units, which is what keeps dialogue mode
+compatible with mixed-provider episodes. A run is only batched when it carries
+≥`MIN_DIALOGUE_SPEAKERS` distinct *resolved voices* (not speaker ids — two speaker entries can
+share one voice id) — a monologue has no turn-taking to pace, so batching it would cost a dialogue
+request and swallow its `pause_after`s for nothing; at 2 that rule also excludes a lone turn.
+Excluded outright: OpenAI speakers and non-`eleven_v3` models. Runs are split at turn boundaries to
+stay within `ELEVENLABS_DIALOGUE_MAX_CHARS` (2000, the ceiling `/v1/text-to-dialogue` documents for
+reliable generation — past it the stream can terminate early, which reads as a short but successful
+take, so `synthesize_dialogue` refuses over-budget requests outright). That budget is the only
+length rule, and it sits below every `max_chunk_chars`: a turn too long to share a dialogue request
+opens a run of its own, which closes as a single-voice run — a segment unit, chunked normally.
+
+Dialogue is a **separate** `DialogueProvider` Protocol (`runtime_checkable`, narrowed by
+`as_dialogue_provider`) rather than a method on `TTSProvider`, so OpenAI isn't forced to stub a
+capability it lacks.
+
+Keep both modes. They trade off in opposite directions: segments gives exact gaps, per-speaker
+`voice_settings`/`speed`, and independent per-segment retry — which is precisely what #35's verify
+pass needs. Dialogue gives natural flow but is atomic per request, takes one `stability` for the
+whole run, and ignores intra-run `pause_after`.
+
 Client seam: `config.get_elevenlabs_client()` mirrors `get_client()`, but builds lazily and caches
 rather than being installed eagerly by the CLI runtime, so `sanzaru --help` never imports the SDK.
 Missing key raises `RuntimeError`, missing extra raises `ImportError` — both map to CLI exit 3 via

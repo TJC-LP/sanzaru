@@ -25,6 +25,8 @@ class OpenAITTSProvider:
     """Speech via OpenAI's `client.audio.speech.create`, always as mp3."""
 
     name: TTSProviderName = "openai"
+    # No multi-speaker endpoint; dialogue runs fall back to per-segment rendering.
+    supports_dialogue = False
 
     def resolve_model(self, model: str | None) -> str:
         if model is None:

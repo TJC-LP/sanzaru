@@ -6,6 +6,7 @@ this module must stay importable without it so feature detection and error
 messages work on an OpenAI-only install.
 """
 
+from collections.abc import Sequence
 from typing import TYPE_CHECKING, cast, get_args
 
 import anyio
@@ -15,6 +16,8 @@ from ...exceptions import TTSAPIError
 from ..constants import (
     DEFAULT_ELEVENLABS_MODEL,
     ELEVENLABS_DEFAULT_CONCURRENCY,
+    ELEVENLABS_DIALOGUE_MAX_CHARS,
+    ELEVENLABS_DIALOGUE_MODELS,
     ELEVENLABS_MAX_CHARS,
     ELEVENLABS_MODELS,
     ELEVENLABS_OUTPUT_FORMAT,
@@ -22,10 +25,13 @@ from ..constants import (
     ElevenLabsModel,
     TTSProviderName,
 )
-from .base import SpeechRequest, check_voice_settings_types, env_concurrency
+from .base import DialogueTurn, SpeechRequest, check_voice_settings_types, env_concurrency
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable, Callable
+
     from elevenlabs.client import AsyncElevenLabs
+    from elevenlabs.types.model_settings_response_model import ModelSettingsResponseModel
     from elevenlabs.types.voice_settings import VoiceSettings
 
 _MODELS: tuple[str, ...] = get_args(ElevenLabsModel)
@@ -41,12 +47,14 @@ _BACKOFF_BASE_SECONDS = 1.0
 # trick with a typed cast so call sites stay checkable.
 _OMIT_STR = cast(str, ...)
 _OMIT_SETTINGS = cast("VoiceSettings", ...)
+_OMIT_MODEL_SETTINGS = cast("ModelSettingsResponseModel", ...)
 
 
 class ElevenLabsTTSProvider:
     """Speech via ElevenLabs, requested as mp3 so the stitch path is unchanged."""
 
     name: TTSProviderName = "elevenlabs"
+    supports_dialogue = True
 
     def resolve_model(self, model: str | None) -> str:
         if model is None:
@@ -120,10 +128,88 @@ class ElevenLabsTTSProvider:
     async def synthesize_chunk(self, request: SpeechRequest) -> bytes:
         client = get_elevenlabs_client()
         settings = _build_voice_settings(request)
+        return await self._with_retries(lambda: self._convert(client, request, settings))
 
+    # ---------- dialogue ----------
+
+    def supports_dialogue_model(self, model: str) -> bool:
+        return model in ELEVENLABS_DIALOGUE_MODELS
+
+    def max_dialogue_chars(self, model: str) -> int:
+        return ELEVENLABS_DIALOGUE_MAX_CHARS
+
+    async def synthesize_dialogue(
+        self,
+        turns: Sequence[DialogueTurn],
+        model: str,
+        stability: float | None = None,
+    ) -> bytes:
+        """Render several turns as one conversation via /v1/text-to-dialogue.
+
+        The model sees every turn at once, so it paces the exchange itself —
+        turn-taking gaps sized to the content, reactions that land on the
+        previous line. That is the whole point, and the reason this cannot be
+        expressed as N independent synthesize_chunk calls.
+        """
+        if not turns:
+            raise ValueError("synthesize_dialogue requires at least one turn")
+        if not self.supports_dialogue_model(model):
+            raise ValueError(
+                f"model={model!r} does not support dialogue rendering; "
+                f"use one of: {', '.join(sorted(ELEVENLABS_DIALOGUE_MODELS))}"
+            )
+        if stability is not None and not 0.0 <= stability <= 1.0:
+            raise ValueError(f"dialogue stability must be between 0.0 and 1.0, got {stability}")
+
+        # Over-budget requests fail by *terminating the stream early*, which
+        # _convert_dialogue cannot distinguish from a complete take — it would
+        # return a truncated conversation as a success. The planner already
+        # splits runs at this budget; this is the backstop for direct callers.
+        total_chars = sum(len(turn.text) for turn in turns)
+        if total_chars > ELEVENLABS_DIALOGUE_MAX_CHARS:
+            raise ValueError(
+                f"dialogue request is {total_chars} characters across {len(turns)} turns, over the "
+                f"{ELEVENLABS_DIALOGUE_MAX_CHARS}-character limit; split it at a turn boundary"
+            )
+
+        client = get_elevenlabs_client()
+        return await self._with_retries(lambda: self._convert_dialogue(client, turns, model, stability))
+
+    async def _convert_dialogue(
+        self,
+        client: "AsyncElevenLabs",
+        turns: Sequence[DialogueTurn],
+        model: str,
+        stability: float | None,
+    ) -> bytes:
+        from elevenlabs.types.dialogue_input import DialogueInput
+
+        settings = _OMIT_MODEL_SETTINGS
+        if stability is not None:
+            from elevenlabs.types.model_settings_response_model import ModelSettingsResponseModel
+
+            settings = ModelSettingsResponseModel(stability=stability)
+
+        stream = client.text_to_dialogue.convert(
+            inputs=[DialogueInput(text=turn.text, voice_id=turn.voice) for turn in turns],
+            model_id=model,
+            output_format=ELEVENLABS_OUTPUT_FORMAT,
+            settings=settings,
+        )
+        buffer = bytearray()
+        async for part in stream:
+            buffer.extend(part)
+        if not buffer:
+            raise TTSAPIError(f"ElevenLabs returned no audio for a {len(turns)}-turn dialogue")
+        return bytes(buffer)
+
+    # ---------- shared ----------
+
+    async def _with_retries(self, call: "Callable[[], Awaitable[bytes]]") -> bytes:
+        """Run `call`, retrying 429s and 5xx with exponential backoff."""
         for attempt in range(1, _MAX_ATTEMPTS + 1):
             try:
-                return await self._convert(client, request, settings)
+                return await call()
             except Exception as exc:
                 status = _status_code(exc)
                 if status is None or not _is_retryable(status) or attempt == _MAX_ATTEMPTS:

@@ -49,6 +49,21 @@ Implementation lives in `src/sanzaru/audio/providers/`. A provider synthesizes o
 returns mp3 bytes; `providers/base.py` owns text splitting, the bounded parallel fan-out, and
 concatenation.
 
+### Podcast render modes
+
+`generate_podcast` accepts `config.render_mode`:
+
+- **`segments`** (default) — one request per turn, joined with your silence gaps. Exact control,
+  per-speaker `voice_settings`/`speed`, and independent per-segment retry.
+- **`dialogue`** — consecutive `eleven_v3` turns are sent as one request and the model paces the
+  exchange itself. Distinctly more natural conversation.
+
+Grouping is per-run: turns that can't join one (OpenAI speakers, other models, lone turns,
+stretches in one voice, turns that alone fill the 2000-character request budget) still render per segment, so mixed-provider
+episodes work in either mode. Inside a run, `pause_after` and per-speaker `voice_settings` don't
+apply — use `config.dialogue_stability` (0–1) instead. Runs split at turn boundaries to stay under
+2000 characters, the ceiling ElevenLabs documents for a reliable dialogue request.
+
 ## Available Tools
 
 ### File Management
