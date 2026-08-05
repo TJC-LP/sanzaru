@@ -27,7 +27,7 @@ description: "Read the entirety of @docs/sora2-prompting-guide.md and await furt
 | | `transcribe_audio` | sync | Whisper transcription |
 | | `chat_with_audio` | sync | GPT-4o audio analysis |
 | | `list_audio_files` | sync | List and filter audio files |
-| **Podcast** | `generate_podcast` | sync | Multi-voice episode from a script; speakers may mix TTS providers |
+| **Podcast** | `generate_podcast` | sync | Multi-voice episode from a script; `render_mode` `segments` (exact gaps) or `dialogue` (model paces the turns) |
 
 ## Model Selection
 

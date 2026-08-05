@@ -72,6 +72,13 @@ Podcast speakers choose independently (`speaker.provider` > `config.provider` > 
 one episode can mix both. HTTP 429 means you exceeded your tier's concurrency — lower
 `SANZARU_ELEVENLABS_MAX_CONCURRENCY` (defaults are Free-tier: 2, or 4 on flash/turbo).
 
+`podcast generate --render-mode dialogue` sends consecutive `eleven_v3` turns as **one** request
+so the model paces the exchange itself — distinctly more natural than fixed silence gaps. Turns
+that cannot join a run (OpenAI speakers, other models, a lone turn) still render per segment, so
+mixed episodes keep working. Inside a run, `pause_after` and per-speaker `voice_settings` do not
+apply; use `config.dialogue_stability` (0–1) instead. Stay on the default `segments` when you need
+exact gaps, per-speaker tuning, or cheap per-segment retry.
+
 ## Media in, media out
 
 - `-o` takes a file or directory (trailing `/`); parents are created; without it files land in the
@@ -88,6 +95,6 @@ one episode can mix both. HTTP 429 means you exceeded your tier's concurrency �
 `video` create/remix/status/wait/download/list/delete/files · `image`
 generate/edit/create/status/wait/download/prepare/files · `audio`
 transcribe(--enhance)/chat/speak(--provider)/convert/compress/files(--latest) ·
-`podcast` generate(--provider) ·
+`podcast` generate(--provider, --render-mode) ·
 `wait` (mixed ids) · `capabilities` · `serve` (MCP server; bare `sanzaru` does the same).
 Every command supports `-h`; details in docs/cli.md.
