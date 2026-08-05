@@ -45,7 +45,14 @@ classifiers = [
 ]
 dependencies = [
   "openai>=2.53.0",
-  "mcp>=1.26.0",
+  # Capped at <2 deliberately: mcp 2.0.0 renamed the high-level server package
+  # (mcp.server.fastmcp -> mcp.server.mcpserver), so `from mcp.server.fastmcp
+  # import FastMCP` in server.py raises ModuleNotFoundError under it. Without
+  # this cap a fresh `pip install sanzaru` resolves 2.x and the server cannot
+  # start, while uv.lock keeps every dev and CI environment green. The 1.x line
+  # is still maintained (1.29.0 shipped the same day as 2.0.0); migrating to the
+  # 2.x API is tracked separately.
+  "mcp>=1.26.0,<2",
   "click>=8.2.0",
   "httpx>=0.27.0",
   "anyio>=4.0.0",
