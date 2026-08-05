@@ -150,3 +150,9 @@ markers = [
 
 [tool.mypy]
 disable_error_code = ["import-untyped", "import-not-found"]
+# Test directories deliberately have no __init__.py, so two files named
+# conftest.py are ambiguous to mypy and it refuses to check *anything*
+# ("errors prevented further checking"). Deriving module names from the
+# directory instead fixes that without adding the __init__.py files.
+explicit_package_bases = true
+mypy_path = "src"
