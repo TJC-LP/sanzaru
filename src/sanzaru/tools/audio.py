@@ -245,8 +245,11 @@ async def transcribe_with_enhancement(
 
 async def create_audio(
     text_prompt: str,
-    model: SpeechModel | ElevenLabsModel = "gpt-4o-mini-tts",
-    voice: TTSVoice | str = "alloy",
+    # None, not the OpenAI defaults: these flow straight into the selected
+    # provider's resolve_model/resolve_voice, and "gpt-4o-mini-tts"/"alloy" are
+    # rejected by (or meaningless to) ElevenLabs.
+    model: SpeechModel | ElevenLabsModel | None = None,
+    voice: TTSVoice | str | None = None,
     instructions: str | None = None,
     speed: float = 1.0,
     output_file_name: str | None = None,
@@ -260,11 +263,11 @@ async def create_audio(
 
     Args:
         text_prompt: Text to convert to speech
-        model: TTS model. OpenAI: gpt-4o-mini-tts (recommended), tts-1, tts-1-hd.
-            ElevenLabs: eleven_v3 (default), eleven_multilingual_v2, eleven_flash_v2_5,
-            eleven_turbo_v2_5
-        voice: OpenAI named voice (alloy, ash, ballad, coral, echo, fable, nova, onyx,
-            sage, shimmer) or an ElevenLabs voice id
+        model: TTS model, defaulting to the provider's own default. OpenAI:
+            gpt-4o-mini-tts (default), tts-1, tts-1-hd. ElevenLabs: eleven_v3 (default),
+            eleven_multilingual_v2, eleven_flash_v2_5, eleven_turbo_v2_5
+        voice: OpenAI named voice (alloy — the default, ash, ballad, coral, echo, fable,
+            nova, onyx, sage, shimmer) or an ElevenLabs voice id, which has no default
         instructions: Optional speech-style direction (tonality, accent, etc.).
             OpenAI-only — ElevenLabs ignores it; use inline audio tags such as
             [whispers] in the text with eleven_v3 instead

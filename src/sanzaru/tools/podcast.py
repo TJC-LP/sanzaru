@@ -14,7 +14,7 @@ OpenAI and ElevenLabs voices — the stitch path is mp3-in, mp3-out.
 """
 
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from io import BytesIO
 from typing import Literal, NotRequired, TypedDict
 
@@ -27,6 +27,7 @@ from pydub.effects import normalize as pydub_normalize  # type: ignore[import-un
 
 from ..audio.constants import (
     DEFAULT_RENDER_MODE,
+    ELEVENLABS_MODELS,
     ELEVENLABS_SPEED_RANGE,
     MIN_DIALOGUE_TURNS,
     OPENAI_SPEED_RANGE,
@@ -37,20 +38,20 @@ from ..audio.constants import (
     TTSProviderName,
 )
 from ..audio.providers import (
-    VOICE_SETTINGS_BOOL_KEYS,
-    VOICE_SETTINGS_FLOAT_KEYS,
-    VOICE_SETTINGS_KEYS,
     DialogueTurn,
     SpeechRequest,
     TTSProvider,
     VoiceSettingsDict,
     as_dialogue_provider,
+    check_voice_settings_types,
     get_provider,
     synthesize_speech,
     validate_provider_name,
 )
 from ..config import logger
 from ..infrastructure import FileSystemRepository
+
+_ELEVENLABS_MODEL_NAMES = frozenset(ELEVENLABS_MODELS)
 
 
 class Speaker(TypedDict):
@@ -114,44 +115,64 @@ def _resolve_provider_name(
     return speaker.get("provider") or config.get("provider") or default
 
 
-def _resolve_model(speaker: Speaker, provider: TTSProvider, openai_model: str) -> str:
+def _resolve_model(speaker: Speaker, provider: TTSProvider, requested_model: str | None) -> str:
     """Model for a speaker.
 
-    A per-speaker `model` always wins. Otherwise the tool's `model` argument
-    applies to OpenAI speakers (it names an OpenAI model), and ElevenLabs
-    speakers fall back to the provider default.
+    A per-speaker `model` always wins, and a wrong one there is an error the
+    caller asked for. Otherwise the tool's `model` argument applies to whichever
+    provider it names; on a mixed-provider episode the speakers of the *other*
+    provider fall back to their own default rather than failing the render.
     """
     if "model" in speaker:
         return provider.resolve_model(speaker["model"])
-    return provider.resolve_model(openai_model if provider.name == "openai" else None)
+    try:
+        resolved = provider.resolve_model(requested_model)
+    except ValueError:
+        # ElevenLabs rejects a foreign model name outright.
+        return provider.resolve_model(None)
+    # OpenAI's resolve_model accepts unknown names on purpose (new speech models
+    # ship between our releases), so only the allowlist catches the reverse case.
+    if provider.name == "openai" and resolved in _ELEVENLABS_MODEL_NAMES:
+        return provider.resolve_model(None)
+    return resolved
 
 
 def _speed_range(provider_name: TTSProviderName) -> tuple[float, float]:
     return ELEVENLABS_SPEED_RANGE if provider_name == "elevenlabs" else OPENAI_SPEED_RANGE
 
 
-def _validate_voice_settings(settings: VoiceSettingsDict, context: str) -> None:
-    """Validate a per-speaker voice_settings mapping."""
-    if not isinstance(settings, dict):
-        raise ValueError(f"{context} voice_settings must be an object")
-    for key in settings:
-        if key not in VOICE_SETTINGS_KEYS:
-            raise ValueError(
-                f"{context} voice_settings has unknown key '{key}'; expected: {', '.join(VOICE_SETTINGS_KEYS)}"
-            )
-    for key in VOICE_SETTINGS_FLOAT_KEYS:
-        if key in settings and not isinstance(settings[key], int | float):  # type: ignore[literal-required]
-            raise ValueError(f"{context} voice_settings['{key}'] must be a number")
-    for key in VOICE_SETTINGS_BOOL_KEYS:
-        if key in settings and not isinstance(settings[key], bool):  # type: ignore[literal-required]
-            raise ValueError(f"{context} voice_settings['{key}'] must be a boolean")
+def _resolve_segment_speech(segment: Segment, speaker: Speaker) -> tuple[float, VoiceSettingsDict | None]:
+    """Speed and voice_settings for one segment, with script-level precedence applied.
+
+    A segment's `speed_override` is the most specific value in the script, so it
+    beats both `speaker["speed"]` and the speaker's `voice_settings["speed"]`.
+    The second half matters because ElevenLabs' native speed knob lives *inside*
+    voice_settings and wins there over the neutral `SpeechRequest.speed`: without
+    materializing the override into the copy below, a speaker that sets
+    `voice_settings["speed"]` would silently kill every override in its segments.
+
+    Validation and rendering both go through here, so they can never disagree
+    about which speed the episode will actually be rendered at.
+    """
+    settings = speaker.get("voice_settings")
+    if "speed_override" not in segment:
+        return speaker["speed"], settings
+    speed = segment["speed_override"]
+    if settings is not None and "speed" in settings:
+        settings = settings.copy()
+        settings["speed"] = speed
+    return speed, settings
 
 
 def _validate_script(
     script: PodcastScript,
     default_provider: TTSProviderName = "openai",
+    default_model: str | None = None,
 ) -> tuple[str, list[Speaker], list[Segment], PodcastConfig]:
     """Validate PodcastScript structure and return its components.
+
+    `default_model` must be the same value the render path will use, or
+    validation checks a model the episode never runs on.
 
     Raises ValueError if the script is invalid.
     """
@@ -195,9 +216,10 @@ def _validate_script(
             logger.warning("PodcastConfig 'dialogue_stability' is ignored unless render_mode is 'dialogue'")
 
     speaker_ids: set[str] = set()
-    # provider name per speaker id, so segment-level checks below know which
-    # speed range applies.
+    # Per speaker id, so the segment pass below can re-probe with the same
+    # provider, model, and voice the render will use.
     speaker_providers: dict[str, TTSProviderName] = {}
+    speaker_probes: dict[str, tuple[Speaker, TTSProvider, SpeechRequest]] = {}
 
     for i, speaker in enumerate(speakers):
         for field in ("id", "name", "voice", "speed", "instructions"):
@@ -216,7 +238,7 @@ def _validate_script(
             )
 
         if "voice_settings" in speaker:
-            _validate_voice_settings(speaker["voice_settings"], f"Speaker {i}")
+            check_voice_settings_types(speaker["voice_settings"], f"Speaker {i} ")
             if render_mode == "dialogue" and provider_name == "elevenlabs":
                 # The dialogue endpoint takes one `stability` for the whole
                 # request, not per-voice settings. Warn rather than reject:
@@ -233,20 +255,20 @@ def _validate_script(
         # rejects cross-provider model names, and applies provider-specific
         # rules (eleven_v3 has no speed, ElevenLabs needs a voice id).
         provider = get_provider(provider_name)
-        model = _resolve_model(speaker, provider, "gpt-4o-mini-tts")
-        provider.validate(
-            SpeechRequest(
-                text="validation probe",
-                voice=provider.resolve_voice(speaker["voice"]),
-                model=model,
-                speed=speaker["speed"],
-                instructions=speaker["instructions"],
-                voice_settings=speaker.get("voice_settings"),
-            )
+        model = _resolve_model(speaker, provider, default_model)
+        probe = SpeechRequest(
+            text="validation probe",
+            voice=provider.resolve_voice(speaker["voice"]),
+            model=model,
+            speed=speaker["speed"],
+            instructions=speaker["instructions"],
+            voice_settings=speaker.get("voice_settings"),
         )
+        provider.validate(probe)
 
         speaker_ids.add(speaker["id"])
         speaker_providers[speaker["id"]] = provider_name
+        speaker_probes[speaker["id"]] = (speaker, provider, probe)
 
     segments = script["segments"]
     if not segments:
@@ -272,6 +294,19 @@ def _validate_script(
                     f"Segment {i} speed_override must be between {low} and {high} for "
                     f"provider='{speaker_providers[segment['speaker']]}', got {segment['speed_override']}"
                 )
+            # The range above is provider-wide; per-model rules (eleven_v3 has no
+            # speed at all) live in provider.validate, which the speaker pass only
+            # ever ran against speaker["speed"]. Re-probe each override or an
+            # in-range-but-unsupported value fails inside the task group, after
+            # sibling segments have already spent API calls.
+            owner, owner_provider, probe = speaker_probes[segment["speaker"]]
+            speed, settings = _resolve_segment_speech(segment, owner)
+            try:
+                # instructions=None: the speaker pass already warned once about
+                # ElevenLabs ignoring them, and this must not repeat it per segment.
+                owner_provider.validate(replace(probe, speed=speed, instructions=None, voice_settings=settings))
+            except ValueError as exc:
+                raise ValueError(f"Segment {i} speed_override: {exc}") from exc
 
     return title, speakers, segments, config
 
@@ -345,6 +380,28 @@ def _stitch_audio(
         combined.export(output, format="wav")
 
     return output.getvalue()
+
+
+def _derive_concurrency_limits(providers: dict[str, TTSProvider], models: dict[str, str]) -> dict[str, int]:
+    """Tightest concurrency cap per provider, across every model the episode uses.
+
+    The cap is per-model, but the limiter is per-provider, so the smallest model
+    cap has to win: an eleven_flash_v2_5 host (4) beside an eleven_v3 guest (2)
+    must still run 2-wide or ElevenLabs answers HTTP 429. Taking the first
+    speaker's cap instead made the answer depend on speaker order.
+
+    Both dicts are keyed by speaker id. 0 means unbounded, so it can never win a
+    min against a real cap.
+    """
+    limits: dict[str, int] = {}
+    for speaker_id, provider in providers.items():
+        limit = provider.max_concurrency(models[speaker_id])
+        current = limits.get(provider.name)
+        if current is None or current == 0:
+            limits[provider.name] = limit
+        elif limit != 0:
+            limits[provider.name] = min(current, limit)
+    return limits
 
 
 def _safe_title(title: str) -> str:
@@ -443,14 +500,15 @@ async def generate_podcast(
     Args:
         script: The podcast script. Speakers may each pick their own provider,
             so one episode can mix OpenAI and ElevenLabs voices.
-        model: Default model for OpenAI speakers. ElevenLabs speakers fall back to
-            that provider's default unless they set their own `model`.
+        model: Default model for the speakers whose provider it belongs to.
+            Speakers on the other provider fall back to that provider's default
+            unless they set their own `model`.
         provider: Episode-wide default provider, itself overridden by
             `config.provider` and then by each speaker's `provider`.
 
     Raises ValueError if the script fails validation.
     """
-    title, speakers, segments, config = _validate_script(script, default_provider=provider)
+    title, speakers, segments, config = _validate_script(script, default_provider=provider, default_model=model)
     speaker_map: dict[str, Speaker] = {s["id"]: s for s in speakers}
 
     estimated_duration = _estimate_duration(segments, speakers, config)
@@ -471,14 +529,13 @@ async def generate_podcast(
     # so segment-level and chunk-level parallelism share one budget — which is
     # what ElevenLabs' concurrency cap actually counts. OpenAI's limit is 0
     # (unbounded) by default, preserving the historical behavior exactly.
+    override = config.get("max_concurrency")
     limiters: dict[str, anyio.CapacityLimiter | None] = {}
-    for speaker_id, speaker_provider in providers.items():
-        if speaker_provider.name in limiters:
-            continue
-        limit = config.get("max_concurrency") or speaker_provider.max_concurrency(models[speaker_id])
-        limiters[speaker_provider.name] = anyio.CapacityLimiter(limit) if limit else None
+    for provider_name, derived in _derive_concurrency_limits(providers, models).items():
+        limit = override or derived
+        limiters[provider_name] = anyio.CapacityLimiter(limit) if limit else None
         if limit:
-            logger.info("Limiting %s to %d concurrent TTS requests", speaker_provider.name, limit)
+            logger.info("Limiting %s to %d concurrent TTS requests", provider_name, limit)
 
     render_mode: PodcastRenderMode = config.get("render_mode", DEFAULT_RENDER_MODE)
     units = _plan_render_units(segments, speaker_map, providers, models, render_mode)
@@ -503,7 +560,7 @@ async def generate_podcast(
         can re-invoke this for just the segments that failed QC."""
         speaker = speaker_map[segment["speaker"]]
         speaker_provider = providers[speaker["id"]]
-        speed = segment["speed_override"] if "speed_override" in segment else speaker["speed"]
+        speed, voice_settings = _resolve_segment_speech(segment, speaker)
         # `in`-check rather than `or`: an intentional empty-string override must
         # not silently fall back to the speaker's instructions.
         instructions = segment["instruction_override"] if "instruction_override" in segment else speaker["instructions"]
@@ -520,7 +577,7 @@ async def generate_podcast(
             # instructions is OpenAI-only; _validate_script already warned once
             # per ElevenLabs speaker that carries one.
             instructions=instructions if speaker_provider.name == "openai" else None,
-            voice_settings=speaker.get("voice_settings"),
+            voice_settings=voice_settings,
         )
         return await synthesize_speech(speaker_provider, request, limiter=limiters[speaker_provider.name])
 

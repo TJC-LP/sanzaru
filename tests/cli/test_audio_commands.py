@@ -282,6 +282,35 @@ def test_audio_speak_rejects_malformed_voice_settings():
 
 
 @pytest.mark.integration
+def test_audio_speak_rejects_non_numeric_voice_setting(tmp_path):
+    """A wrong value *type* is usage (exit 2), like every other --voice-settings
+    complaint — it used to reach the provider's range check as a TypeError and
+    surface as internal/exit 1. Unmocked on purpose: validation runs before any
+    client is built, so nothing goes over the wire."""
+    result = CliRunner().invoke(
+        cli,
+        [
+            "audio",
+            "speak",
+            "hello",
+            "--provider",
+            "elevenlabs",
+            "--voice",
+            "voice_abc",
+            "--voice-settings",
+            '{"stability": "high"}',
+            "-o",
+            str(tmp_path),
+        ],
+    )
+
+    assert result.exit_code == 2, result.stdout
+    parsed = json.loads(result.stdout)
+    assert parsed["error"]["type"] == "usage"
+    assert "must be a number" in parsed["error"]["message"]
+
+
+@pytest.mark.integration
 def test_audio_speak_rejects_non_object_voice_settings():
     result = CliRunner().invoke(cli, ["audio", "speak", "hello", "--voice-settings", "[1,2]"])
 

@@ -688,7 +688,8 @@ not names from the list above.
 Parameters:
 - text_prompt: Text to convert to speech (required, any length)
 - model: TTS model. Default: "gpt-4o-mini-tts" (openai) / "eleven_v3" (elevenlabs)
-- voice: OpenAI voice name, or an ElevenLabs voice id. Default: "alloy"
+- voice: OpenAI voice name, or an ElevenLabs voice id. Default: "alloy" (openai); elevenlabs has
+  no default and requires an explicit voice id
 - instructions: Optional style guidance (e.g., "Speak slowly and clearly", "Use British accent", "Sound excited").
   OPENAI ONLY — ElevenLabs ignores it. For expressive ElevenLabs delivery, put inline audio tags
   in the text itself with eleven_v3: "[whispers] this is the secret. [laughs] Got you."
@@ -774,7 +775,8 @@ script must be a JSON object matching this structure:
       "speaker": string,             // Must match a speaker id (required)
       "text": string,                // Spoken content (required, max ~40000 chars)
       "pause_after": number,         // Silence in ms after this segment (optional, overrides default)
-      "speed_override": number,      // Override speaker speed for this segment (optional)
+      "speed_override": number,      // Override speaker speed for this segment (optional; also
+                                     // wins over the speaker's voice_settings "speed")
       "instruction_override": string // Override speaker instructions for this segment (optional)
     }
   ],

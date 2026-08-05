@@ -29,8 +29,9 @@ export OPENAI_API_KEY=sk-...
 ```bash
 uv add "sanzaru[elevenlabs]"
 export ELEVENLABS_API_KEY=...
-# Optional: lower if renders hit HTTP 429 (their cap is per subscription tier)
-export SANZARU_ELEVENLABS_MAX_CONCURRENCY=3
+# Optional: defaults are the Free-tier caps (2, or 4 on flash/turbo). Raise it on
+# a paid tier; lower it if renders still hit HTTP 429.
+export SANZARU_ELEVENLABS_MAX_CONCURRENCY=2
 ```
 
 Differences that matter when switching:

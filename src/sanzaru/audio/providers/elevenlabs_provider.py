@@ -25,7 +25,7 @@ from ..constants import (
     ElevenLabsModel,
     TTSProviderName,
 )
-from .base import VOICE_SETTINGS_KEYS, DialogueTurn, SpeechRequest, env_concurrency
+from .base import DialogueTurn, SpeechRequest, check_voice_settings_types, env_concurrency
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -89,11 +89,9 @@ class ElevenLabsTTSProvider:
             raise ValueError("provider='elevenlabs' requires an explicit voice id")
 
         settings = request.voice_settings or {}
-        for key in settings:
-            if key not in VOICE_SETTINGS_KEYS:
-                raise ValueError(
-                    f"unknown voice_settings key {key!r}; expected one of: {', '.join(VOICE_SETTINGS_KEYS)}"
-                )
+        # Types first: the range comparisons below would raise TypeError on a
+        # string, which the CLI reports as internal/exit 1 rather than usage.
+        check_voice_settings_types(settings)
         for key, value in (
             ("stability", settings.get("stability")),
             ("similarity_boost", settings.get("similarity_boost")),

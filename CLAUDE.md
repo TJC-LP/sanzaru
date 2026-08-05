@@ -150,7 +150,7 @@ detail — `podcast._stitch_audio` decodes every segment with `AudioSegment.from
 | `voice_settings` | rejected | stability / similarity_boost / style / use_speaker_boost / speed |
 | Speed | 0.25–4.0 | 0.7–1.2; **eleven_v3 rejects any change** |
 | Chunk limit | 4000 chars | 3000 (v3) / 10000 (multilingual) / 40000 (flash, turbo) |
-| Concurrency | unbounded | 3–4 by model, capped per subscription tier |
+| Concurrency | unbounded | 2, or 4 on flash/turbo (Free-tier caps), per subscription tier |
 
 Speed ranges are **not** rescaled across providers — an out-of-range value is a `ValueError`, so
 `speed=2.0` never silently means two different things.
@@ -346,7 +346,7 @@ LOG_LEVEL="INFO"  # DEBUG, INFO, WARNING, ERROR (defaults to INFO)
 
 # ElevenLabs TTS provider — needs `uv pip install 'sanzaru[elevenlabs]'`
 ELEVENLABS_API_KEY="..."
-SANZARU_ELEVENLABS_MAX_CONCURRENCY=3  # lower if podcast renders hit HTTP 429
+SANZARU_ELEVENLABS_MAX_CONCURRENCY=2  # Free-tier cap (4 on flash/turbo); raise on a paid tier
 SANZARU_OPENAI_MAX_CONCURRENCY=0      # 0 = unbounded (default)
 ```
 

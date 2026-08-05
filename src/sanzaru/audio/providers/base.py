@@ -39,6 +39,39 @@ VOICE_SETTINGS_BOOL_KEYS = ("use_speaker_boost",)
 VOICE_SETTINGS_KEYS = VOICE_SETTINGS_FLOAT_KEYS + VOICE_SETTINGS_BOOL_KEYS
 
 
+def check_voice_settings_types(settings: VoiceSettingsDict, prefix: str = "") -> None:
+    """Reject unknown keys and wrong value types in a voice_settings mapping.
+
+    Shared by the podcast script validator and the ElevenLabs provider so a bad
+    type is the same ValueError on every path — the alternative was a TypeError
+    from the first range comparison, which the CLI reports as internal/exit 1
+    instead of usage/exit 2.
+
+    `bool` is excluded from the numeric keys explicitly: `isinstance(True, int)`
+    is True, so `{"stability": true}` would otherwise pass both the type check
+    and the 0.0-1.0 range check and reach the API.
+
+    Args:
+        settings: The mapping to check. Untrusted — it arrives from JSON.
+        prefix: Optional location prefix for messages, e.g. "Speaker 0 ".
+    """
+    if not isinstance(settings, dict):
+        raise ValueError(f"{prefix}voice_settings must be an object")
+    for key in settings:
+        if key not in VOICE_SETTINGS_KEYS:
+            raise ValueError(
+                f"{prefix}voice_settings has unknown key '{key}'; expected: {', '.join(VOICE_SETTINGS_KEYS)}"
+            )
+    for float_key in VOICE_SETTINGS_FLOAT_KEYS:
+        if float_key in settings:
+            value = settings[float_key]  # type: ignore[literal-required]
+            if isinstance(value, bool) or not isinstance(value, int | float):
+                raise ValueError(f"{prefix}voice_settings['{float_key}'] must be a number")
+    for bool_key in VOICE_SETTINGS_BOOL_KEYS:
+        if bool_key in settings and not isinstance(settings[bool_key], bool):  # type: ignore[literal-required]
+            raise ValueError(f"{prefix}voice_settings['{bool_key}'] must be a boolean")
+
+
 @dataclass(frozen=True, slots=True)
 class SpeechRequest:
     """One text-to-speech request, before provider-specific translation."""
