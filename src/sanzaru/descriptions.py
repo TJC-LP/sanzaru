@@ -890,6 +890,147 @@ A 10-minute podcast needs ~1500 words of content.
 }"""
 
 
+SIMULATE_PODCAST = """Record a podcast by having N realtime voice agents actually talk to each other.
+
+Nothing here is scripted. Each host is a `gpt-realtime` session with a persona; a producer
+gives one host the floor at a time and plays that audio into the other hosts' ears, so they
+respond to what was actually said, including delivery and timing. The conversation is an
+OUTPUT of this tool, not an input — the transcript comes back in the result.
+
+**Which podcast tool to use:**
+- `simulate_podcast` (this one) — you have a TOPIC and want a real conversation. Highest
+  quality by a wide margin, and the only option that produces genuine disagreement,
+  interruption, and reaction. Costs real money (see below) and takes 1-3 minutes.
+- `generate_podcast` with render_mode="dialogue" — you have a SCRIPT and want it performed
+  naturally. ElevenLabs paces consecutive turns itself.
+- `generate_podcast` with render_mode="segments" — you have a SCRIPT and need exact control
+  over gaps, per-speaker settings, and per-segment retry.
+
+**COST WARNING.** This is the most expensive tool in sanzaru. A 12-minute episode runs
+roughly $0.40 on gpt-realtime-2.1-mini and ~$3 on gpt-realtime-2.1. ALWAYS call once with
+`dry_run: true` first — it plans the episode and projects turns, duration, tokens and
+dollars without recording anything or spending audio tokens. Set `max_cost_usd` on the real
+call. Prefer `model: "gpt-realtime-2.1-mini"` unless the user asked for maximum quality.
+
+**Two ways in:**
+1. `premise` — a sentence about the topic. Pre-production plans the acts and invents hosts.
+2. `rundown` — a full plan (see below), typically produced by a `dry_run` call or by
+   `sanzaru podcast rundown`, then hand-edited.
+
+**How an episode is recorded.** The episode is split into acts, each recorded in its own
+sessions, in parallel. This is not an optimization: a Realtime WebSocket closes at 60
+minutes, so a long episode cannot be one session. It also keeps cost linear and puts a
+30-minute episode at 1-2 minutes of wall clock.
+
+Because acts record in parallel, an act CANNOT hear another act. Coherence comes entirely
+from what the rundown says: `prior_context` (what earlier acts covered), `upcoming` (what
+later acts own, filled in automatically), and `handoff` (where to leave off).
+
+**Schema (all fields optional unless noted):**
+
+{
+  "premise": string,               // Topic to plan from. Required unless `rundown` is given.
+  "rundown": {                     // A full plan; skips pre-production
+    "title": string,
+    "premise": string,
+    "style": string,               // One line of tone/format direction
+    "hosts": [
+      {"id": string, "name": string,
+       "voice": string,            // realtime voice: marin|cedar|alloy|ash|ballad|coral|
+                                   // echo|sage|shimmer|verse (NOT a TTS or ElevenLabs voice)
+       "persona": string,          // 2-3 sentences, second person ("You are ...")
+       "model": string}            // Optional per-host model override
+    ],
+    "acts": [
+      {"id": string, "title": string, "topic": string,
+       "talking_points": [string], // 3-4 concrete claims/examples, one sentence each
+       "target_seconds": number,   // Soft duration budget for the act
+       "max_turns": number,        // Hard turn cap; roughly target_seconds/turn_seconds + 1
+       "prior_context": string,    // What earlier acts covered. Empty for act 1.
+       "upcoming": string,         // What later acts own. Derived when empty.
+       "handoff": string,          // Where to leave the conversation. Empty for the last act.
+
+       // --- direct it yourself (all optional; see "You are the producer" below)
+       "direction": string,        // How to play this act, in your own words
+       "turn_notes": {"0": string},// Producer note per turn index, replacing the default.
+                                   // "" suppresses the note for that turn entirely.
+       "speaking_order": [string]} // Host ids per turn, cycled. Default: round-robin.
+    ]
+  },
+  "title": string, "style": string,
+  "hosts": [HostSpec],             // Fix the cast when planning from a premise
+  "acts": number,                  // Act count when planning from a premise (default 4)
+  "target_minutes": number,        // Episode length (default 12)
+
+  "model": string,                 // Realtime model (default "gpt-realtime-2.1")
+  "planner_model": string,         // Text model for pre-production (default "gpt-5.5")
+  "turn_seconds": number,          // Target upper bound per turn (default 15)
+  "turn_tokens": number,           // Hard per-turn output cap; 0 = derive from turn_seconds
+
+  "max_cost_usd": number,          // Abort once spend crosses this. STRONGLY RECOMMENDED.
+  "max_concurrent_sessions": number, // Realtime sessions across all acts (default 6)
+
+  "dry_run": boolean,              // Plan and project only. Records nothing. START HERE.
+  "run_id": string,                // Identify a run for resume
+  "resume": boolean,               // Reuse checkpointed acts, record only what is missing
+  "stems": boolean,                // Also write one time-aligned track per host
+  "qc": boolean,                   // Verify the result (default true)
+  "qc_retry": boolean,             // Re-record acts QC flags, once
+
+  "output_format": "mp3"|"wav", "output_bitrate": string, "filename": string,
+  "act_gap_ms": number,            // Silence between acts (default 700)
+  "intro_silence_ms": number, "outro_silence_ms": number,
+  "normalize_loudness": boolean    // Default false — see below
+}
+
+**You are the producer.** A producer inside the tool gives one host the floor at a time, pushes
+talking points across the act, and steers the last turns to a landing. Those are *defaults* —
+they exist because unsteered agents drift to 30-second turns and mutual agreement — but you will
+usually write better direction than they do, and three fields on each act hand you the chair:
+
+- `direction` — how to play this act, added to every host's instructions. "Let this one get
+  heated." "No jokes, the subject is grim." "Rory should refuse to concede the point."
+- `turn_notes` — `{"0": "...", "4": "..."}`, keyed by zero-based turn index, replacing the
+  default note for that turn. This is the strongest lever in the tool: it is how you make turn 4
+  a genuine objection rather than a topic change. Set `""` to say nothing that turn. A note on
+  the last turn takes over the closing, so it becomes your job to land the act.
+- `speaking_order` — `["avery", "rory", "rory", "avery"]`, cycled. Lets a host follow their own
+  point before handing back, instead of strict alternation.
+
+You cannot steer live — the tool blocks while acts record in parallel, and a round-trip per turn
+would break that — so put your direction in the rundown before recording. A good loop is:
+`dry_run` → read the returned rundown → rewrite `direction`/`turn_notes` → record.
+
+**Checkpointing and resume.** Every act is written to the audio directory the moment it
+finishes, alongside a JSON sidecar holding its turns and usage. If the run is interrupted or
+hits `max_cost_usd`, that audio is safe. Call again with `resume: true` and the same
+`run_id` (it is in every result, and in the error payload on a cost abort) to record only
+the missing acts.
+
+**QC.** Enabled by default and cheap (~$0.005/minute). Each act's rendered audio is
+transcribed with `gpt-transcribe` and compared two ways: a similarity score against what the
+models reported saying (catches dropped audio), and a judge model reading the transcript
+against the brief (catches skipped talking points, drift, and acts repeating each other —
+the characteristic failure of parallel recording). `result.qc.flagged_acts` names anything
+worth a listen; `qc_retry: true` re-records just those.
+
+**Notes:**
+- `normalize_loudness` defaults to FALSE here, unlike generate_podcast: acts recorded by the
+  same models are already level, and per-act peak normalization can introduce jumps.
+- Truncated turns are reported per act. If `truncated_turns` is high, raise `turn_tokens`.
+- Memory scales with episode length (~48KB per second of audio, more with `stems`).
+
+**Example (always do this first):**
+
+{"premise": "why the plumbing under generative media is harder than the models",
+ "acts": 3, "target_minutes": 6, "model": "gpt-realtime-2.1-mini", "dry_run": true}
+
+**Then record, reusing the rundown the dry run returned:**
+
+{"rundown": <rundown from the dry run>, "model": "gpt-realtime-2.1-mini",
+ "max_cost_usd": 1.00, "stems": true}"""
+
+
 # ==================== MEDIA VIEWER TOOL DESCRIPTIONS ====================
 
 VIEW_MEDIA = """Open a media file in the interactive media viewer.

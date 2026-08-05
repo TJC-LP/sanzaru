@@ -14,6 +14,7 @@ OpenAI and ElevenLabs voices — the stitch path is mp3-in, mp3-out.
 """
 
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from io import BytesIO
 from typing import Literal, NotRequired, TypedDict
@@ -295,6 +296,11 @@ def _estimate_duration(segments: list[Segment], speakers: list[Speaker], config:
     return speech_seconds + (total_pause_ms + intro_ms + outro_ms) / 1000.0
 
 
+def _decode_mp3(raw_bytes: bytes) -> AudioSegment:
+    """Default segment decoder: every TTS provider is asked for mp3."""
+    return AudioSegment.from_mp3(BytesIO(raw_bytes))
+
+
 def _stitch_audio(
     segment_bytes_list: list[bytes],
     pause_ms_list: list[int],
@@ -303,19 +309,23 @@ def _stitch_audio(
     normalize_loudness: bool,
     output_format: str,
     output_bitrate: str,
+    decode: Callable[[bytes], AudioSegment] = _decode_mp3,
 ) -> bytes:
     """Stitch audio segments with silence gaps using pydub.
 
     This is CPU-bound work that runs in a thread pool.
 
     Args:
-        segment_bytes_list: Raw MP3 bytes for each segment.
+        segment_bytes_list: Encoded audio for each segment, in `decode`'s format.
         pause_ms_list: Silence duration in ms after each segment (same length as segment_bytes_list).
         intro_ms: Silence in ms before the first segment.
         outro_ms: Silence in ms after the last segment.
         normalize_loudness: Whether to peak-normalize each segment.
         output_format: Output format ("mp3" or "wav").
         output_bitrate: MP3 bitrate string (e.g., "192k"). Ignored for WAV.
+        decode: Bytes → AudioSegment. Defaults to mp3, which is the TTS contract;
+            simulated podcasts pass a raw-PCM decoder instead, since realtime
+            audio never needs to become mp3 on the way here.
 
     Returns:
         Final concatenated audio as bytes.
@@ -323,11 +333,11 @@ def _stitch_audio(
     combined = AudioSegment.silent(duration=intro_ms) if intro_ms > 0 else AudioSegment.empty()
 
     for raw_bytes, pause_ms in zip(segment_bytes_list, pause_ms_list, strict=True):
-        # Every provider is asked for mp3 — keep in sync with the TTS providers.
-        seg = AudioSegment.from_mp3(BytesIO(raw_bytes))
-        # Providers differ in native rate (OpenAI 24kHz, ElevenLabs 44.1kHz).
-        # pydub would resample on concatenation anyway, but pinning it here makes
-        # a mixed-provider episode deterministic regardless of segment order.
+        seg = decode(raw_bytes)
+        # Sources differ in native rate (OpenAI TTS and realtime 24kHz,
+        # ElevenLabs mp3_44100_128 44.1kHz). pydub would resample on
+        # concatenation anyway, but pinning it here makes a mixed episode
+        # deterministic regardless of segment order.
         seg = seg.set_frame_rate(PODCAST_TARGET_FRAME_RATE).set_channels(1)
         if normalize_loudness:
             seg = pydub_normalize(seg)

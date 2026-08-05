@@ -1,25 +1,93 @@
 # SPDX-License-Identifier: MIT
-"""`sanzaru podcast` — multi-voice podcast rendering from a structured script."""
+"""`sanzaru podcast` — three ways to make an episode.
+
+    rundown   plan only: a premise becomes an editable act-by-act JSON
+    simulate  record realtime agents actually talking to each other
+    generate  speak a script you already wrote (multi-voice TTS)
+
+`rundown` is split out from `simulate` on purpose: planning is cheap and
+recording is not, so the plan should be inspectable and hand-editable before
+anyone spends realtime money on it.
+"""
 
 from __future__ import annotations
 
 import json
+import pathlib
 import time
-from typing import cast
+from collections.abc import Callable
+from typing import TYPE_CHECKING, cast
 
 import click
 
 from ._io import PathSession, finalize_output, install_overrides, plan_output, read_content_arg
-from ._output import EXIT_CONFIG, EXIT_USAGE, emit, success_envelope
-from ._runtime import CLIError, get_state, run_async
+from ._output import EXIT_CONFIG, EXIT_PARTIAL, EXIT_USAGE, emit, note, success_envelope
+from ._runtime import CLIError, find_in_group, get_state, run_async
 from .audio import _ELEVENLABS_MODELS, _PROVIDERS, _TTS_MODELS, resolve_tts_model
 
+if TYPE_CHECKING:
+    # Runtime import would pull openai/pydantic in at `sanzaru.cli` import time.
+    from ..tools.simulate_podcast import SimulatedPodcastResult
+
 _AUDIO_DEP_MESSAGE = "podcast generation requires optional dependencies — install with: uv pip install 'sanzaru[audio]'"
+
+# Literal lists rather than imports: importing sanzaru.cli must not pull in
+# openai/pydantic (tests/cli/test_root.py guards the startup weight).
+_REALTIME_MODELS = ["gpt-realtime-2.1", "gpt-realtime-2.1-mini", "gpt-realtime-2", "gpt-realtime"]
+_REALTIME_VOICES = ["marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"]
+
+
+def _parse_host(value: str) -> dict[str, str]:
+    """Parse a `--host name[:voice[:persona]]` spec.
+
+    Split at most twice so a persona can contain colons, which it usually does
+    the moment anyone writes a real one.
+    """
+    parts = value.split(":", 2)
+    name = parts[0].strip()
+    if not name:
+        raise CLIError("usage", f"--host {value!r}: name is required (name[:voice[:persona]])", exit_code=EXIT_USAGE)
+    voice = parts[1].strip() if len(parts) > 1 else ""
+    if voice and voice not in _REALTIME_VOICES:
+        raise CLIError(
+            "usage",
+            f"--host {value!r}: {voice!r} is not a realtime voice; choose one of: {', '.join(_REALTIME_VOICES)}",
+            exit_code=EXIT_USAGE,
+        )
+    persona = parts[2].strip() if len(parts) > 2 else ""
+    slug = "".join(c if c.isalnum() else "_" for c in name.lower()).strip("_") or f"host{abs(hash(name)) % 1000}"
+    return {"id": slug, "name": name, "voice": voice, "persona": persona}
+
+
+def _progress_printer(quiet: bool) -> Callable[[str], None]:
+    """Greppable, line-based stderr progress, matching the rest of the CLI.
+
+    Every line carries elapsed wall clock: during a blocking multi-minute
+    recording that is the only signal the run is alive.
+    """
+    start = time.monotonic()
+
+    def printer(message: str) -> None:
+        if not quiet:
+            note(f"{message} t={int(time.monotonic() - start)}s")
+
+    return printer
+
+
+def _load_json_arg(value: str, arg_name: str) -> dict[str, object]:
+    text = read_content_arg(value, arg_name)
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise CLIError("usage", f"{arg_name} is not valid JSON: {exc}", exit_code=EXIT_USAGE) from exc
+    if not isinstance(parsed, dict):
+        raise CLIError("usage", f"{arg_name} must be a JSON object", exit_code=EXIT_USAGE)
+    return cast("dict[str, object]", parsed)
 
 
 @click.group()
 def podcast() -> None:
-    """Podcast generation (multi-voice TTS, stitched with pauses)."""
+    """Podcast generation: plan a rundown, simulate a real conversation, or speak a script."""
 
 
 @podcast.command("generate")
@@ -133,3 +201,384 @@ async def podcast_generate(
     payload["file"] = {"path": final_path}
     emit(success_envelope("podcast.generate", payload, elapsed_s=time.monotonic() - started))
     return 0
+
+
+@podcast.command("rundown")
+@click.argument("premise")
+@click.option("--acts", type=int, default=4, show_default=True, help="How many acts to split the episode into.")
+@click.option(
+    "-m",
+    "--target-minutes",
+    type=float,
+    default=12.0,
+    show_default=True,
+    help="Total episode length; divided evenly across acts.",
+)
+@click.option("--title", default=None, help="Episode title (default: the planner picks one).")
+@click.option("--style", default=None, help="One line of tone/format direction applied to every act.")
+@click.option(
+    "--host",
+    "hosts",
+    multiple=True,
+    metavar="NAME[:VOICE[:PERSONA]]",
+    help="Fix a host instead of letting the planner invent one. Repeatable.",
+)
+@click.option(
+    "--turn-seconds",
+    type=float,
+    default=15.0,
+    show_default=True,
+    help="Target upper bound per turn; sets each act's turn budget.",
+)
+@click.option("--model", default=None, help="Planner text model [default: gpt-5.5]. Not a realtime model.")
+@click.option("-o", "--output", default=None, help="Write the rundown JSON here (also printed in the envelope).")
+@click.pass_context
+@run_async("podcast.rundown")
+async def podcast_rundown(
+    ctx: click.Context,
+    premise: str,
+    acts: int,
+    target_minutes: float,
+    title: str | None,
+    style: str | None,
+    hosts: tuple[str, ...],
+    turn_seconds: float,
+    model: str | None,
+    output: str | None,
+) -> int:
+    """Plan an episode. PREMISE is inline text, @file, or - (stdin).
+
+    \b
+    Pre-production for `podcast simulate`. Acts record in parallel, in separate
+    sessions that cannot hear each other, so every act carries `prior_context`
+    (what earlier acts already covered) and `handoff` (where to leave off).
+    That wiring is the whole point of planning first.
+    \b
+    Costs one text-model call and no audio. Edit the JSON freely — rewrite
+    talking points, retune target_seconds/max_turns, swap voices — then feed it
+    straight to `podcast simulate`.
+    \b
+    Example:
+      sanzaru podcast rundown "why TTS providers drop sentence tails" \\
+        --acts 3 -m 6 --host "Avery::You host and translate jargon." \\
+        --host "Rory:cedar:You chased the bug. Dry, specific." -o rundown.json
+      sanzaru podcast simulate @rundown.json --dry-run
+    """
+    try:
+        from ..audio.realtime.rundown import RundownRequest, plan_rundown
+    except ImportError as exc:
+        raise CLIError("config", f"{_AUDIO_DEP_MESSAGE} ({exc})", exit_code=EXIT_CONFIG) from exc
+    from ..audio.realtime.types import HostSpec
+
+    state = get_state(ctx)
+    premise_text = read_content_arg(premise, "PREMISE")
+    host_specs = [HostSpec.model_validate(_parse_host(h)) for h in hosts]
+
+    request = RundownRequest(
+        premise=premise_text,
+        acts=acts,
+        target_minutes=target_minutes,
+        title=title,
+        style=style,
+        hosts=host_specs,
+        turn_seconds=turn_seconds,
+        **({"model": model} if model else {}),
+    )
+
+    started = time.monotonic()
+    if not state.quiet:
+        note(f"planning {acts} acts / {target_minutes:.0f} min with {request.model}")
+    rundown = await plan_rundown(request)
+
+    payload: dict[str, object] = rundown.model_dump(mode="json")
+    if output is not None:
+        # The file is the pure rundown so it can be piped straight back into
+        # `simulate` (and hand-edited) — the envelope alone carries `file`.
+        target = pathlib.Path(output).expanduser()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        payload = dict(payload)
+        payload["file"] = {"path": str(target.resolve())}
+
+    if not state.quiet:
+        for act in rundown.acts:
+            note(f"  {act.id}: {act.title} — {act.target_seconds:.0f}s, up to {act.max_turns} turns")
+    emit(success_envelope("podcast.rundown", payload, elapsed_s=time.monotonic() - started))
+    return 0
+
+
+@podcast.command("simulate")
+@click.argument("brief", required=False)
+@click.option("-p", "--premise", default=None, help="Plan a rundown from this premise (inline text, @file, or -).")
+@click.option("--acts", type=int, default=None, help="Act count when planning from a premise [default: 4].")
+@click.option("-m", "--target-minutes", type=float, default=None, help="Episode length in minutes [default: 12].")
+@click.option("--title", default=None, help="Episode title.")
+@click.option("--style", default=None, help="Tone/format direction applied to every act.")
+@click.option(
+    "--host",
+    "hosts",
+    multiple=True,
+    metavar="NAME[:VOICE[:PERSONA]]",
+    help=f"A participant. Voices: {', '.join(_REALTIME_VOICES)}. Repeatable.",
+)
+@click.option(
+    "--model",
+    type=click.Choice(_REALTIME_MODELS),
+    default=None,
+    help="Realtime model [default: gpt-realtime-2.1]. -mini is ~3x cheaper and noticeably faster.",
+)
+@click.option("--planner-model", default=None, help="Text model for pre-production [default: gpt-5.5].")
+@click.option("--turn-seconds", type=float, default=None, help="Target upper bound per turn [default: 15].")
+@click.option(
+    "--turn-tokens",
+    type=int,
+    default=None,
+    help="Hard per-turn output cap [default: derived from --turn-seconds]. Raise if turns get cut short.",
+)
+@click.option(
+    "--max-cost",
+    type=float,
+    default=None,
+    metavar="USD",
+    help="Abort once spend crosses this. Finished acts stay on disk.",
+)
+@click.option(
+    "--max-sessions", type=int, default=None, help="Concurrent realtime sessions across all acts [default: 6]."
+)
+@click.option(
+    "--resume",
+    "resume_id",
+    default=None,
+    metavar="RUN_ID",
+    help="Re-use checkpointed acts from an earlier run and record only what is missing.",
+)
+@click.option(
+    "--stems/--no-stems", default=False, show_default=True, help="Also write one time-aligned track per host."
+)
+@click.option(
+    "--qc/--no-qc",
+    default=True,
+    show_default=True,
+    help="Transcribe the rendered audio and judge it against the rundown.",
+)
+@click.option("--qc-retry", is_flag=True, help="Re-record acts QC flags, once. Only the flagged acts are re-run.")
+@click.option("--dry-run", is_flag=True, help="Plan and project turns, duration, tokens and cost. Records nothing.")
+@click.option("--act-gap", type=int, default=None, metavar="MS", help="Silence between acts [default: 700].")
+@click.option("--format", "output_format", type=click.Choice(["mp3", "wav"]), default="mp3", show_default=True)
+@click.option("--bitrate", default="192k", show_default=True, help="MP3 bitrate. Ignored for WAV.")
+@click.option("-o", "--output", default=None, help="Output file or directory (default: media dir).")
+@click.pass_context
+@run_async("podcast.simulate")
+async def podcast_simulate(
+    ctx: click.Context,
+    brief: str | None,
+    premise: str | None,
+    acts: int | None,
+    target_minutes: float | None,
+    title: str | None,
+    style: str | None,
+    hosts: tuple[str, ...],
+    model: str | None,
+    planner_model: str | None,
+    turn_seconds: float | None,
+    turn_tokens: int | None,
+    max_cost: float | None,
+    max_sessions: int | None,
+    resume_id: str | None,
+    stems: bool,
+    qc: bool,
+    qc_retry: bool,
+    dry_run: bool,
+    act_gap: int | None,
+    output_format: str,
+    bitrate: str,
+    output: str | None,
+) -> int:
+    """Record a podcast by having realtime agents actually talk to each other.
+
+    \b
+    BRIEF is a rundown (from `podcast rundown`) or a full SimulationBrief, as
+    inline JSON, @file, or - (stdin). Or skip it and pass --premise to plan and
+    record in one go. Flags override whatever the BRIEF says.
+    \b
+    Unlike `podcast generate`, nothing here is scripted: each host is a
+    gpt-realtime session with a persona, and one host's audio is played into the
+    others' ears, so they respond to delivery and timing. The conversation is an
+    output, not an input — the transcript comes back in the envelope.
+    \b
+    Acts record in parallel (a 30-minute episode lands in ~1-2 minutes of wall
+    clock) and each is checkpointed to the audio dir the moment it finishes, so
+    an interrupt, a timeout, or a --max-cost abort never throws away audio you
+    already paid for. The run id is printed on stderr before recording starts:
+      sanzaru podcast simulate --resume RUN_ID
+    picks up exactly where it stopped and records only the missing acts.
+    \b
+    Cost is real — this is the most expensive thing sanzaru does. Always
+    --dry-run first; it plans, projects tokens and dollars, and spends nothing.
+    \b
+    Exit codes: 0 ok · 2 usage · 3 config · 6 cost ceiling hit (partial run,
+    resumable) · 1 other runtime failure.
+    \b
+    Examples:
+      sanzaru podcast simulate -p "the plumbing under generative media" --dry-run
+      sanzaru podcast simulate @rundown.json --model gpt-realtime-2.1-mini \\
+        --max-cost 2.00 --stems -o ./out/ep1.mp3
+      sanzaru podcast simulate --resume 6f1a9c02
+    """
+    try:
+        from ..tools import simulate_podcast as sim
+    except ImportError as exc:
+        raise CLIError("config", f"{_AUDIO_DEP_MESSAGE} ({exc})", exit_code=EXIT_CONFIG) from exc
+    from ..exceptions import CostCeilingError
+
+    state = get_state(ctx)
+
+    payload: dict[str, object] = {}
+    if brief is not None:
+        parsed = _load_json_arg(brief, "BRIEF")
+        # A bare rundown and a full brief are both reasonable things to pipe in,
+        # and they overlap: both carry `premise`. `acts` is what separates them —
+        # a list of act briefs in a rundown, an integer count in a brief.
+        is_rundown = "rundown" not in parsed and isinstance(parsed.get("acts"), list)
+        payload = {"rundown": parsed} if is_rundown else parsed
+    if premise is not None:
+        payload["premise"] = read_content_arg(premise, "--premise")
+    if hosts:
+        payload["hosts"] = [_parse_host(h) for h in hosts]
+
+    for key, value in (
+        ("acts", acts),
+        ("target_minutes", target_minutes),
+        ("title", title),
+        ("style", style),
+        ("model", model),
+        ("planner_model", planner_model),
+        ("turn_seconds", turn_seconds),
+        ("turn_tokens", turn_tokens),
+        ("max_cost_usd", max_cost),
+        ("max_concurrent_sessions", max_sessions),
+        ("act_gap_ms", act_gap),
+    ):
+        if value is not None:
+            payload[key] = value
+
+    payload["stems"] = stems
+    payload["qc"] = qc
+    payload["qc_retry"] = qc_retry
+    payload["dry_run"] = dry_run
+    payload["output_format"] = output_format
+    payload["output_bitrate"] = bitrate
+    if resume_id:
+        payload["resume"] = True
+        payload["run_id"] = resume_id
+
+    try:
+        simulation = sim.SimulationBrief.model_validate(payload)
+    except Exception as exc:  # noqa: BLE001 — pydantic validation is a usage error here
+        raise CLIError("usage", f"BRIEF is not a valid simulation request: {exc}", exit_code=EXIT_USAGE) from exc
+
+    if not simulation.premise.strip() and simulation.rundown is None and not simulation.resume:
+        raise CLIError(
+            "usage",
+            "nothing to record: pass a rundown/brief, --premise, or --resume RUN_ID",
+            exit_code=EXIT_USAGE,
+        )
+
+    started = time.monotonic()
+    progress = _progress_printer(state.quiet)
+
+    if dry_run:
+        # No output plan and no storage override: a dry run must not create
+        # directories or touch the media dir at all.
+        result = await sim.simulate_podcast(simulation, on_progress=progress)
+        _note_dry_run(result, state.quiet)
+        emit(success_envelope("podcast.simulate", result.model_dump(mode="json"), elapsed_s=time.monotonic() - started))
+        return 0
+
+    session = PathSession()
+    plan = plan_output(session, output, "audio", quiet=state.quiet)
+    install_overrides(session)
+    if plan.filename is not None:
+        simulation = simulation.model_copy(update={"filename": plan.filename})
+
+    # Print the run id before anything is recorded: if this is interrupted, that
+    # id is the difference between resuming and paying twice.
+    run_id = simulation.run_id or sim.new_run_id()
+    simulation = simulation.model_copy(update={"run_id": run_id})
+    if not state.quiet:
+        note(f"run {run_id} — resume with: sanzaru podcast simulate --resume {run_id}")
+
+    try:
+        result = await sim.simulate_podcast(simulation, on_progress=progress)
+    except Exception as raised:  # noqa: BLE001 — re-raised below unless it is the ceiling
+        # Acts record inside an anyio task group, so the ceiling arrives wrapped
+        # in an ExceptionGroup — and if several acts trip it in the same
+        # scheduling window, one error per act.
+        ceiling = find_in_group(raised, CostCeilingError)
+        if ceiling is None:
+            raise
+        raise CLIError(
+            "cost_limit",
+            f"{ceiling} — {len(ceiling.completed_acts)} act(s) checkpointed and safe, resume to finish",
+            exit_code=EXIT_PARTIAL,
+            resume=f"sanzaru podcast simulate --resume {run_id}",
+            extra={
+                "spent_usd": round(ceiling.spent_usd, 4),
+                "limit_usd": ceiling.limit_usd,
+                "completed_acts": ceiling.completed_acts,
+                "run_id": run_id,
+            },
+        ) from ceiling
+
+    final_path = await finalize_output(session, plan, result.output_file)
+    envelope_payload: dict[str, object] = result.model_dump(mode="json")
+    envelope_payload["file"] = {"path": final_path}
+    _note_result(result, state.quiet)
+    emit(success_envelope("podcast.simulate", envelope_payload, elapsed_s=time.monotonic() - started))
+    return 0
+
+
+def _note_dry_run(result: SimulatedPodcastResult, quiet: bool) -> None:
+    """Human-readable projection on stderr; the envelope carries the numbers."""
+    if quiet:
+        return
+    note(f"dry run — {result.title!r}: {len(result.acts)} acts, up to {result.turn_count} turns")
+    for act in result.acts:
+        note(f"  {act.act_id}: {act.title} — {act.seconds:.0f}s, up to {act.turns} turns")
+    usage = result.cost.usage
+    note(
+        f"projected ~{result.duration_seconds / 60:.0f} min audio, "
+        f"{usage.input_tokens:,} input / {usage.output_tokens:,} output tokens"
+    )
+    if result.cost.usd is not None:
+        # Projected from rates measured in a live spike, not from a price quote.
+        note(f"projected cost ~${result.cost.usd:.2f} (estimate, not a quote)")
+    else:
+        unpriced = ", ".join(result.cost.unpriced_models)
+        note(f"no price known for {unpriced or 'this model'} — set SANZARU_REALTIME_PRICE_* to estimate cost")
+    note("nothing was recorded; drop --dry-run to record")
+
+
+def _note_result(result: SimulatedPodcastResult, quiet: bool) -> None:
+    """One line per fact on stderr; the envelope carries the detail."""
+    if quiet:
+        return
+    note(
+        f"episode {result.run_id}: {len(result.acts)} acts, {result.turn_count} turns, "
+        f"{result.duration_seconds / 60:.1f} min"
+    )
+    truncated = sum(act.truncated_turns for act in result.acts)
+    if truncated:
+        note(f"{truncated} turn(s) hit the token cap and were cut short — raise --turn-tokens")
+    if result.cost.usd is not None:
+        note(f"spend ${result.cost.usd:.2f}")
+    if result.stems:
+        note(f"stems: {', '.join(result.stems.values())}")
+    if result.qc is not None:
+        if result.qc.flagged_acts:
+            note(
+                f"qc {result.qc.verdict}: {', '.join(result.qc.flagged_acts)} — "
+                "see result.qc for why (--qc-retry re-records just those)"
+            )
+        else:
+            note(f"qc {result.qc.verdict}")

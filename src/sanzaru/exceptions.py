@@ -75,3 +75,30 @@ class TTSAPIError(TTSError):
     """Raised when the TTS API call fails."""
 
     pass
+
+
+class RealtimeError(SanzaruError):
+    """Base exception for realtime conversation simulation."""
+
+    pass
+
+
+class RealtimeAPIError(RealtimeError):
+    """Raised when a Realtime API session or response fails."""
+
+    pass
+
+
+class CostCeilingError(RealtimeError):
+    """Raised when a simulation is stopped by its cost ceiling.
+
+    Carries what was already recorded so the caller can report which acts are
+    safe on disk — an abort that silently discards paid-for audio is worse than
+    no ceiling at all.
+    """
+
+    def __init__(self, message: str, *, spent_usd: float, limit_usd: float, completed_acts: list[str]) -> None:
+        super().__init__(message)
+        self.spent_usd = spent_usd
+        self.limit_usd = limit_usd
+        self.completed_acts = completed_acts

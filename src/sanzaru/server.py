@@ -230,10 +230,12 @@ if check_audio_available():
         GENERATE_PODCAST,
         GET_LATEST_AUDIO,
         LIST_AUDIO_FILES,
+        SIMULATE_PODCAST,
         TRANSCRIBE_AUDIO,
         TRANSCRIBE_WITH_ENHANCEMENT,
     )
     from .tools import audio, podcast
+    from .tools import simulate_podcast as simulate
 
     @mcp.tool(description=LIST_AUDIO_FILES, annotations=READ_ONLY_CLOSED)
     async def list_audio_files(
@@ -330,7 +332,13 @@ if check_audio_available():
     ):
         return await podcast.generate_podcast(script, model=model, provider=provider)
 
-    logger.info("Audio tools registered (9 tools)")
+    @mcp.tool(description=SIMULATE_PODCAST, annotations=WRITE_OPEN)
+    async def simulate_podcast(brief: simulate.SimulationBrief):
+        # No on_progress: MCP has no stderr channel to stream it to, and the
+        # result already carries per-act summaries.
+        return await simulate.simulate_podcast(brief)
+
+    logger.info("Audio tools registered (10 tools)")
 
 
 # ==================== MEDIA VIEWER (CONDITIONAL) ====================
