@@ -172,8 +172,13 @@ happens in `_plan_render_units`, which returns `RenderUnit`s — each either one
 Everything downstream (limiters, stitching, pause list) works in units, and a unit's pause comes
 from its *last* segment.
 
-Turns that cannot join a run (OpenAI speakers, non-`eleven_v3` models, lone turns) fall back to
-segment units, which is what keeps dialogue mode compatible with mixed-provider episodes.
+Turns that cannot join a run fall back to segment units, which is what keeps dialogue mode
+compatible with mixed-provider episodes. A run is only batched when it has ≥`MIN_DIALOGUE_TURNS`
+turns **and** ≥`MIN_DIALOGUE_SPEAKERS` distinct voices — a monologue has no turn-taking to pace, so
+batching it would cost a dialogue request and swallow its `pause_after`s for nothing. Excluded
+outright: OpenAI speakers, non-`eleven_v3` models, and any turn longer than the provider's
+per-chunk budget (`max_chunk_chars`), so a turn that segments mode would split never ships as one
+oversized `DialogueInput`.
 
 Dialogue is a **separate** `DialogueProvider` Protocol (`runtime_checkable`, narrowed by
 `as_dialogue_provider`) rather than a method on `TTSProvider`, so OpenAI isn't forced to stub a

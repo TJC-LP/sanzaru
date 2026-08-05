@@ -183,6 +183,93 @@ def test_podcast_generate_from_stdin_script(mocker, tmp_path):
 
 
 @pytest.mark.integration
+def test_podcast_render_mode_flag_beats_config(mocker, tmp_path):
+    """--render-mode is an override, so it wins over a render_mode already in
+    the script's config rather than deferring to it."""
+    script = {
+        "title": "Test Cast",
+        "speakers": [{"id": "h", "name": "Host", "voice": "nova", "speed": 1.0, "instructions": ""}],
+        "segments": [{"speaker": "h", "text": "Welcome!"}],
+        "config": {"default_pause_ms": 500, "normalize_loudness": True, "output_format": "mp3"},
+    }
+    script["config"]["render_mode"] = "segments"
+
+    async def fake_podcast(parsed_script, model, provider):
+        return PodcastResult(
+            output_file="ep.mp3",
+            title="Test Cast",
+            segment_count=1,
+            estimated_duration_seconds=3.2,
+            speakers=["Host"],
+            transcript="Host: Welcome!",
+        )
+
+    generate = mocker.patch("sanzaru.tools.podcast.generate_podcast", mocker.AsyncMock(side_effect=fake_podcast))
+    mocker.patch("sanzaru.cli.podcast.finalize_output", mocker.AsyncMock(return_value=str(tmp_path / "ep.mp3")))
+
+    result = CliRunner().invoke(
+        cli,
+        ["podcast", "generate", "-", "--render-mode", "dialogue"],
+        input=json.dumps(script),
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert generate.call_args.args[0]["config"]["render_mode"] == "dialogue"
+
+
+@pytest.mark.integration
+def test_podcast_render_mode_flag_leaves_config_alone_when_absent(mocker, tmp_path):
+    """Without the flag the script's own render_mode must survive untouched."""
+    script = {
+        "title": "Test Cast",
+        "speakers": [{"id": "h", "name": "Host", "voice": "nova", "speed": 1.0, "instructions": ""}],
+        "segments": [{"speaker": "h", "text": "Welcome!"}],
+        "config": {
+            "default_pause_ms": 500,
+            "normalize_loudness": True,
+            "output_format": "mp3",
+            "render_mode": "dialogue",
+        },
+    }
+
+    async def fake_podcast(parsed_script, model, provider):
+        return PodcastResult(
+            output_file="ep.mp3",
+            title="Test Cast",
+            segment_count=1,
+            estimated_duration_seconds=3.2,
+            speakers=["Host"],
+            transcript="Host: Welcome!",
+        )
+
+    generate = mocker.patch("sanzaru.tools.podcast.generate_podcast", mocker.AsyncMock(side_effect=fake_podcast))
+    mocker.patch("sanzaru.cli.podcast.finalize_output", mocker.AsyncMock(return_value=str(tmp_path / "ep.mp3")))
+
+    result = CliRunner().invoke(cli, ["podcast", "generate", "-"], input=json.dumps(script))
+
+    assert result.exit_code == 0, result.stderr
+    assert generate.call_args.args[0]["config"]["render_mode"] == "dialogue"
+
+
+@pytest.mark.integration
+def test_podcast_render_mode_on_non_object_config_is_usage_error():
+    """Merging the flag into a config that is not an object must be a usage
+    error, not a TypeError surfacing as an internal failure."""
+    script = {"title": "T", "speakers": [], "segments": [], "config": []}
+
+    result = CliRunner().invoke(
+        cli,
+        ["podcast", "generate", "-", "--render-mode", "dialogue"],
+        input=json.dumps(script),
+    )
+
+    assert result.exit_code == 2, result.stdout
+    parsed = json.loads(result.stdout)
+    assert parsed["error"]["type"] == "usage"
+    assert "'config' must be a JSON object" in parsed["error"]["message"]
+
+
+@pytest.mark.integration
 def test_podcast_generate_invalid_json_is_usage_error():
     result = CliRunner().invoke(cli, ["podcast", "generate", "{not json"])
 

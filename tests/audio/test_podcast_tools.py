@@ -4,6 +4,8 @@ import pytest
 
 from sanzaru.tools.podcast import (
     PodcastResult,
+    RenderUnit,
+    _build_pause_list,
     _estimate_duration,
     _safe_title,
     _validate_script,
@@ -215,7 +217,7 @@ class TestEstimateDuration:
         segments = [{"speaker": "host", "text": text}]
         config = {"default_pause_ms": 0}
 
-        duration = _estimate_duration(segments, speakers, config)
+        duration = _estimate_duration(segments, speakers, [0], config)
         assert duration == pytest.approx(60.0)
 
     def test_faster_speed_reduces_duration(self):
@@ -228,21 +230,30 @@ class TestEstimateDuration:
         segments = [{"speaker": "host", "text": text}]
         config = {"default_pause_ms": 0}
 
-        duration = _estimate_duration(segments, speakers, config)
+        duration = _estimate_duration(segments, speakers, [0], config)
         assert duration == pytest.approx(30.0)
 
     def test_pause_contributes_to_duration(self):
-        """Pauses are included in estimated duration."""
-        text = "short"
+        """Only the pauses actually handed to the stitch step count."""
         speakers = [{"id": "host", "speed": 1.0}]
-        segments = [{"speaker": "host", "text": text}]
+        segments = [{"speaker": "host", "text": "short"}] * 2
         config = {"default_pause_ms": 1000}
 
-        duration_with_pause = _estimate_duration(segments, speakers, config)
-        config["default_pause_ms"] = 0
-        duration_no_pause = _estimate_duration(segments, speakers, config)
+        duration_with_pause = _estimate_duration(segments, speakers, [1000, 0], config)
+        duration_no_pause = _estimate_duration(segments, speakers, [0, 0], config)
 
         assert duration_with_pause - duration_no_pause == pytest.approx(1.0)
+
+    def test_pause_after_is_never_read_behind_the_pause_lists_back(self):
+        """The stitch step zeroes the trailing pause, so the estimate must too.
+        The pause list is the single source of truth: a `pause_after` the list
+        does not carry is silence the output never contains."""
+        speakers = [{"id": "host", "speed": 1.0}]
+        segments = [{"speaker": "host", "text": "word", "pause_after": 5000}]
+        config = {"default_pause_ms": 5000}
+
+        # One word at 1.0x is 60/150 = 0.4s, and nothing else.
+        assert _estimate_duration(segments, speakers, [0], config) == pytest.approx(0.4)
 
     def test_intro_outro_silence_included(self):
         """Intro and outro silence contribute to total duration."""
@@ -255,9 +266,9 @@ class TestEstimateDuration:
             "outro_silence_ms": 1000,
         }
 
-        duration = _estimate_duration(segments, speakers, config)
+        duration = _estimate_duration(segments, speakers, [0], config)
         config_no_silence = {"default_pause_ms": 0}
-        duration_no_silence = _estimate_duration(segments, speakers, config_no_silence)
+        duration_no_silence = _estimate_duration(segments, speakers, [0], config_no_silence)
 
         assert duration - duration_no_silence == pytest.approx(1.5)
 
@@ -271,7 +282,7 @@ class TestEstimateDuration:
         segments = [{"speaker": "host", "text": text, "speed_override": 2.0}]
         config = {"default_pause_ms": 0}
 
-        duration = _estimate_duration(segments, speakers, config)
+        duration = _estimate_duration(segments, speakers, [0], config)
         assert duration == pytest.approx(30.0)
 
     def test_speed_override_zero_not_ignored(self):
@@ -281,7 +292,7 @@ class TestEstimateDuration:
         segments = [{"speaker": "host", "text": text, "speed_override": 0.25}]
         config = {"default_pause_ms": 0}
 
-        duration = _estimate_duration(segments, speakers, config)
+        duration = _estimate_duration(segments, speakers, [0], config)
         # At 0.25x speed: 150 * 60 / (150 * 0.25) = 240s
         assert duration == pytest.approx(240.0)
 
@@ -292,8 +303,35 @@ class TestEstimateDuration:
         segments = [{"speaker": "host", "text": text}]
         config = {"default_pause_ms": 0}  # No intro/outro keys
 
-        duration = _estimate_duration(segments, speakers, config)
+        duration = _estimate_duration(segments, speakers, [0], config)
         assert duration >= 0
+
+
+@pytest.mark.unit
+class TestBuildPauseList:
+    """One pause per render unit, taken from that unit's LAST segment."""
+
+    def test_one_pause_per_segment_and_no_trailing_pause(self):
+        segments = [{"speaker": "a", "text": "x"} for _ in range(3)]
+        units = [RenderUnit((0,), "a", False), RenderUnit((1,), "a", False), RenderUnit((2,), "a", False)]
+
+        assert _build_pause_list(units, segments, 400) == [400, 400, 0]
+
+    def test_dialogue_unit_takes_its_last_segments_pause(self):
+        segments = [
+            {"speaker": "a", "text": "x", "pause_after": 111},
+            {"speaker": "b", "text": "x", "pause_after": 222},
+            {"speaker": "a", "text": "x"},
+        ]
+        units = [RenderUnit((0, 1), "a", True), RenderUnit((2,), "a", False)]
+
+        # 111 belongs to a turn inside the run; the model paces that gap.
+        assert _build_pause_list(units, segments, 400) == [222, 0]
+
+    def test_single_unit_gets_no_pause_at_all(self):
+        segments = [{"speaker": "a", "text": "x", "pause_after": 5000}]
+
+        assert _build_pause_list([RenderUnit((0,), "a", False)], segments, 400) == [0]
 
 
 @pytest.mark.unit

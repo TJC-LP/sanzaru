@@ -68,17 +68,49 @@ class TestPlanRenderUnits:
 
     def test_non_dialogue_model_never_batches(self):
         # Only eleven_v3 supports dialogue.
-        speakers = [speaker("a", "elevenlabs", model="eleven_multilingual_v2")]
-        units = plan(speakers, ["a", "a", "a"])
+        speakers = [
+            speaker("a", "elevenlabs", model="eleven_multilingual_v2"),
+            speaker("b", "elevenlabs", model="eleven_multilingual_v2"),
+        ]
+        units = plan(speakers, ["a", "b", "a"])
         assert shape(units) == [("S", (0,)), ("S", (1,)), ("S", (2,))]
 
     def test_differing_models_split_the_run(self):
         speakers = [
             speaker("a", "elevenlabs", model="eleven_v3"),
-            speaker("b", "elevenlabs", model="eleven_multilingual_v2"),
+            speaker("b", "elevenlabs", model="eleven_v3"),
+            speaker("c", "elevenlabs", model="eleven_multilingual_v2"),
         ]
-        units = plan(speakers, ["a", "a", "b", "a", "a"])
+        units = plan(speakers, ["a", "b", "c", "a", "b"])
         assert shape(units) == [("D", (0, 1)), ("S", (2,)), ("D", (3, 4))]
+
+    def test_single_speaker_run_never_batches(self):
+        """Consecutive turns by ONE voice have no turn-taking for the model to
+        pace, so batching them buys nothing and would swallow their pause_after."""
+        speakers = [speaker("a", "elevenlabs")]
+        units = plan(speakers, ["a", "a", "a"])
+        assert shape(units) == [("S", (0,)), ("S", (1,)), ("S", (2,))]
+
+    def test_single_speaker_stretch_inside_a_two_voice_run_still_batches(self):
+        """The rule is per run, not per adjacent pair: a monologue in the middle
+        of a real exchange is still part of one conversation."""
+        speakers = [speaker("a", "elevenlabs"), speaker("b", "elevenlabs")]
+        units = plan(speakers, ["a", "a", "a", "b"])
+        assert shape(units) == [("D", (0, 1, 2, 3))]
+
+    def test_turn_over_the_per_chunk_budget_renders_alone(self):
+        """eleven_v3 chunks at 3000 chars in segments mode; a 4000-char turn fits
+        the 5000-char dialogue budget but must not ship as one DialogueInput, or
+        the two modes disagree about what one request holds."""
+        speakers = [speaker("a", "elevenlabs"), speaker("b", "elevenlabs")]
+        units = plan(speakers, ["a", "b", "a"], texts=["short", "x" * 4000, "short"])
+        assert shape(units) == [("S", (0,)), ("S", (1,)), ("S", (2,))]
+
+    def test_turn_at_the_per_chunk_budget_still_batches(self):
+        # 3000 is the limit, not one past it.
+        speakers = [speaker("a", "elevenlabs"), speaker("b", "elevenlabs")]
+        units = plan(speakers, ["a", "b"], texts=["x" * 3000, "short"])
+        assert shape(units) == [("D", (0, 1))]
 
     def test_run_splits_at_the_character_budget(self):
         # 5000-char budget for eleven_v3; 4 turns of 2000 chars must split 2+2,
@@ -132,6 +164,21 @@ class TestValidateRenderMode:
         )
         _validate_script(minimal_script)
         assert "cannot apply per speaker" in caplog.text
+
+    def test_no_voice_settings_warning_for_a_model_that_cannot_batch(self, minimal_script, caplog):
+        """eleven_multilingual_v2 never joins a dialogue run, so its
+        voice_settings are guaranteed to be honoured — warning about them is a lie."""
+        minimal_script["config"]["render_mode"] = "dialogue"
+        minimal_script["speakers"][0].update(
+            {
+                "provider": "elevenlabs",
+                "voice": "v1",
+                "model": "eleven_multilingual_v2",
+                "voice_settings": {"stability": 0.5},
+            }
+        )
+        _validate_script(minimal_script)
+        assert "cannot apply per speaker" not in caplog.text
 
 
 # ==================== RENDERING ====================
@@ -252,6 +299,36 @@ class TestDialogueRendering:
         assert kwargs["segment_bytes_list"] == [b"DIALOGUE"]
         assert kwargs["pause_ms_list"] == [0]
 
+    async def test_estimate_excludes_pauses_the_model_paces(self, mocker, podcast_env):
+        """estimated_duration_seconds is user-visible, so it must count only the
+        silence actually inserted: none, for a script that plans to one unit."""
+        from sanzaru.tools.podcast import generate_podcast
+
+        mocker.patch(
+            "sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client",
+            return_value=FakeDialogueClient(),
+        )
+
+        # 6 words at 1.0x -> 2.4s of speech; the three 400ms pause_afters are
+        # inside the run (or trailing), so none of them reach the output.
+        result = await generate_podcast(dialogue_script())
+
+        assert result.estimated_duration_seconds == pytest.approx(2.4)
+
+    async def test_estimate_counts_real_gaps_in_segments_mode(self, mocker, podcast_env):
+        """Same script rendered per segment: two 400ms gaps, and still nothing
+        trailing the last one."""
+        from sanzaru.tools.podcast import generate_podcast
+
+        mocker.patch(
+            "sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client",
+            return_value=FakeDialogueClient(),
+        )
+
+        result = await generate_podcast(dialogue_script(render_mode="segments"))
+
+        assert result.estimated_duration_seconds == pytest.approx(2.4 + 0.8)
+
     async def test_dialogue_stability_is_forwarded(self, mocker, podcast_env):
         from sanzaru.tools.podcast import generate_podcast
 
@@ -288,11 +365,13 @@ class TestDialogueRendering:
 
         script = dialogue_script()
         script["speakers"].append({"id": "host", "name": "Host", "voice": "ash", "speed": 1.0, "instructions": "Warm"})
+        # Distinct pauses inside the run: a unit's gap comes from its LAST turn,
+        # so 111 must be swallowed by the model's own pacing and 222 kept.
         script["segments"] = [
-            {"speaker": "host", "text": "Intro."},
-            {"speaker": "a", "text": "First."},
-            {"speaker": "b", "text": "Second."},
-            {"speaker": "host", "text": "Outro."},
+            {"speaker": "host", "text": "Intro.", "pause_after": 100},
+            {"speaker": "a", "text": "First.", "pause_after": 111},
+            {"speaker": "b", "text": "Second.", "pause_after": 222},
+            {"speaker": "host", "text": "Outro.", "pause_after": 333},
         ]
 
         await generate_podcast(script)
@@ -300,7 +379,10 @@ class TestDialogueRendering:
         assert len(client.dialogue_calls) == 1
         assert openai_client.audio.speech.create.await_count == 2
         # 3 units: openai segment, dialogue run, openai segment — in order.
-        assert podcast_env.call_args.kwargs["segment_bytes_list"] == [b"OPENAI", b"DIALOGUE", b"OPENAI"]
+        kwargs = podcast_env.call_args.kwargs
+        assert kwargs["segment_bytes_list"] == [b"OPENAI", b"DIALOGUE", b"OPENAI"]
+        # 333 is the trailing pause of the final unit, which never applies.
+        assert kwargs["pause_ms_list"] == [100, 222, 0]
 
     async def test_falls_back_when_no_run_qualifies(self, mocker, podcast_env, caplog):
         from sanzaru.tools.podcast import generate_podcast

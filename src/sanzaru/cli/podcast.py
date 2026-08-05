@@ -67,9 +67,10 @@ async def podcast_generate(
     \b
     render_mode="dialogue" batches consecutive eleven_v3 turns into one request so
     the model paces the exchange itself — noticeably more natural than fixed gaps.
-    Turns that cannot join a run (OpenAI speakers, other models, lone turns) still
-    render per segment, so mixed episodes keep working. Inside a dialogue run,
-    pause_after and per-speaker voice_settings do not apply.
+    Turns that cannot join a run (OpenAI speakers, other models, lone turns,
+    single-speaker stretches, turns over 3000 chars) still render per segment, so
+    mixed episodes keep working. Inside a dialogue run, pause_after and
+    per-speaker voice_settings do not apply.
     \b
     Provider precedence: speaker.provider > config.provider > --provider. Speakers
     may differ, so one episode can mix OpenAI and ElevenLabs voices. ElevenLabs

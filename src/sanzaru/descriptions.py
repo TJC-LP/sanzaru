@@ -803,8 +803,9 @@ script must be a JSON object matching this structure:
 - "dialogue": consecutive turns that share a dialogue-capable provider and model
   (currently ElevenLabs eleven_v3) are sent as ONE request, so the model paces
   the conversation itself — turn-taking, reactions landing on the previous line.
-  Noticeably more natural. Turns that cannot join a run (OpenAI speakers, other
-  models, a lone turn) still render per segment, so mixed episodes keep working.
+  Noticeably more natural. Turns that cannot join a run still render per segment,
+  so mixed episodes keep working: OpenAI speakers, other models, a lone turn, a
+  stretch by one speaker (no turn-taking to pace), a turn over 3000 characters.
 
   Inside a dialogue run: `pause_after` is ignored (the model owns the pacing) and
   per-speaker `voice_settings`/`speed` do not apply — the endpoint takes a single

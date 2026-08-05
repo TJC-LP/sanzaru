@@ -85,6 +85,11 @@ ELEVENLABS_DIALOGUE_MAX_CHARS = 5000
 # turn gains nothing from the dialogue endpoint and loses per-speaker settings.
 MIN_DIALOGUE_TURNS = 2
 
+# ...and at least this many distinct speakers. A run of consecutive turns by one
+# speaker has no turn-taking for the model to pace, so batching it buys nothing
+# and silently drops the pause_after between those paragraph beats.
+MIN_DIALOGUE_SPEAKERS = 2
+
 # ElevenLabs speed lives in voice_settings and has a much narrower range than
 # OpenAI's 0.25-4.0. eleven_v3 does not support it at all.
 ELEVENLABS_SPEED_RANGE = (0.7, 1.2)

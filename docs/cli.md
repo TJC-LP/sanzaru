@@ -201,9 +201,9 @@ voices. The envelope includes the full transcript — pipe to a file for long ep
   Noticeably more natural back-and-forth.
 
 Grouping is per-run, not per-episode: turns that can't join a run — OpenAI speakers, other models,
-a lone turn — still render per segment, so mixed episodes keep working. On an 11-segment demo with
-an OpenAI host and two `eleven_v3` guests, 8 segments batched into 3 dialogue requests while the
-3 host turns rendered individually.
+a lone turn, a stretch by a single speaker, a turn over 3000 characters — still render per segment,
+so mixed episodes keep working. On an 11-segment demo with an OpenAI host and two `eleven_v3`
+guests, 8 segments batched into 3 dialogue requests while the 3 host turns rendered individually.
 
 Inside a dialogue run, `pause_after` is ignored (the model owns pacing) and per-speaker
 `voice_settings`/`speed` don't apply — the endpoint takes a single `config.dialogue_stability`

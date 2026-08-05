@@ -58,10 +58,11 @@ concatenation.
 - **`dialogue`** — consecutive `eleven_v3` turns are sent as one request and the model paces the
   exchange itself. Distinctly more natural conversation.
 
-Grouping is per-run: turns that can't join one (OpenAI speakers, other models, lone turns) still
-render per segment, so mixed-provider episodes work in either mode. Inside a run, `pause_after` and
-per-speaker `voice_settings` don't apply — use `config.dialogue_stability` (0–1) instead. Runs
-split at turn boundaries under 5000 characters.
+Grouping is per-run: turns that can't join one (OpenAI speakers, other models, lone turns,
+single-speaker stretches, turns over 3000 characters) still render per segment, so mixed-provider
+episodes work in either mode. Inside a run, `pause_after` and per-speaker `voice_settings` don't
+apply — use `config.dialogue_stability` (0–1) instead. Runs split at turn boundaries under 5000
+characters.
 
 ## Available Tools
 
