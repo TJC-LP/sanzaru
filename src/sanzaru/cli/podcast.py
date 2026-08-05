@@ -68,7 +68,7 @@ async def podcast_generate(
     render_mode="dialogue" batches consecutive eleven_v3 turns into one request so
     the model paces the exchange itself — noticeably more natural than fixed gaps.
     Turns that cannot join a run (OpenAI speakers, other models, lone turns,
-    single-speaker stretches, turns over 3000 chars) still render per segment, so
+    stretches in one voice, turns over the 2000-char request budget) still render per segment, so
     mixed episodes keep working. Inside a dialogue run, pause_after and
     per-speaker voice_settings do not apply.
     \b
@@ -101,9 +101,11 @@ async def podcast_generate(
     if not isinstance(parsed, dict):
         raise CLIError("usage", "SCRIPT must be a JSON object (PodcastScript)", exit_code=EXIT_USAGE)
 
-    if render_mode is not None:
-        # The flag is an override, so it wins over config.render_mode.
-        parsed.setdefault("config", {})
+    # The flag is an override, so it wins over config.render_mode. Only merged
+    # into a config that is already there: fabricating one would mask
+    # _validate_script's "missing required field: 'config'" with whatever
+    # unrelated error it hits next.
+    if render_mode is not None and "config" in parsed:
         if not isinstance(parsed["config"], dict):
             raise CLIError("usage", "SCRIPT 'config' must be a JSON object", exit_code=EXIT_USAGE)
         parsed["config"]["render_mode"] = render_mode

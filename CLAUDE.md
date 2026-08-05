@@ -173,12 +173,16 @@ Everything downstream (limiters, stitching, pause list) works in units, and a un
 from its *last* segment.
 
 Turns that cannot join a run fall back to segment units, which is what keeps dialogue mode
-compatible with mixed-provider episodes. A run is only batched when it has ≥`MIN_DIALOGUE_TURNS`
-turns **and** ≥`MIN_DIALOGUE_SPEAKERS` distinct voices — a monologue has no turn-taking to pace, so
-batching it would cost a dialogue request and swallow its `pause_after`s for nothing. Excluded
-outright: OpenAI speakers, non-`eleven_v3` models, and any turn longer than the provider's
-per-chunk budget (`max_chunk_chars`), so a turn that segments mode would split never ships as one
-oversized `DialogueInput`.
+compatible with mixed-provider episodes. A run is only batched when it carries
+≥`MIN_DIALOGUE_SPEAKERS` distinct *resolved voices* (not speaker ids — two speaker entries can
+share one voice id) — a monologue has no turn-taking to pace, so batching it would cost a dialogue
+request and swallow its `pause_after`s for nothing; at 2 that rule also excludes a lone turn.
+Excluded outright: OpenAI speakers and non-`eleven_v3` models. Runs are split at turn boundaries to
+stay within `ELEVENLABS_DIALOGUE_MAX_CHARS` (2000, the ceiling `/v1/text-to-dialogue` documents for
+reliable generation — past it the stream can terminate early, which reads as a short but successful
+take, so `synthesize_dialogue` refuses over-budget requests outright). That budget is the only
+length rule, and it sits below every `max_chunk_chars`: a turn too long to share a dialogue request
+opens a run of its own, which closes as a single-voice run — a segment unit, chunked normally.
 
 Dialogue is a **separate** `DialogueProvider` Protocol (`runtime_checkable`, narrowed by
 `as_dialogue_provider`) rather than a method on `TTSProvider`, so OpenAI isn't forced to stub a

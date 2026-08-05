@@ -270,6 +270,24 @@ def test_podcast_render_mode_on_non_object_config_is_usage_error():
 
 
 @pytest.mark.integration
+def test_podcast_render_mode_does_not_mask_a_missing_config():
+    """The flag must not fabricate a config: doing so hides the real diagnostic
+    behind whatever validation error the script trips over next."""
+    script = {"title": "T", "speakers": [], "segments": []}
+
+    result = CliRunner().invoke(
+        cli,
+        ["podcast", "generate", "-", "--render-mode", "dialogue"],
+        input=json.dumps(script),
+    )
+
+    assert result.exit_code == 2, result.stdout
+    parsed = json.loads(result.stdout)
+    assert parsed["error"]["type"] == "usage"
+    assert "missing required field: 'config'" in parsed["error"]["message"]
+
+
+@pytest.mark.integration
 def test_podcast_generate_invalid_json_is_usage_error():
     result = CliRunner().invoke(cli, ["podcast", "generate", "{not json"])
 

@@ -30,7 +30,6 @@ from ..audio.constants import (
     ELEVENLABS_MODELS,
     ELEVENLABS_SPEED_RANGE,
     MIN_DIALOGUE_SPEAKERS,
-    MIN_DIALOGUE_TURNS,
     OPENAI_SPEED_RANGE,
     PODCAST_TARGET_FRAME_RATE,
     RENDER_MODES,
@@ -454,12 +453,12 @@ def _plan_render_units(
 
     In "dialogue" mode, maximal runs of consecutive segments that share a
     dialogue-capable provider *and* model are batched into one request, so the
-    model paces the exchange itself. Runs are further split to stay under the
+    model paces the exchange itself. Runs are further split to stay within the
     provider's per-request character budget, always at a turn boundary. Anything
-    that cannot participate — an OpenAI speaker, a non-dialogue model, an
-    oversized turn, a lone turn, a run with only one voice in it — falls back to
-    its own segment unit, which is what makes dialogue mode compose with
-    mixed-provider episodes.
+    that cannot participate — an OpenAI speaker, a non-dialogue model, a turn
+    that alone fills the budget, a lone turn, a run with only one voice in it —
+    falls back to its own segment unit, which is what makes dialogue mode
+    compose with mixed-provider episodes.
     """
     if render_mode == "segments":
         return [RenderUnit((i,), seg["speaker"], False) for i, seg in enumerate(segments)]
@@ -473,14 +472,16 @@ def _plan_render_units(
         nonlocal run, run_key, run_chars
         if not run:
             return
-        # A single turn gains nothing from the dialogue endpoint and would lose
-        # its per-speaker voice_settings, so render it normally. A run by one
-        # speaker is the same bargain: there is no turn-taking left for the
-        # model to pace, so it would cost a dialogue request and drop every
-        # pause_after between those paragraph beats for nothing.
-        speakers_in_run = {segments[i]["speaker"] for i in run}
-        is_dialogue = len(run) >= MIN_DIALOGUE_TURNS and len(speakers_in_run) >= MIN_DIALOGUE_SPEAKERS
-        if is_dialogue:
+        # A run in one voice has no turn-taking left for the model to pace, so
+        # it would cost a dialogue request and drop every pause_after between
+        # those paragraph beats for nothing. Distinct *voices*, not speaker ids:
+        # two speaker entries can point at the same ElevenLabs voice, and the
+        # endpoint only hears the voice. At MIN_DIALOGUE_SPEAKERS=2 this also
+        # covers the lone turn, which would lose its per-speaker voice_settings.
+        voices_in_run = {
+            providers[segments[i]["speaker"]].resolve_voice(speaker_map[segments[i]["speaker"]]["voice"]) for i in run
+        }
+        if len(voices_in_run) >= MIN_DIALOGUE_SPEAKERS:
             units.append(RenderUnit(tuple(run), segments[run[0]]["speaker"], True))
         else:
             units.extend(RenderUnit((i,), segments[i]["speaker"], False) for i in run)
@@ -501,17 +502,13 @@ def _plan_render_units(
         length = len(segment["text"])
         budget = dialogue.max_dialogue_chars(model)
 
-        # A turn longer than the provider's per-chunk budget would ship as one
-        # DialogueInput, while the identical turn in segments mode is split by
-        # synthesize_speech. Whether the dialogue endpoint rejects it is
-        # unverified — the SDK declares no per-input limit — but the two modes
-        # must not disagree about what fits in one request for one model, so it
-        # renders as its own segment unit and gets chunked normally.
-        if length > provider.max_chunk_chars(model):
-            flush()
-            units.append(RenderUnit((i,), segment["speaker"], False))
-            continue
-
+        # The budget is the only length rule: it is below every provider's
+        # per-chunk budget, so a turn too long to share a dialogue request is
+        # also one segments mode would happily send whole. Such a turn opens a
+        # run of its own, which the next turn (or the final flush) closes into a
+        # single-voice run — i.e. a segment unit, chunked normally. That is also
+        # why a batched run can never exceed the budget: only the first turn of
+        # a run skips the check below.
         if run_key is not None and (key != run_key or run_chars + length > budget):
             flush()
         run_key = key
@@ -594,7 +591,7 @@ async def generate_podcast(
             )
         else:
             logger.warning(
-                "render_mode='dialogue' but no run of 2+ consecutive turns by 2+ speakers shares a "
+                "render_mode='dialogue' but no run of 2+ consecutive turns in 2+ distinct voices shares a "
                 "dialogue-capable provider and model (eleven_v3) - rendering per segment"
             )
 

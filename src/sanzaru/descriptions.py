@@ -805,12 +805,13 @@ script must be a JSON object matching this structure:
   the conversation itself — turn-taking, reactions landing on the previous line.
   Noticeably more natural. Turns that cannot join a run still render per segment,
   so mixed episodes keep working: OpenAI speakers, other models, a lone turn, a
-  stretch by one speaker (no turn-taking to pace), a turn over 3000 characters.
+  stretch in one voice (no turn-taking to pace), a turn that alone fills the
+  2000-character request budget.
 
   Inside a dialogue run: `pause_after` is ignored (the model owns the pacing) and
   per-speaker `voice_settings`/`speed` do not apply — the endpoint takes a single
   `config.dialogue_stability` for the whole request. Runs are split at turn
-  boundaries to stay under 5000 characters per request.
+  boundaries to stay under 2000 characters per request.
 
   Prefer "segments" when you need exact gap control or per-speaker tuning;
   prefer "dialogue" for natural back-and-forth conversation.

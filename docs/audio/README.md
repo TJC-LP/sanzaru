@@ -59,10 +59,10 @@ concatenation.
   exchange itself. Distinctly more natural conversation.
 
 Grouping is per-run: turns that can't join one (OpenAI speakers, other models, lone turns,
-single-speaker stretches, turns over 3000 characters) still render per segment, so mixed-provider
+stretches in one voice, turns that alone fill the 2000-character request budget) still render per segment, so mixed-provider
 episodes work in either mode. Inside a run, `pause_after` and per-speaker `voice_settings` don't
-apply — use `config.dialogue_stability` (0–1) instead. Runs split at turn boundaries under 5000
-characters.
+apply — use `config.dialogue_stability` (0–1) instead. Runs split at turn boundaries to stay under
+2000 characters, the ceiling ElevenLabs documents for a reliable dialogue request.
 
 ## Available Tools
 

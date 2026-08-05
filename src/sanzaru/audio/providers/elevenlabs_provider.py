@@ -161,6 +161,17 @@ class ElevenLabsTTSProvider:
         if stability is not None and not 0.0 <= stability <= 1.0:
             raise ValueError(f"dialogue stability must be between 0.0 and 1.0, got {stability}")
 
+        # Over-budget requests fail by *terminating the stream early*, which
+        # _convert_dialogue cannot distinguish from a complete take — it would
+        # return a truncated conversation as a success. The planner already
+        # splits runs at this budget; this is the backstop for direct callers.
+        total_chars = sum(len(turn.text) for turn in turns)
+        if total_chars > ELEVENLABS_DIALOGUE_MAX_CHARS:
+            raise ValueError(
+                f"dialogue request is {total_chars} characters across {len(turns)} turns, over the "
+                f"{ELEVENLABS_DIALOGUE_MAX_CHARS}-character limit; split it at a turn boundary"
+            )
+
         client = get_elevenlabs_client()
         return await self._with_retries(lambda: self._convert_dialogue(client, turns, model, stability))
 

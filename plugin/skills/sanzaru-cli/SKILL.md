@@ -74,8 +74,9 @@ one episode can mix both. HTTP 429 means you exceeded your tier's concurrency �
 
 `podcast generate --render-mode dialogue` sends consecutive `eleven_v3` turns as **one** request
 so the model paces the exchange itself — distinctly more natural than fixed silence gaps. Turns
-that cannot join a run (OpenAI speakers, other models, a lone turn) still render per segment, so
-mixed episodes keep working. Inside a run, `pause_after` and per-speaker `voice_settings` do not
+that cannot join a run (OpenAI speakers, other models, a lone turn, a stretch in one voice, a turn
+that alone fills the 2000-character request budget) still render per segment, so mixed episodes
+keep working. Inside a run, `pause_after` and per-speaker `voice_settings` do not
 apply; use `config.dialogue_stability` (0–1) instead. Stay on the default `segments` when you need
 exact gaps, per-speaker tuning, or cheap per-segment retry.
 
