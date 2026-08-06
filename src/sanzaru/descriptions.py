@@ -950,9 +950,11 @@ later acts own, filled in automatically), and `handoff` (where to leave off).
        "talking_points": [string], // 3-4 concrete claims/examples, one sentence each
        "target_seconds": number,   // Soft duration budget for the act
        "max_turns": number,        // Planned turn budget; roughly target_seconds/turn_seconds + 1.
-                                   // NOT a hard cap: an act extends to 1.5x this to reach
-                                   // target_seconds when turns run short, so budget cost
-                                   // against 1.5x. max_turns=1 never extends.
+                                   // NOT a hard cap: an act extends up to 1.5x this to reach
+                                   // target_seconds when turns run short (max_turns=1 never
+                                   // extends). Cost tracks target_seconds, not this, so do not
+                                   // inflate max_cost_usd by 1.5x — but DO expect acts to now
+                                   // reach target_seconds, where they used to fall short.
        "prior_context": string,    // What earlier acts covered. Empty for act 1.
        "upcoming": string,         // What later acts own. Derived when empty.
        "handoff": string,          // Where to leave the conversation. Empty for the last act.
