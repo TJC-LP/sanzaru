@@ -473,11 +473,13 @@ async def run_act(
 
             # Cue the close when one more average turn would reach the target,
             # not after the target is already overshot: the closing turn itself
-            # still has to fit.
+            # still has to fit. Never on the opening turn, though — `target_seconds`
+            # only has to be > 0, and an act targeting less than one turn would
+            # otherwise open with its own sign-off. `over_time` and the hard cap
+            # still bind, so a genuine one-turn act (max_turns=1) still lands.
             avg_turn = (result.seconds / turn_index) if turn_index >= 2 else settings.turn_seconds
-            is_final_turn = (
-                over_time or (result.seconds + avg_turn >= brief.target_seconds) or turn_index == hard_cap - 1
-            )
+            close_is_due = turn_index >= 1 and result.seconds + avg_turn >= brief.target_seconds
+            is_final_turn = over_time or close_is_due or turn_index == hard_cap - 1
             agent = agents[order[turn_index % len(order)]]
 
             # A caller note on the last *planned* turn is the caller taking over

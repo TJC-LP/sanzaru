@@ -361,7 +361,7 @@ async def podcast_rundown(
     default=None,
     metavar="RUN_ID",
     help="Record under this run id instead of a minted one, so --resume is predictable. "
-    "A top-level \"run_id\" in a rundown BRIEF does the same thing.",
+    'A top-level "run_id" in a rundown BRIEF does the same thing.',
 )
 @click.option(
     "--stems/--no-stems", default=False, show_default=True, help="Also write one time-aligned track per host."

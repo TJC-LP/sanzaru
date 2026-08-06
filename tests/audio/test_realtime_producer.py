@@ -283,9 +283,7 @@ class TestRunAct:
         assert result.stop_reason == "complete"
         assert any("Final turn" in note for conn in handed for note in conn.steers)
 
-    async def test_extension_turns_fill_toward_the_time_target(
-        self, fake_realtime, connect_factory, hosts, settings
-    ):
+    async def test_extension_turns_fill_toward_the_time_target(self, fake_realtime, connect_factory, hosts, settings):
         # 5s turns against a 40s target with a 6-turn plan: the old hard stop
         # shipped 30s; extension lands the closing once one more average turn
         # would reach the target.
@@ -295,6 +293,16 @@ class TestRunAct:
         assert result.stop_reason == "target_seconds"
         assert len(result.turns) == 8
         assert result.seconds == 40.0
+
+    async def test_a_short_act_still_opens_before_it_closes(self, fake_realtime, connect_factory, hosts, settings):
+        # target_seconds only has to be > 0. Under a target smaller than one
+        # turn, the predictive cue would make turn 0 the closing turn and the
+        # act would open by signing off.
+        act = ActBrief(id="tiny", title="t", topic="x", target_seconds=8.0, max_turns=6)
+        factory, handed = connect_factory(fake_realtime.Connection(seconds=5.0), fake_realtime.Connection(seconds=5.0))
+        result = await run_act(act, hosts, settings, connect=factory)
+        assert len(result.turns) == 2
+        assert "Final turn" not in handed[0].steers[0]
 
     async def test_extension_turns_are_steered_away_from_recap(
         self, fake_realtime, connect_factory, brief, hosts, settings
@@ -419,7 +427,15 @@ class TestRunAct:
         factory, _ = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
         result = await run_act(brief, hosts, settings, connect=factory)
         assert [t.speaker_id for t in result.turns] == [
-            "avery", "rory", "rory", "avery", "avery", "rory", "rory", "avery", "avery",
+            "avery",
+            "rory",
+            "rory",
+            "avery",
+            "avery",
+            "rory",
+            "rory",
+            "avery",
+            "avery",
         ]
 
     async def test_speaking_order_beats_start_index(self, fake_realtime, connect_factory, brief, hosts, settings):
