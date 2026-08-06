@@ -221,7 +221,7 @@ class TestPodcastSimulate:
         # Silently dropping a run id is the defect this feature exists to fix,
         # so a wrong-typed or unusable one has to surface as a usage error.
         mocker.patch("sanzaru.tools.simulate_podcast.simulate_podcast", return_value=fake_result())
-        for bad in (12345, "../../etc/passwd", "with space"):
+        for bad in (12345, "", "../../etc/passwd", "with space"):
             path = tmp_path / "r.json"
             path.write_text(json.dumps({**RUNDOWN, "run_id": bad}))
             result = runner.invoke(cli, ["podcast", "simulate", f"@{path}", "--dry-run"])
@@ -232,6 +232,16 @@ class TestPodcastSimulate:
         result = runner.invoke(
             cli, ["podcast", "simulate", "-p", "x", "--resume", "runA", "--run-id", "runB", "--dry-run"]
         )
+        assert result.exit_code == 2
+
+    def test_a_brief_that_resumes_conflicts_with_run_id_too(self, runner, mocker, fake_result, tmp_path):
+        # `resume: true` in a full BRIEF is the same two-ids ambiguity as the
+        # --resume flag, and checking only the flag missed it.
+        mocker.patch("sanzaru.tools.simulate_podcast.simulate_podcast", return_value=fake_result())
+        path = tmp_path / "b.json"
+        path.write_text(json.dumps({"premise": "x", "resume": True, "run_id": "runA"}))
+
+        result = runner.invoke(cli, ["podcast", "simulate", f"@{path}", "--run-id", "runB", "--dry-run"])
         assert result.exit_code == 2
 
     def test_a_full_brief_is_used_as_is(self, runner, mocker, fake_result, tmp_path):

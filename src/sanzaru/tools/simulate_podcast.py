@@ -340,22 +340,29 @@ def _act_meta_name(slug: str, run_id: str, act_id: str) -> str:
 
 
 def _take_name(checkpoint_name: str, take: int) -> str:
-    """`foo.mp3`, 2 -> `foo_take2.mp3`."""
-    stem, _, ext = checkpoint_name.rpartition(".")
+    """`foo.mp3`, 2 -> `foo_take2.mp3`; an extensionless name keeps its shape."""
+    stem, dot, ext = checkpoint_name.rpartition(".")
+    if not dot:
+        return f"{checkpoint_name}_take{take}"
     return f"{stem}_take{take}.{ext}"
 
 
-async def _next_take_number(storage: StorageBackend, checkpoint_name: str) -> int:
-    """The first take number `checkpoint_name` has not already been parked under.
+async def _next_take_number(storage: StorageBackend, *checkpoint_names: str) -> int:
+    """The first take number NONE of `checkpoint_names` has been parked under.
 
     A fixed `_take1` would be correct for the single retry one invocation can
     run, and wrong the moment a resumed run retries the same act again: the
     second backup would overwrite the first take — the one a caller keeps
     precisely because QC verdicts disagree run-to-run — and the storage layer
     has no delete, so it would not be recoverable.
+
+    Scanning every name in the pair rather than just the audio is what keeps the
+    pairing honest from both sides: a `_take1.json` whose `.mp3` is gone (hand
+    pruned, or a pair that lost its audio) would otherwise hand back 1 and
+    overwrite that sidecar.
     """
     take = 1
-    while await storage.exists("audio", _take_name(checkpoint_name, take)):
+    while any([await storage.exists("audio", _take_name(name, take)) for name in checkpoint_names]):
         take += 1
     return take
 
@@ -1005,23 +1012,26 @@ async def simulate_podcast(
             # `_load_checkpoint`, so resume still sees exactly one truth).
             preserved: list[str] = []
             for flagged_act_id in qc_report.flagged_acts:
-                audio_name = _act_audio_name(slug, run_id, flagged_act_id)
-                # ONE take number for the pair, derived from the audio: computing
-                # it per name lets an interrupted or half-written pair drift apart
-                # (`…_take2.mp3` beside `…_take1.json`), and with no delete op that
-                # mis-pairing is permanent. Shielded for the same reason the
-                # original checkpoint writes are — an mp3 with no sidecar is
-                # paid-for audio nothing can interpret.
-                take = await _next_take_number(ckpt_storage, audio_name)
+                names = (_act_audio_name(slug, run_id, flagged_act_id), _act_meta_name(slug, run_id, flagged_act_id))
+                # ONE take number for the pair: computing it per name lets a
+                # half-written pair drift apart (`…_take2.mp3` beside
+                # `…_take1.json`), and with no delete op that mis-pairing is
+                # permanent.
+                take = await _next_take_number(ckpt_storage, *names)
+                payloads = [
+                    (_take_name(name, take), await ckpt_storage.read("audio", name))
+                    for name in names
+                    if await ckpt_storage.exists("audio", name)
+                ]
+                # Only the WRITES are shielded, and only because an mp3 without
+                # its sidecar is paid-for audio nothing can interpret. Reading a
+                # whole act's audio inside the shield would make Ctrl-C wait on a
+                # download-and-reupload per flagged act on the remote backend.
                 with anyio.CancelScope(shield=True):
-                    for checkpoint_name in (audio_name, _act_meta_name(slug, run_id, flagged_act_id)):
-                        if await ckpt_storage.exists("audio", checkpoint_name):
-                            backup_name = _take_name(checkpoint_name, take)
-                            await checkpoints.write_audio_file(
-                                backup_name, await ckpt_storage.read("audio", checkpoint_name)
-                            )
-                            preserved.append(backup_name)
-                            logger.info("qc-retry: previous take preserved as %s", backup_name)
+                    for backup_name, payload in payloads:
+                        await checkpoints.write_audio_file(backup_name, payload)
+                        preserved.append(backup_name)
+                        logger.info("qc-retry: previous take preserved as %s", backup_name)
             # Only the log knew these existed, which made choosing between takes
             # undiscoverable from the tool's own output.
             if preserved and on_progress is not None:

@@ -17,7 +17,7 @@ from sanzaru.audio.realtime.producer import (
     turn_timeout_seconds,
     turn_token_cap,
 )
-from sanzaru.audio.realtime.types import ActBrief, HostSpec, RealtimeUsage
+from sanzaru.audio.realtime.types import MAX_ACT_TURNS, ActBrief, HostSpec, RealtimeUsage
 from sanzaru.exceptions import CostCeilingError, RealtimeAPIError
 
 pytestmark = pytest.mark.audio
@@ -336,6 +336,77 @@ class TestRunAct:
         factory, handed = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
         await run_act(brief, hosts, settings, connect=factory, is_last_act=False)
         assert not any("natural rest" in note for conn in handed for note in conn.steers)
+
+    async def test_the_last_act_is_cued_to_close_wherever_the_close_lands(
+        self, fake_realtime, connect_factory, hosts, settings
+    ):
+        """The cue belongs to the turn that lands the act, not to an index.
+
+        With no note on the last planned turn, an early close used to hand the
+        turn whatever mid-act note it carried — and the hosts are now told not
+        to wrap up until cued, so the episode simply stopped.
+        """
+        act = ActBrief(
+            id="early",
+            title="t",
+            topic="x",
+            target_seconds=40.0,
+            max_turns=6,
+            turn_notes={1: "push back on the cost claim"},
+        )
+        factory, handed = connect_factory(
+            fake_realtime.Connection(seconds=25.0), fake_realtime.Connection(seconds=25.0)
+        )
+        await run_act(act, hosts, settings, connect=factory, is_last_act=True)
+        assert any("sign off" in note for conn in handed for note in conn.steers)
+
+    async def test_a_middle_act_is_cued_to_its_handoff_wherever_the_close_lands(
+        self, fake_realtime, connect_factory, hosts, settings
+    ):
+        act = ActBrief(
+            id="early",
+            title="t",
+            topic="x",
+            target_seconds=40.0,
+            max_turns=6,
+            handoff="on the open question",
+            turn_notes={1: "push back on the cost claim"},
+        )
+        factory, handed = connect_factory(
+            fake_realtime.Connection(seconds=25.0), fake_realtime.Connection(seconds=25.0)
+        )
+        await run_act(act, hosts, settings, connect=factory, is_last_act=False)
+        assert any("on the open question" in note for conn in handed for note in conn.steers)
+
+    async def test_points_skipped_by_an_early_close_are_reported(
+        self, fake_realtime, connect_factory, hosts, settings, caplog
+    ):
+        # QC reports these as missed only after the act is paid for.
+        act = ActBrief(
+            id="early",
+            title="t",
+            topic="x",
+            target_seconds=40.0,
+            max_turns=8,
+            talking_points=["the first thing", "the second thing", "the third thing"],
+        )
+        factory, _ = connect_factory(fake_realtime.Connection(seconds=25.0), fake_realtime.Connection(seconds=25.0))
+        with caplog.at_level("WARNING", logger="sanzaru"):
+            await run_act(act, hosts, settings, connect=factory)
+        assert "never came up" in caplog.text
+        assert "the third thing" in caplog.text
+
+    async def test_a_maxed_out_act_short_of_target_still_reports_max_turns(
+        self, fake_realtime, connect_factory, hosts, settings
+    ):
+        # At MAX_ACT_TURNS the extension clamp collapses hard_cap onto max_turns,
+        # which must not read as "no cap was hit" — burning 200 turns short of
+        # target is the loudest undershoot there is. (2 turns here; same shape.)
+        act = ActBrief(id="clamped", title="t", topic="x", target_seconds=600.0, max_turns=MAX_ACT_TURNS)
+        factory, _ = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
+        result = await run_act(act, hosts, settings, connect=factory)
+        assert len(result.turns) == MAX_ACT_TURNS
+        assert result.stop_reason == "max_turns"
 
     async def test_a_note_displaced_by_an_early_close_is_reported(
         self, fake_realtime, connect_factory, hosts, settings, caplog

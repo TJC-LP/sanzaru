@@ -279,7 +279,7 @@ def _steering_note(
     if override is not None:
         if override:
             return override
-        return _closing_note(brief, is_last_act=True) if (is_final_turn and is_last_act) else None
+        return _closing_note(brief, is_last_act=is_last_act) if (is_final_turn and is_last_act) else None
 
     if is_final_turn:
         return _closing_note(brief, is_last_act=is_last_act)
@@ -488,12 +488,12 @@ async def run_act(
             # still bind, so a one-turn act still lands on its one turn.
             avg_turn = (result.seconds / turn_index) if turn_index >= 1 else settings.turn_seconds
             close_is_due = turn_index >= 1 and result.seconds + avg_turn >= brief.target_seconds
-            # Only a cap that actually cut the act short of its plan counts as
-            # running out of turns; an act that ran its whole planned budget
-            # (hard_cap == max_turns, i.e. no extension available) completed it.
-            ran_out_of_turns = (
-                turn_index == hard_cap - 1 and hard_cap > brief.max_turns and not over_time and not close_is_due
-            )
+            # The cap cut the act short of its target. Exempt only the
+            # deliberate single-turn act: `hard_cap > max_turns` would also
+            # exempt a 200-turn act, where the MAX_ACT_TURNS clamp collapses the
+            # two — and burning 200 turns short of target is the loudest
+            # undershoot there is.
+            ran_out_of_turns = turn_index == hard_cap - 1 and brief.max_turns > 1 and not over_time and not close_is_due
             is_final_turn = over_time or close_is_due or turn_index == hard_cap - 1
             agent = agents[order[turn_index % len(order)]]
 
@@ -501,37 +501,54 @@ async def run_act(
             # the landing. Extension moves the landing, so the note rides with
             # the closing turn wherever it ends up rather than firing mid-act.
             closing_override = brief.turn_notes.get(brief.max_turns - 1) if brief.max_turns > 1 else None
-            if closing_override is not None and is_final_turn:
-                # Turns running LONGER than assumed cue the close early, onto a
-                # turn that may carry a note of its own. The closing note wins —
-                # something has to land the act — but the displaced note was a
-                # caller instruction, and dropping it in silence is the same
-                # failure the rotation pinning above exists to prevent.
+            if is_final_turn:
+                # The closing cue belongs to whichever turn LANDS the act, not to
+                # an index. Timing moves that turn in both directions — extension
+                # pushes it out, long turns pull it in — and the hosts are told to
+                # keep going until they are cued, so a final turn that instead
+                # carries some mid-act note ends the episode mid-conversation.
+                if closing_override is not None:
+                    # An empty takeover means "say nothing"; honored mid-episode,
+                    # where nothing is waiting on a cue, but not on the last act.
+                    note = closing_override or (_closing_note(brief, is_last_act=is_last_act) if is_last_act else None)
+                else:
+                    note = _closing_note(brief, is_last_act=is_last_act)
+                # Whatever the caller wrote for THIS turn loses to the close, and
+                # dropping a producer instruction in silence is the failure the
+                # rotation pinning above exists to prevent.
                 displaced = brief.turn_notes.get(turn_index)
-                if displaced is not None and turn_index != brief.max_turns - 1:
+                if displaced and turn_index != brief.max_turns - 1:
                     logger.warning(
-                        "act %r: the close landed early on turn %d, so its note (%r) was displaced by "
-                        "the closing note - shorten the act or move the note earlier to keep both",
+                        "act %r: the close landed on turn %d, so its note (%r) was displaced by the "
+                        "closing note - move the note earlier, or retime the act, to keep both",
                         brief.id,
                         turn_index,
                         displaced,
                     )
-                # An empty closing note means "say nothing" — but the last act's
-                # hosts are instructed to wait for a producer cue, so suppressing
-                # it entirely would end the episode mid-conversation.
-                note = closing_override or (_closing_note(brief, is_last_act=is_last_act) if is_last_act else None)
+                # Points scheduled past an early close never get air. QC reports
+                # them as missed after the act is paid for; say so now.
+                skipped = sorted(p for t, p in schedule.items() if t > turn_index)
+                if skipped:
+                    logger.warning(
+                        "act %r: the close landed on turn %d, ahead of schedule, so %d talking point(s) "
+                        "never came up: %s",
+                        brief.id,
+                        turn_index,
+                        len(skipped),
+                        "; ".join(brief.talking_points[p] for p in skipped),
+                    )
             elif closing_override is not None and turn_index == brief.max_turns - 1:
                 note = EXTENSION_NOTE
             else:
                 note = _steering_note(
                     brief,
                     turn_index,
-                    is_final_turn=is_final_turn,
+                    is_final_turn=False,
                     is_first_act=is_first_act,
                     is_last_act=is_last_act,
                     point_index=schedule.get(turn_index),
                 )
-                if note is None and not is_final_turn and turn_index >= brief.max_turns - 1:
+                if note is None and turn_index >= brief.max_turns - 1:
                     # At the end of the planned budget and beyond it, the point
                     # schedule has nothing left to say, and an unsteered turn
                     # there is where recap loops start.

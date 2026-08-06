@@ -926,10 +926,19 @@ class TestReportedCost:
         await storage.write("audio", "show_run_act2.json", b"{}")
         await storage.write("audio", "show_run_act2_take1.mp3", b"take-1")
 
-        take = await sim._next_take_number(storage, "show_run_act2.mp3")
+        take = await sim._next_take_number(storage, "show_run_act2.mp3", "show_run_act2.json")
 
         assert sim._take_name("show_run_act2.mp3", take) == "show_run_act2_take2.mp3"
         assert sim._take_name("show_run_act2.json", take) == "show_run_act2_take2.json"
+
+    async def test_the_take_scan_covers_the_sidecar_too(self, media_dir):
+        """The mirror case: a `_take1.json` whose `.mp3` is gone must not be overwritten."""
+        storage = sim.checkpoint_storage()
+        await storage.write("audio", "show_run_act2.mp3", b"live")
+        await storage.write("audio", "show_run_act2.json", b"{}")
+        await storage.write("audio", "show_run_act2_take1.json", b"{}")
+
+        assert await sim._next_take_number(storage, "show_run_act2.mp3", "show_run_act2.json") == 2
 
     async def test_a_resumed_run_reports_the_spend_it_replayed(self, rundown, media_dir, stub_run_act):
         first = await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))

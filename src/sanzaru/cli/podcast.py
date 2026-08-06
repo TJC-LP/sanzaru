@@ -469,10 +469,11 @@ async def podcast_simulate(
             # such field) and let it seed the brief below.
             lifted_run_id = parsed.pop("run_id", None)
             payload = {"rundown": parsed}
-            # Anything non-empty is passed through, including the wrong type:
-            # `RunId` rejects it as a usage error, which is the whole point —
-            # dropping a malformed run id silently is the defect being fixed.
-            if lifted_run_id is not None and lifted_run_id != "":
+            # Anything present is passed through, including the wrong type and
+            # the empty string: `RunId` rejects those as a usage error, which is
+            # the whole point — dropping a malformed run id silently is the
+            # defect being fixed, and "" is malformed rather than absent.
+            if lifted_run_id is not None:
                 payload["run_id"] = lifted_run_id
         else:
             payload = parsed
@@ -505,19 +506,22 @@ async def podcast_simulate(
     payload["qc"] = qc
     payload["qc_retry"] = qc_retry
     payload["dry_run"] = dry_run
+    # Two run ids on one invocation cannot both be honored, and silently picking
+    # one is how the stranded-audio defect happened in the first place. Checked
+    # against the resolved payload, not just the flag: a BRIEF carrying
+    # `resume: true` with its own run_id is the same ambiguity.
+    resuming_run = resume_id or (payload.get("run_id") if payload.get("resume") else None)
+    if run_id_opt and resuming_run and run_id_opt != resuming_run:
+        raise CLIError(
+            "usage",
+            f"--run-id {run_id_opt!r} and the run being resumed ({resuming_run!r}) name different "
+            "runs; a resume already carries the id of the run to continue",
+            exit_code=EXIT_USAGE,
+        )
     if run_id_opt:
         # Explicit flag beats a run_id lifted from the BRIEF.
         payload["run_id"] = run_id_opt
     if resume_id:
-        # Two run ids on one command line cannot both be honored, and silently
-        # picking one is how the stranded-audio defect happened in the first place.
-        if run_id_opt and run_id_opt != resume_id:
-            raise CLIError(
-                "usage",
-                f"--run-id {run_id_opt!r} and --resume {resume_id!r} name different runs; "
-                "--resume already carries the id of the run to continue",
-                exit_code=EXIT_USAGE,
-            )
         payload["resume"] = True
         payload["run_id"] = resume_id
 
