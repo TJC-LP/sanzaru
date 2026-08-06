@@ -983,7 +983,10 @@ later acts own, filled in automatically), and `handoff` (where to leave off).
   "max_concurrent_sessions": number, // Realtime sessions across all acts (default 6)
 
   "dry_run": boolean,              // Plan and project only. Records nothing. START HERE.
-  "run_id": string,                // Identify a run for resume
+  "run_id": string,                // Name the run so resume is predictable (the minted id is
+                                   // printed on stderr only). Recording twice under one id is
+                                   // refused, not merged — resume it or pick another. Planning
+                                   // (dry_run) against an existing id is always fine.
   "resume": boolean,               // Reuse checkpointed acts, record only what is missing
   "stems": boolean,                // Also write one time-aligned track per host
   "qc": boolean,                   // Verify the result (default true)
@@ -1004,11 +1007,15 @@ usually write better direction than they do, and three fields on each act hand y
   heated." "No jokes, the subject is grim." "Rory should refuse to concede the point."
 - `turn_notes` — `{"0": "...", "4": "..."}`, keyed by zero-based turn index, replacing the
   default note for that turn. This is the strongest lever in the tool: it is how you make turn 4
-  a genuine objection rather than a topic change. Set `""` to say nothing that turn. A note on
-  the last planned turn (`max_turns - 1`) takes over the closing, so it becomes your job to land
+  a genuine objection rather than a topic change. Set `""` to say nothing that turn — except on
+  the last act's closing turn, where the hosts wait for a cue and silence would end the episode
+  mid-conversation. A note on the last planned turn (`max_turns - 1`) takes over the closing, so it becomes your job to land
   the act — and it follows the closing turn if the act extends, rather than firing mid-act.
   Setting `turn_notes` at all pins the act to open on the first host in `hosts` (acts otherwise
-  rotate who opens), because an index-keyed note is written against an assumed rotation.
+  rotate who opens), because an index-keyed note is written against an assumed rotation. Notes on
+  extension turns (indices at or past `max_turns`) are allowed and fire normally — but only
+  `max_turns - 1` takes over the closing, so a note on the turn where the close happens to land
+  is superseded by it (and logged).
 - `speaking_order` — `["avery", "rory", "rory", "avery"]`, cycled. Lets a host follow their own
   point before handing back, instead of strict alternation.
 

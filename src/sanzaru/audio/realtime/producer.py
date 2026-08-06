@@ -512,6 +512,19 @@ async def run_act(
                 result.stop_reason = (
                     "target_seconds" if over_time else ("max_turns" if ran_out_of_turns else "complete")
                 )
+                if result.stop_reason == "max_turns":
+                    # The two failures either side of this one — a displaced note
+                    # and skipped talking points — both warn. An act that spent
+                    # its whole extension and still came up short is at least as
+                    # actionable, and it only reached the result before now.
+                    logger.warning(
+                        "act %r: spent all %d turns and landed at %.0fs of a %.0fs target - raise "
+                        "max_turns, lower target_seconds, or accept a shorter act",
+                        brief.id,
+                        hard_cap,
+                        result.seconds,
+                        brief.target_seconds,
+                    )
                 break
             if turn_index == brief.max_turns:
                 logger.info(

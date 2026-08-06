@@ -956,6 +956,18 @@ class TestReportedCost:
         resumed = await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="testrun", qc=False))
         assert resumed.run_id == "testrun"
 
+    async def test_planning_against_an_existing_run_id_is_allowed(self, rundown, media_dir, stub_run_act):
+        """A dry run writes no manifest, so re-planning a recorded run costs nothing.
+
+        Blocking it would break the obvious way to decide whether to resume.
+        """
+        await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))
+
+        planned = await sim.simulate_podcast(
+            sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun", dry_run=True)
+        )
+        assert planned.dry_run
+
     async def test_a_resumed_run_reports_the_spend_it_replayed(self, rundown, media_dir, stub_run_act):
         first = await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))
         resumed = await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="testrun", qc=False))

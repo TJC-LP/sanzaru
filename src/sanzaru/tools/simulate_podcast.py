@@ -132,6 +132,12 @@ class SimulationBrief(BaseModel):
     max_cost_usd: float | None = Field(default=None, gt=0)
 
     run_id: RunId | None = None
+    """Name this run instead of taking a minted id, so `resume` is predictable.
+
+    The minted id is printed on stderr only, which strands paid audio for a
+    caller that reads stdout. Recording under an id that already has a run is
+    refused rather than overwriting its manifest and checkpoints — resume it, or
+    pick another id. Planning (`dry_run`) against an existing id is always fine."""
     resume: bool = False
     stems: bool = False
     dry_run: bool = False
@@ -260,6 +266,12 @@ class SimulatedPodcastResult(BaseModel):
     transcript: str = ""
     stems: dict[str, str] = Field(default_factory=dict)
     checkpoints: list[str] = Field(default_factory=list)
+    preserved_takes: list[str] = Field(default_factory=list)
+    """Takes `qc_retry` replaced, parked under `_takeN` names and left on disk.
+
+    A retry is not automatically the better take — QC verdicts disagree
+    run-to-run — so these are here to be chosen from. They are outside what
+    `resume` reads, so the run still holds exactly one truth."""
     qc: QCReport | None = None
     rundown: Rundown | None = None
     dry_run: bool = False
@@ -351,8 +363,10 @@ def _take_name(checkpoint_name: str, take: int) -> str:
     return f"{stem}_take{take}.{ext}"
 
 
-async def _next_take_number(storage: StorageBackend, *checkpoint_names: str) -> int:
+async def _next_take_number(storage: StorageBackend, *checkpoint_names: str) -> int | None:
     """The first take number NONE of `checkpoint_names` has been parked under.
+
+    None when the scan runs past `_MAX_PRESERVED_TAKES` — see below.
 
     A fixed `_take1` would be correct for the single retry one invocation can
     run, and wrong the moment a resumed run retries the same act again: the
@@ -366,18 +380,17 @@ async def _next_take_number(storage: StorageBackend, *checkpoint_names: str) -> 
     overwrite that sidecar.
     """
     take = 1
-    # A list comprehension, not a generator: `any` short-circuits, and every name
-    # has to be checked or the pairing this function keeps honest stops being
-    # checked from one side.
+    # A list comprehension, not a generator: you cannot `await` inside the
+    # generator expression `any()` would consume. (Short-circuiting is not the
+    # issue — it would return the same number either way.)
     while any([await storage.exists("audio", _take_name(name, take)) for name in checkpoint_names]):
         take += 1
         if take > _MAX_PRESERVED_TAKES:
-            # Bounded rather than spinning, in case a backend ever answers
-            # `exists` wrong.
-            raise RuntimeError(
-                f"{checkpoint_names[0]}: more than {_MAX_PRESERVED_TAKES} preserved takes; "
-                "move some out of the media directory"
-            )
+            # Bounded in case a backend ever answers `exists` wrong. Returning
+            # None rather than raising: by here the acts are recorded and paid
+            # for, and losing the episode over bookkeeping would be the worse
+            # failure. The caller skips preservation and says so.
+            return None
     return take
 
 
@@ -900,18 +913,6 @@ async def simulate_podcast(
             raise ValueError(
                 f"no run manifest for run_id {run_id!r} — pass the rundown explicitly, or check the audio directory"
             )
-    elif brief.run_id and await ckpt_storage.exists("audio", _manifest_name(run_id)):
-        # Recording over a run id that already exists would overwrite its
-        # manifest and every act checkpoint under it — with no delete op, the
-        # first run's audio is then stranded against a manifest that no longer
-        # describes it. Naming a run is now the recommended workflow
-        # (`--run-id`), which makes this the easy mistake rather than an exotic
-        # one, so it fails before anything is recorded.
-        raise ValueError(
-            f"run {run_id!r} already exists — resume it (resume=true / `--resume {run_id}`) to record "
-            "only what is missing, or choose a different run_id; recording over it would overwrite "
-            "the checkpoints it already paid for"
-        )
 
     if rundown is None:
         rundown = await resolve_rundown(effective)
@@ -955,6 +956,21 @@ async def simulate_podcast(
             rundown=rundown,
             dry_run=True,
             resume_command=resume_command,
+        )
+
+    if not effective.resume and brief.run_id and await ckpt_storage.exists("audio", _manifest_name(run_id)):
+        # Recording over a run id that already exists would overwrite its
+        # manifest and every act checkpoint under it — with no delete op, the
+        # first run's audio is then stranded against a manifest that no longer
+        # describes it. Naming a run is the recommended workflow (`--run-id`),
+        # which makes this the easy mistake rather than an exotic one, so it
+        # fails before anything is recorded. Deliberately below the dry-run
+        # return: re-planning against a recorded run costs nothing, writes no
+        # manifest, and is how you decide whether to resume it.
+        raise ValueError(
+            f"run {run_id!r} already exists — resume it (resume=true / `--resume {run_id}`) to record "
+            "only what is missing, or choose a different run_id; recording over it would overwrite "
+            "the checkpoints it already paid for"
         )
 
     # Written before any recording starts so an interrupted first act is still
@@ -1016,6 +1032,7 @@ async def simulate_podcast(
     )
 
     qc_report: QCReport | None = None
+    preserved_takes: list[str] = []
     if effective.qc:
         if on_progress is not None:
             on_progress(f"qc: transcribing {len(recorded)} acts with {effective.transcribe_model}")
@@ -1036,7 +1053,6 @@ async def simulate_podcast(
             # checkpoint names, which used to make the original unrecoverable;
             # park it under a `_takeN` suffix first (never read by
             # `_load_checkpoint`, so resume still sees exactly one truth).
-            preserved: list[str] = []
             for flagged_act_id in qc_report.flagged_acts:
                 names = (_act_audio_name(slug, run_id, flagged_act_id), _act_meta_name(slug, run_id, flagged_act_id))
                 # ONE take number for the pair: computing it per name lets a
@@ -1044,6 +1060,14 @@ async def simulate_podcast(
                 # `…_take1.json`), and with no delete op that mis-pairing is
                 # permanent.
                 take = await _next_take_number(ckpt_storage, *names)
+                if take is None:
+                    logger.warning(
+                        "qc-retry: %r already has %d preserved takes - re-recording WITHOUT preserving "
+                        "this one; move some out of the media directory",
+                        flagged_act_id,
+                        _MAX_PRESERVED_TAKES,
+                    )
+                    continue
                 payloads = [
                     (_take_name(name, take), await ckpt_storage.read("audio", name))
                     for name in names
@@ -1056,12 +1080,13 @@ async def simulate_podcast(
                 with anyio.CancelScope(shield=True):
                     for backup_name, payload in payloads:
                         await checkpoints.write_audio_file(backup_name, payload)
-                        preserved.append(backup_name)
+                        preserved_takes.append(backup_name)
                         logger.info("qc-retry: previous take preserved as %s", backup_name)
             # Only the log knew these existed, which made choosing between takes
-            # undiscoverable from the tool's own output.
-            if preserved and on_progress is not None:
-                on_progress(f"previous takes preserved: {', '.join(preserved)}")
+            # undiscoverable. They also ride out on the result, so a programmatic
+            # caller can find the takes it is being invited to choose between.
+            if preserved_takes and on_progress is not None:
+                on_progress(f"previous takes preserved: {', '.join(preserved_takes)}")
             recorded = await _record_all(
                 rundown,
                 effective,
@@ -1147,6 +1172,7 @@ async def simulate_podcast(
         transcript=_transcript(recorded),
         stems=stems,
         checkpoints=[a.checkpoint for a in recorded if a.checkpoint],
+        preserved_takes=preserved_takes,
         qc=qc_report,
         rundown=rundown,
         resume_command=resume_command,

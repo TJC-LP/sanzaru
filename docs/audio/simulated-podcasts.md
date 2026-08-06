@@ -357,6 +357,10 @@ sanzaru: qc warn: act2 — see result.qc for why (--qc-retry re-records just tho
 `--qc-retry` re-records only the flagged acts, once. That is cheap precisely because acts are
 independent — the same property that makes checkpointing work.
 
+One flag is worth handling by hand: a `tail_truncated` act was cut off by
+`max_output_tokens`, so re-recording at the same cap is likely to reproduce it and bill you
+twice. Raise `--turn-tokens` before retrying that one.
+
 **A retry is not automatically the better take.** QC verdicts disagree run-to-run on the same
 material, and a live retry has lost a mandated figure the first take had. So the take being
 replaced is preserved beside it as `<slug>_<run>_<act>_take1.mp3` (`_take2`, … on later

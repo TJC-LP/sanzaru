@@ -400,8 +400,8 @@ class TestRunAct:
         self, fake_realtime, connect_factory, hosts, settings
     ):
         # At MAX_ACT_TURNS the extension clamp collapses hard_cap onto max_turns,
-        # which must not read as "no cap was hit" — burning 200 turns short of
-        # target is the loudest undershoot there is. (2 turns here; same shape.)
+        # which must not read as "no cap was hit" — burning every one of those
+        # turns short of target is the loudest undershoot there is.
         act = ActBrief(id="clamped", title="t", topic="x", target_seconds=600.0, max_turns=MAX_ACT_TURNS)
         factory, _ = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
         result = await run_act(act, hosts, settings, connect=factory)

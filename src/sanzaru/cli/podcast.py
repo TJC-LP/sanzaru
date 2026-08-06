@@ -513,10 +513,6 @@ async def podcast_simulate(
     payload["qc"] = qc
     payload["qc_retry"] = qc_retry
     payload["dry_run"] = dry_run
-    # Two run ids on one invocation cannot both be honored, and silently picking
-    # one is how the stranded-audio defect happened in the first place. Checked
-    # against the resolved payload, not just the flag: a BRIEF carrying
-    # `resume: true` with its own run_id is the same ambiguity.
     # `--run-id` beating a BRIEF's own id is a documented override. Disagreeing
     # with the run being RESUMED is not an override, it is two answers to "which
     # run is this?", and silently picking one is how the stranded-audio defect

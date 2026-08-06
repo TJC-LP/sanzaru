@@ -200,7 +200,9 @@ class ActBrief(BaseModel):
 
     turn_notes: dict[int, str] = Field(default_factory=dict)
     """Producer notes by zero-based turn index, replacing the generated one for
-    that turn. An empty string suppresses the note entirely.
+    that turn. An empty string suppresses the note entirely — except on the last
+    act's closing turn, where the hosts are told to wait for a cue and silence
+    would end the episode mid-conversation.
 
     A note on the last *planned* turn (`max_turns - 1`) takes over the closing,
     so it is on you to land the act — and it follows the closing turn if the act
