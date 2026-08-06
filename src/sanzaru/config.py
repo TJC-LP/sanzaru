@@ -98,6 +98,15 @@ def set_elevenlabs_client(client: "AsyncElevenLabs | None") -> None:
 def get_elevenlabs_client() -> "AsyncElevenLabs":
     """Get an ElevenLabs async client, reusing one connection pool per process.
 
+    `ELEVENLABS_BASE_URL` overrides the API endpoint, mirroring what
+    `OPENAI_BASE_URL` does for the OpenAI seam above. The difference is where
+    the read happens: `AsyncOpenAI` picks its variable up from the environment
+    itself, while the Fern-generated ElevenLabs client only accepts `base_url`
+    as a constructor argument, so this function has to do it. Sandboxed
+    deployments point the variable at a loopback credential proxy that holds
+    the real key, which is why the endpoint must be overridable without
+    touching call sites.
+
     Returns:
         The installed override (see set_elevenlabs_client), else a cached client
 
@@ -120,7 +129,10 @@ def get_elevenlabs_client() -> "AsyncElevenLabs":
     except ImportError as exc:  # pragma: no cover - exercised via monkeypatched import
         raise ImportError(_ELEVENLABS_INSTALL_HINT) from exc
 
-    _elevenlabs_cached = AsyncElevenLabs(api_key=api_key)
+    # Unset or blank leaves base_url=None, so the SDK keeps its own production
+    # default rather than being handed an empty string it would treat as a URL.
+    base_url = (os.getenv("ELEVENLABS_BASE_URL") or "").strip() or None
+    _elevenlabs_cached = AsyncElevenLabs(api_key=api_key, base_url=base_url)
     return _elevenlabs_cached
 
 

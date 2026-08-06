@@ -172,7 +172,8 @@ usage error pointing to gpt-image-1.5.
 
 ElevenLabs needs `ELEVENLABS_API_KEY` and `uv pip install 'sanzaru[elevenlabs]'`; either missing is
 a config error (exit 3). Set `SANZARU_ELEVENLABS_MAX_CONCURRENCY` if you hit HTTP 429 — their cap
-is per subscription tier.
+is per subscription tier. `ELEVENLABS_BASE_URL` overrides the API endpoint (the ElevenLabs
+counterpart to `OPENAI_BASE_URL`), for sandboxes that reach the API through a credential proxy.
 
 ```bash
 sanzaru audio speak "[excited] You will not believe this." \
