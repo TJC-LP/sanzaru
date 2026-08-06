@@ -317,6 +317,46 @@ class TestRunAct:
         assert len(result.turns) == 1
         assert "Final turn" in handed[0].steers[0]
 
+    async def test_the_last_act_still_signs_off_when_the_closing_note_is_blank(
+        self, fake_realtime, connect_factory, brief, hosts, settings
+    ):
+        # "" means "say nothing this turn" — but the last act's hosts are told to
+        # wait for a producer cue, so honoring it there ends the episode
+        # mid-conversation.
+        brief.turn_notes = {5: ""}
+        factory, handed = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
+        await run_act(brief, hosts, settings, connect=factory, is_last_act=True)
+        assert any("sign off" in note for conn in handed for note in conn.steers)
+
+    async def test_a_blank_closing_note_still_says_nothing_mid_episode(
+        self, fake_realtime, connect_factory, brief, hosts, settings
+    ):
+        # Not the last act: nothing is waiting on a cue, so "" is honored.
+        brief.turn_notes = {5: ""}
+        factory, handed = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
+        await run_act(brief, hosts, settings, connect=factory, is_last_act=False)
+        assert not any("natural rest" in note for conn in handed for note in conn.steers)
+
+    async def test_a_note_displaced_by_an_early_close_is_reported(
+        self, fake_realtime, connect_factory, hosts, settings, caplog
+    ):
+        # 25s turns against a 40s target close on turn 1, which carries a note of
+        # its own. The closing note wins, but dropping the caller's in silence is
+        # the same failure the rotation pinning prevents.
+        act = ActBrief(
+            id="early",
+            title="t",
+            topic="x",
+            target_seconds=40.0,
+            max_turns=4,
+            turn_notes={1: "push back on the cost claim", 3: "land it on the open question"},
+        )
+        factory, _ = connect_factory(fake_realtime.Connection(seconds=25.0), fake_realtime.Connection(seconds=25.0))
+        with caplog.at_level("WARNING", logger="sanzaru"):
+            await run_act(act, hosts, settings, connect=factory)
+        assert "push back on the cost claim" in caplog.text
+        assert "displaced" in caplog.text
+
     async def test_extension_turns_are_steered_away_from_recap(
         self, fake_realtime, connect_factory, brief, hosts, settings
     ):

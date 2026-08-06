@@ -469,7 +469,10 @@ async def podcast_simulate(
             # such field) and let it seed the brief below.
             lifted_run_id = parsed.pop("run_id", None)
             payload = {"rundown": parsed}
-            if isinstance(lifted_run_id, str) and lifted_run_id:
+            # Anything non-empty is passed through, including the wrong type:
+            # `RunId` rejects it as a usage error, which is the whole point —
+            # dropping a malformed run id silently is the defect being fixed.
+            if lifted_run_id is not None and lifted_run_id != "":
                 payload["run_id"] = lifted_run_id
         else:
             payload = parsed
@@ -506,6 +509,15 @@ async def podcast_simulate(
         # Explicit flag beats a run_id lifted from the BRIEF.
         payload["run_id"] = run_id_opt
     if resume_id:
+        # Two run ids on one command line cannot both be honored, and silently
+        # picking one is how the stranded-audio defect happened in the first place.
+        if run_id_opt and run_id_opt != resume_id:
+            raise CLIError(
+                "usage",
+                f"--run-id {run_id_opt!r} and --resume {resume_id!r} name different runs; "
+                "--resume already carries the id of the run to continue",
+                exit_code=EXIT_USAGE,
+            )
         payload["resume"] = True
         payload["run_id"] = resume_id
 

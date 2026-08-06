@@ -45,15 +45,14 @@ from .budget import CostBudget
 from .pricing import OUTPUT_TOKENS_PER_SECOND
 from .types import (
     DEFAULT_TURN_SECONDS,
-    MAX_ACT_TURNS,
     REALTIME_SAMPLE_RATE,
     REALTIME_VOICES,
-    TURN_EXTENSION_FACTOR,
     ActBrief,
     ActResult,
     HostSpec,
     Turn,
     TurnAudio,
+    extension_cap,
 )
 
 if TYPE_CHECKING:
@@ -93,20 +92,6 @@ EXTENSION_NOTE = (
 talking points drifts into recap loops — the audible form is two hosts trading
 restatements and premature goodbyes — so extension turns get pushed toward new
 ground instead of left to run on momentum."""
-
-
-def _extension_cap(max_turns: int) -> int:
-    """Absolute turn ceiling for an act whose planned budget is `max_turns`.
-
-    `max_turns == 1` is returned unchanged: rounding 1.5 up would silently make
-    every one-turn act a two-turn act, and a caller who plans exactly one turn
-    is stating a shape, not estimating a duration. (It also keeps the
-    `turn_notes[max_turns - 1]` closing-takeover contract intact there, which
-    only reads as a takeover while turn 0 is still the final turn.)
-    """
-    if max_turns <= 1:
-        return max_turns
-    return min(MAX_ACT_TURNS, max(max_turns, int(max_turns * TURN_EXTENSION_FACTOR + 0.999)))
 
 
 def turn_token_cap(turn_seconds: float) -> int:
@@ -258,6 +243,20 @@ def build_instructions(
     return "\n".join(lines)
 
 
+def _closing_note(brief: ActBrief, *, is_last_act: bool) -> str:
+    """The cue that lands an act (or, on the last act, the episode).
+
+    Split out because the hosts are instructed to keep going until this arrives:
+    every path that reaches a final turn has to be able to produce it, not only
+    the default one.
+    """
+    if is_last_act:
+        return "Final turn of the episode: land the through-line and sign off warmly. Two sentences."
+    if brief.handoff:
+        return f"Final turn of this segment: bring it to a natural rest on — {brief.handoff}. Two sentences. Do not sign off."
+    return "Final turn of this segment: bring it to a natural rest. Two sentences. Do not sign off."
+
+
 def _steering_note(
     brief: ActBrief,
     turn_index: int,
@@ -272,18 +271,18 @@ def _steering_note(
     A caller-supplied `turn_notes` entry wins outright — including on the final
     turn, where taking it over means taking on the job of landing the act. An
     empty string is a deliberate "say nothing this turn", distinct from having
-    no opinion.
+    no opinion — except on the last act's closing turn, where the hosts are
+    told to wait for a cue and saying nothing would end the episode
+    mid-conversation.
     """
     override = brief.turn_notes.get(turn_index)
     if override is not None:
-        return override or None
+        if override:
+            return override
+        return _closing_note(brief, is_last_act=True) if (is_final_turn and is_last_act) else None
 
     if is_final_turn:
-        if is_last_act:
-            return "Final turn of the episode: land the through-line and sign off warmly. Two sentences."
-        if brief.handoff:
-            return f"Final turn of this segment: bring it to a natural rest on — {brief.handoff}. Two sentences. Do not sign off."
-        return "Final turn of this segment: bring it to a natural rest. Two sentences. Do not sign off."
+        return _closing_note(brief, is_last_act=is_last_act)
 
     if turn_index == 0:
         if is_first_act:
@@ -459,7 +458,7 @@ async def run_act(
         # get there when the model's turns run shorter than assumed. A
         # single-turn act is exempt — one turn is the caller asking for exactly
         # one, not an estimate to be filled out.
-        hard_cap = _extension_cap(brief.max_turns)
+        hard_cap = extension_cap(brief.max_turns)
 
         while True:
             over_time = result.seconds >= brief.target_seconds
@@ -489,7 +488,12 @@ async def run_act(
             # still bind, so a one-turn act still lands on its one turn.
             avg_turn = (result.seconds / turn_index) if turn_index >= 1 else settings.turn_seconds
             close_is_due = turn_index >= 1 and result.seconds + avg_turn >= brief.target_seconds
-            ran_out_of_turns = turn_index == hard_cap - 1 and not over_time and not close_is_due
+            # Only a cap that actually cut the act short of its plan counts as
+            # running out of turns; an act that ran its whole planned budget
+            # (hard_cap == max_turns, i.e. no extension available) completed it.
+            ran_out_of_turns = (
+                turn_index == hard_cap - 1 and hard_cap > brief.max_turns and not over_time and not close_is_due
+            )
             is_final_turn = over_time or close_is_due or turn_index == hard_cap - 1
             agent = agents[order[turn_index % len(order)]]
 
@@ -498,7 +502,24 @@ async def run_act(
             # the closing turn wherever it ends up rather than firing mid-act.
             closing_override = brief.turn_notes.get(brief.max_turns - 1) if brief.max_turns > 1 else None
             if closing_override is not None and is_final_turn:
-                note = closing_override or None
+                # Turns running LONGER than assumed cue the close early, onto a
+                # turn that may carry a note of its own. The closing note wins —
+                # something has to land the act — but the displaced note was a
+                # caller instruction, and dropping it in silence is the same
+                # failure the rotation pinning above exists to prevent.
+                displaced = brief.turn_notes.get(turn_index)
+                if displaced is not None and turn_index != brief.max_turns - 1:
+                    logger.warning(
+                        "act %r: the close landed early on turn %d, so its note (%r) was displaced by "
+                        "the closing note - shorten the act or move the note earlier to keep both",
+                        brief.id,
+                        turn_index,
+                        displaced,
+                    )
+                # An empty closing note means "say nothing" — but the last act's
+                # hosts are instructed to wait for a producer cue, so suppressing
+                # it entirely would end the episode mid-conversation.
+                note = closing_override or (_closing_note(brief, is_last_act=is_last_act) if is_last_act else None)
             elif closing_override is not None and turn_index == brief.max_turns - 1:
                 note = EXTENSION_NOTE
             else:

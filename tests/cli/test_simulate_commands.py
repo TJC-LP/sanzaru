@@ -217,6 +217,23 @@ class TestPodcastSimulate:
         assert result.exit_code == 0
         assert patched.call_args.args[0].run_id == "from-the-flag"
 
+    def test_a_malformed_run_id_in_a_brief_is_rejected_not_dropped(self, runner, mocker, fake_result, tmp_path):
+        # Silently dropping a run id is the defect this feature exists to fix,
+        # so a wrong-typed or unusable one has to surface as a usage error.
+        mocker.patch("sanzaru.tools.simulate_podcast.simulate_podcast", return_value=fake_result())
+        for bad in (12345, "../../etc/passwd", "with space"):
+            path = tmp_path / "r.json"
+            path.write_text(json.dumps({**RUNDOWN, "run_id": bad}))
+            result = runner.invoke(cli, ["podcast", "simulate", f"@{path}", "--dry-run"])
+            assert result.exit_code == 2, bad
+
+    def test_two_different_run_ids_on_one_command_line_is_a_usage_error(self, runner, mocker, fake_result):
+        mocker.patch("sanzaru.tools.simulate_podcast.simulate_podcast", return_value=fake_result())
+        result = runner.invoke(
+            cli, ["podcast", "simulate", "-p", "x", "--resume", "runA", "--run-id", "runB", "--dry-run"]
+        )
+        assert result.exit_code == 2
+
     def test_a_full_brief_is_used_as_is(self, runner, mocker, fake_result, tmp_path):
         patched = mocker.patch("sanzaru.tools.simulate_podcast.simulate_podcast", return_value=fake_result())
         path = tmp_path / "b.json"

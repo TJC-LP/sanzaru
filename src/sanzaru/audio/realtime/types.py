@@ -49,6 +49,26 @@ and the absolute ceiling (`MAX_ACT_TURNS`) still binds. Lives here rather than
 in `producer` so the act's own budget warning can account for it without
 importing back the other way."""
 
+
+def extension_cap(max_turns: int) -> int:
+    """Absolute turn ceiling for an act whose planned budget is `max_turns`.
+
+    The one definition of the ceiling: `run_act` stops here, `ActBrief` bounds
+    `turn_notes` by it, and the act's budget warning measures against it.
+    Recomputing `max_turns * TURN_EXTENSION_FACTOR` inline instead diverges at
+    both ends — the single-turn exemption below and the `MAX_ACT_TURNS` clamp.
+
+    `max_turns == 1` is returned unchanged: rounding 1.5 up would silently make
+    every one-turn act a two-turn act, and a caller who plans exactly one turn
+    is stating a shape, not estimating a duration. (It also keeps the
+    `turn_notes[max_turns - 1]` closing-takeover contract intact there, which
+    only reads as a takeover while turn 0 is still the final turn.)
+    """
+    if max_turns <= 1:
+        return max_turns
+    return min(MAX_ACT_TURNS, max(max_turns, int(max_turns * TURN_EXTENSION_FACTOR + 0.999)))
+
+
 DEFAULT_TURN_SECONDS = 15.0
 """Target upper bound for one turn, stated in the prompt. Enforced socially, not
 mechanically — a hard cut mid-sentence sounds far worse than a long turn. Turns
@@ -189,11 +209,18 @@ class ActBrief(BaseModel):
 
     @model_validator(mode="after")
     def _check_turn_notes(self) -> ActBrief:
-        out_of_range = sorted(i for i in self.turn_notes if i < 0 or i >= self.max_turns)
+        """Reject notes keyed to turns this act can never reach.
+
+        The bound is the *extended* ceiling, not `max_turns`: extension turns
+        are real turns a caller can legitimately direct, and rejecting them
+        with "would never fire" would be false.
+        """
+        ceiling = extension_cap(self.max_turns)
+        out_of_range = sorted(i for i in self.turn_notes if i < 0 or i >= ceiling)
         if out_of_range:
             raise ValueError(
                 f"act {self.id!r}: turn_notes {out_of_range} are outside this act's "
-                f"turns (0-{self.max_turns - 1}) and would never fire"
+                f"turns (0-{ceiling - 1}, including extension) and would never fire"
             )
         return self
 
@@ -201,21 +228,23 @@ class ActBrief(BaseModel):
     def _warn_on_turn_budget(self) -> ActBrief:
         """Flag an act that will run out of turns before it runs out of time.
 
-        Such an act stops on its duration budget rather than on its scripted
-        closing turn, and its last talking point never gets air — exactly the
-        calibration bug the first live run hit. Turn length is assumed to be
+        Such an act stops on the turn cap rather than on its scripted closing
+        turn, and its last talking point never gets air — exactly the
+        calibration bug the first live run hit. Measured against the *extended*
+        ceiling, since that is what actually binds. Turn length is assumed to be
         `DEFAULT_TURN_SECONDS`, so an episode that raises `turn_seconds` can see
         this fire spuriously; it stays a log line for that reason.
         """
-        if self.max_turns * TURN_EXTENSION_FACTOR * DEFAULT_TURN_SECONDS < self.target_seconds:
+        ceiling = extension_cap(self.max_turns)
+        if ceiling * DEFAULT_TURN_SECONDS < self.target_seconds:
             logger.warning(
-                "act %r: %d turns is unlikely to fill %.0fs even extended to %.0f turns (turns run "
+                "act %r: %d turns is unlikely to fill %.0fs even extended to %d turns (turns run "
                 "~%.0fs), so it will stop on the turn cap short of its target - raise max_turns or "
                 "lower target_seconds",
                 self.id,
                 self.max_turns,
                 self.target_seconds,
-                self.max_turns * TURN_EXTENSION_FACTOR,
+                ceiling,
                 DEFAULT_TURN_SECONDS,
             )
         return self

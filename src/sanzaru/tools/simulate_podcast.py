@@ -339,8 +339,14 @@ def _act_meta_name(slug: str, run_id: str, act_id: str) -> str:
     return f"{slug}_{run_id}_{act_id}.json"
 
 
-async def _next_take_name(storage: StorageBackend, checkpoint_name: str) -> str:
-    """`foo.mp3` -> the first free `foo_takeN.mp3`, counting from 1.
+def _take_name(checkpoint_name: str, take: int) -> str:
+    """`foo.mp3`, 2 -> `foo_take2.mp3`."""
+    stem, _, ext = checkpoint_name.rpartition(".")
+    return f"{stem}_take{take}.{ext}"
+
+
+async def _next_take_number(storage: StorageBackend, checkpoint_name: str) -> int:
+    """The first take number `checkpoint_name` has not already been parked under.
 
     A fixed `_take1` would be correct for the single retry one invocation can
     run, and wrong the moment a resumed run retries the same act again: the
@@ -348,11 +354,10 @@ async def _next_take_name(storage: StorageBackend, checkpoint_name: str) -> str:
     precisely because QC verdicts disagree run-to-run — and the storage layer
     has no delete, so it would not be recoverable.
     """
-    stem, _, ext = checkpoint_name.rpartition(".")
     take = 1
-    while await storage.exists("audio", f"{stem}_take{take}.{ext}"):
+    while await storage.exists("audio", _take_name(checkpoint_name, take)):
         take += 1
-    return f"{stem}_take{take}.{ext}"
+    return take
 
 
 def _with_format_suffix(filename: str | None, output_format: str) -> str | None:
@@ -1000,17 +1005,23 @@ async def simulate_podcast(
             # `_load_checkpoint`, so resume still sees exactly one truth).
             preserved: list[str] = []
             for flagged_act_id in qc_report.flagged_acts:
-                for checkpoint_name in (
-                    _act_audio_name(slug, run_id, flagged_act_id),
-                    _act_meta_name(slug, run_id, flagged_act_id),
-                ):
-                    if await ckpt_storage.exists("audio", checkpoint_name):
-                        backup_name = await _next_take_name(ckpt_storage, checkpoint_name)
-                        await checkpoints.write_audio_file(
-                            backup_name, await ckpt_storage.read("audio", checkpoint_name)
-                        )
-                        preserved.append(backup_name)
-                        logger.info("qc-retry: previous take preserved as %s", backup_name)
+                audio_name = _act_audio_name(slug, run_id, flagged_act_id)
+                # ONE take number for the pair, derived from the audio: computing
+                # it per name lets an interrupted or half-written pair drift apart
+                # (`…_take2.mp3` beside `…_take1.json`), and with no delete op that
+                # mis-pairing is permanent. Shielded for the same reason the
+                # original checkpoint writes are — an mp3 with no sidecar is
+                # paid-for audio nothing can interpret.
+                take = await _next_take_number(ckpt_storage, audio_name)
+                with anyio.CancelScope(shield=True):
+                    for checkpoint_name in (audio_name, _act_meta_name(slug, run_id, flagged_act_id)):
+                        if await ckpt_storage.exists("audio", checkpoint_name):
+                            backup_name = _take_name(checkpoint_name, take)
+                            await checkpoints.write_audio_file(
+                                backup_name, await ckpt_storage.read("audio", checkpoint_name)
+                            )
+                            preserved.append(backup_name)
+                            logger.info("qc-retry: previous take preserved as %s", backup_name)
             # Only the log knew these existed, which made choosing between takes
             # undiscoverable from the tool's own output.
             if preserved and on_progress is not None:
