@@ -356,7 +356,13 @@ _MAX_PRESERVED_TAKES = 50
 
 
 def _take_name(checkpoint_name: str, take: int) -> str:
-    """`foo.mp3`, 2 -> `foo_take2.mp3`; an extensionless name keeps its shape."""
+    """`foo.mp3`, 2 -> `foo_take2.mp3`; an extensionless name keeps its shape.
+
+    `Identifier` permits an act id ending in `_take1`, which would make that
+    act's live checkpoint indistinguishable from another act's preserved take.
+    Exotic enough to note rather than guard against, but it is the one input
+    that breaks the "`_takeN` names are never read by resume" promise.
+    """
     stem, dot, ext = checkpoint_name.rpartition(".")
     if not dot:
         return f"{checkpoint_name}_take{take}"
@@ -1044,16 +1050,27 @@ async def simulate_podcast(
             judge_model=effective.judge_model,
             limiter=anyio.CapacityLimiter(4),
         )
-        if effective.qc_retry and qc_report.flagged_acts:
+        # NOT every flagged act: a tail truncation is mechanical (the last turn
+        # hit the token cap), so re-recording it against the same cap mostly buys
+        # the same defect a second time. Those want `turn_tokens` raised by hand,
+        # which the flag itself still tells a human to do.
+        retryable = qc_report.retryable_acts if effective.qc_retry else []
+        skipped_retry = [a for a in qc_report.flagged_acts if a not in retryable]
+        if effective.qc_retry and skipped_retry and on_progress is not None:
+            on_progress(
+                f"qc flagged {', '.join(skipped_retry)} for truncation only - NOT re-recording "
+                "(raise turn_tokens and resume instead; the same cap would truncate again)"
+            )
+        if retryable:
             if on_progress is not None:
-                on_progress(f"qc flagged {', '.join(qc_report.flagged_acts)} - re-recording once")
+                on_progress(f"qc flagged {', '.join(retryable)} - re-recording once")
             # The retry take is not automatically better — QC verdicts have been
             # observed to disagree run-to-run on the same material — so the take
             # being replaced must survive it. Re-recording writes to the same
             # checkpoint names, which used to make the original unrecoverable;
             # park it under a `_takeN` suffix first (never read by
             # `_load_checkpoint`, so resume still sees exactly one truth).
-            for flagged_act_id in qc_report.flagged_acts:
+            for flagged_act_id in retryable:
                 names = (_act_audio_name(slug, run_id, flagged_act_id), _act_meta_name(slug, run_id, flagged_act_id))
                 # ONE take number for the pair: computing it per name lets a
                 # half-written pair drift apart (`…_take2.mp3` beside
@@ -1095,7 +1112,7 @@ async def simulate_podcast(
                 slug=slug,
                 run_id=run_id,
                 budget=budget,
-                only=qc_report.flagged_acts,
+                only=retryable,
                 reuse={a.result.act_id: a for a in recorded},
                 on_progress=on_progress,
             )

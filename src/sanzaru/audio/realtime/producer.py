@@ -566,15 +566,18 @@ async def run_act(
             # rotation pinning above exists to prevent.
             if decision.displaced:
                 logger.warning(
-                    "act %r: the close landed on turn %d, so its note (%r) was displaced by the "
-                    "closing note - move the note earlier, or retime the act, to keep both",
+                    "act %r: the close landed on turn %d, so its note (%r) gave way to the closing "
+                    "note - only turn %d takes over the close, so that is where a landing "
+                    "instruction has to go",
                     brief.id,
                     turn_index,
                     decision.displaced,
+                    brief.max_turns - 1,
                 )
             if is_final_turn:
-                # Points scheduled past an early close never get air. QC reports
-                # them as missed after the act is paid for; say so now.
+                # Everything the caller aimed past the close goes unspent. Talking
+                # points at least surface in QC's `missed_points`, after the act
+                # is paid for; notes surface nowhere at all. Say both now.
                 skipped = sorted(p for t, p in schedule.items() if t > turn_index)
                 if skipped:
                     logger.warning(
@@ -584,6 +587,15 @@ async def run_act(
                         turn_index,
                         len(skipped),
                         "; ".join(brief.talking_points[p] for p in skipped),
+                    )
+                unfired = sorted(i for i in brief.turn_notes if i > turn_index)
+                if unfired:
+                    logger.warning(
+                        "act %r: the close landed on turn %d, so turn_notes for turn(s) %s never fired: %s",
+                        brief.id,
+                        turn_index,
+                        ", ".join(str(i) for i in unfired),
+                        "; ".join(repr(brief.turn_notes[i]) for i in unfired),
                     )
             # One bound over the whole turn rather than over `speak()` alone: a
             # stalled session hangs on the steer, or on feeding the others, just

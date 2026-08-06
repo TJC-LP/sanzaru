@@ -109,15 +109,22 @@ sanzaru podcast simulate @rundown.json --model gpt-realtime-2.1-mini \
   --max-cost 2.00 --stems -o ./out/ep1.mp3
 ```
 
-**Recovery.** The run id prints on stderr *before* recording starts, and every act is
-checkpointed as it lands. On an interrupt, a crash, or exit 6 (cost ceiling — the envelope carries
-`spent_usd`, `completed_acts` and a `resume`), pick it back up with
+**Name the run yourself.** The minted run id prints on **stderr only**, and you parse stdout — so
+a crash between recording and reading strands audio you paid for. Pass `--run-id ep1` (or a
+top-level `"run_id"` in the rundown JSON) and `--resume ep1` always works. Recording twice under
+one id is refused rather than overwriting the first run; `--dry-run` against it is always fine.
+
+**Recovery.** Every act is checkpointed as it lands. On an interrupt, a crash, or exit 6 (cost
+ceiling — the envelope carries `spent_usd`, `completed_acts` and a `resume`), pick it back up with
 `sanzaru podcast simulate --resume RUN_ID`; only the missing acts re-record.
 
 **You are the producer.** A built-in producer handles floor control, walks the talking points, and
 lands each act — but those are defaults, and you will usually direct better. Each act in the
 rundown takes `direction` (how to play it), `turn_notes` (`{"0": "..."}` by turn index, replacing
 the generated note) and `speaking_order` (host ids, cycled, instead of strict alternation).
+`max_turns` is a *budget*, not a cap — an act extends up to 1.5x it to reach `target_seconds` — so
+put the landing instruction on turn `max_turns - 1`, which takes over the close and follows it
+wherever timing puts it. Setting any `turn_notes` also pins who opens the act.
 `turn_notes` is the strongest lever: it is the difference between "move onto the next point" and
 "object to what they just said". Edit them in the rundown — the tool blocks while acts record in
 parallel, so there is no live steering.
@@ -125,7 +132,12 @@ parallel, so there is no live steering.
 **QC** runs by default (~$0.005/min): it transcribes the rendered audio and judges it against the
 rundown, catching dropped audio, missed points, and the characteristic parallel-recording failure
 of two acts covering the same ground. `result.qc.flagged_acts` names what to listen to;
-`--qc-retry` re-records just those.
+`--qc-retry` re-records the ones a fresh take can fix.
+
+A retry is **not** automatically better — QC verdicts disagree run-to-run — so the take it replaces
+survives as `..._take1.mp3` beside it, listed in `result.preserved_takes`. Assemble the best cut per
+act from those. An act flagged only for `tail_truncated` is *not* auto-retried: it was cut off by
+the token cap, so raise `--turn-tokens` and resume instead of paying for the same defect twice.
 
 ## Media in, media out
 

@@ -1009,13 +1009,15 @@ usually write better direction than they do, and three fields on each act hand y
   default note for that turn. This is the strongest lever in the tool: it is how you make turn 4
   a genuine objection rather than a topic change. Set `""` to say nothing that turn — except on
   the last act's closing turn, where the hosts wait for a cue and silence would end the episode
-  mid-conversation. A note on the last planned turn (`max_turns - 1`) takes over the closing, so it becomes your job to land
+  mid-conversation. On the LAST act, a closing note you write has to cue the sign-off itself —
+  the hosts are told not to wrap up until cued, so "Land it on the open question." leaves them
+  waiting. A note on the last planned turn (`max_turns - 1`) takes over the closing, so it becomes your job to land
   the act — and it follows the closing turn if the act extends, rather than firing mid-act.
   Setting `turn_notes` at all pins the act to open on the first host in `hosts` (acts otherwise
   rotate who opens), because an index-keyed note is written against an assumed rotation. Notes on
   extension turns (indices at or past `max_turns`) are allowed and fire normally — but only
-  `max_turns - 1` takes over the closing, so a note on the turn where the close happens to land
-  is superseded by it (and logged).
+  `max_turns - 1` takes over the closing, so a note on whichever turn the close lands on is
+  superseded by it (and logged), as is any note aimed past the close.
 - `speaking_order` — `["avery", "rory", "rory", "avery"]`, cycled. Lets a host follow their own
   point before handing back, instead of strict alternation.
 

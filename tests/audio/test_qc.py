@@ -489,3 +489,16 @@ class TestTruncationCoupling:
 
         verdict = ActVerdict(act_id="a1", similarity=0.95, truncated_turns=2, tail_truncated=False)
         assert not verdict.flagged
+
+    def test_truncation_alone_is_flagged_but_not_auto_retried(self):
+        """A retry at the same token cap mostly buys the same truncation twice."""
+        from sanzaru.audio.realtime.qc import ActVerdict, QCReport
+
+        truncated = ActVerdict(act_id="a1", similarity=0.95, tail_truncated=True)
+        content = ActVerdict(act_id="a2", similarity=0.95, missed_points=["a point"])
+        report = QCReport(acts=[truncated, content], flagged_acts=["a1", "a2"])
+
+        assert truncated.flagged and not truncated.retry_may_help
+        assert content.flagged and content.retry_may_help
+        # Both want a human's attention; only one is worth re-recording.
+        assert report.retryable_acts == ["a2"]

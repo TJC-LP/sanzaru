@@ -85,6 +85,20 @@ class ActVerdict(BaseModel):
             or self.similarity < SIMILARITY_WARN_THRESHOLD
         )
 
+    @property
+    def retry_may_help(self) -> bool:
+        """Whether re-recording this act at the SAME settings could fix it.
+
+        Every other flag is a content judgement, where a fresh take is a real
+        second chance. A tail truncation is mechanical — the final turn hit
+        `max_output_tokens` — so re-recording against that same cap mostly buys
+        the defect twice. An act flagged *only* for truncation wants a human
+        raising `turn_tokens`, not an automatic retry.
+        """
+        return bool(
+            self.missed_points or self.repeats_earlier or self.off_brief or self.similarity < SIMILARITY_WARN_THRESHOLD
+        )
+
 
 class QCReport(BaseModel):
     """Episode-level QC outcome."""
@@ -95,9 +109,19 @@ class QCReport(BaseModel):
     summary: str = ""
     acts: list[ActVerdict] = Field(default_factory=list)
     flagged_acts: list[str] = Field(default_factory=list)
+    """Acts worth a human's attention."""
+
     transcribe_model: str = DEFAULT_TRANSCRIBE_MODEL
     judge_model: str = DEFAULT_JUDGE_MODEL
     transcribed_minutes: float = 0.0
+
+    @property
+    def retryable_acts(self) -> list[str]:
+        """The subset `qc_retry` should re-record: flags a fresh take can fix.
+
+        Not the same as `flagged_acts`, which is what a person should look at.
+        """
+        return [v.act_id for v in self.acts if v.retry_may_help]
 
 
 class _JudgedAct(BaseModel):

@@ -408,6 +408,25 @@ class TestRunAct:
         assert len(result.turns) == MAX_ACT_TURNS
         assert result.stop_reason == "max_turns"
 
+    async def test_landing_before_the_target_reports_complete(self, fake_realtime, connect_factory, hosts, settings):
+        """`complete` means it delivered its closing turn without reaching target.
+
+        The one stop_reason with no coverage, and the hardest to reach: with
+        equal-length turns the closing turn is exactly the average the cue was
+        predicted from, so `over_time` is always true by the break. It needs a
+        closing turn shorter than the running average — 30s, 30s, 30s, then 1s
+        against a 100s target.
+        """
+        act = ActBrief(id="lands", title="t", topic="x", target_seconds=100.0, max_turns=10)
+        factory, _ = connect_factory(
+            fake_realtime.Connection(seconds=[30.0, 30.0]),  # avery: turns 0, 2
+            fake_realtime.Connection(seconds=[30.0, 1.0]),  # rory: turns 1, 3 — the short close
+        )
+        result = await run_act(act, hosts, settings, connect=factory)
+        assert len(result.turns) == 4
+        assert result.seconds == 91.0
+        assert result.stop_reason == "complete"
+
     async def test_a_note_displaced_by_an_early_close_is_reported(
         self, fake_realtime, connect_factory, hosts, settings, caplog
     ):
@@ -425,8 +444,13 @@ class TestRunAct:
         factory, _ = connect_factory(fake_realtime.Connection(seconds=25.0), fake_realtime.Connection(seconds=25.0))
         with caplog.at_level("WARNING", logger="sanzaru"):
             await run_act(act, hosts, settings, connect=factory)
+        # The note on the turn that landed the act gave way to the close...
         assert "push back on the cost claim" in caplog.text
-        assert "displaced" in caplog.text
+        assert "gave way to the closing note" in caplog.text
+        # ...and the notes aimed past it never fired at all, which nothing
+        # reported before: only the displaced one was visible.
+        assert "never fired" in caplog.text
+        assert "land it on the open question" in caplog.text
 
     async def test_a_single_turn_acts_note_is_honored(self, fake_realtime, connect_factory, hosts, settings):
         # turn 0 IS `max_turns - 1` here, so it is the caller's closing takeover

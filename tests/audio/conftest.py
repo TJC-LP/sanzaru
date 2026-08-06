@@ -6,6 +6,7 @@ them runs without the optional [elevenlabs] extra installed.
 """
 
 import os
+from collections.abc import Sequence
 
 import pytest
 
@@ -194,7 +195,7 @@ class FakeRealtimeConnection:
     def __init__(
         self,
         *,
-        seconds: float = 2.0,
+        seconds: float | Sequence[float] = 2.0,
         transcripts: list[str] | None = None,
         marker: bytes = b"\x01\x02",
         error: str | None = None,
@@ -204,6 +205,9 @@ class FakeRealtimeConnection:
         hang: bool = False,
     ) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
+        # A sequence gives each turn its own length (the last value repeats), so
+        # a test can make a closing turn shorter than the running average — the
+        # only way to reach stop_reason="complete" with turns of one length.
         self.seconds = seconds
         self.transcripts = list(transcripts or [])
         self.marker = marker
@@ -247,7 +251,12 @@ class FakeRealtimeConnection:
             self._pending = [FakeEvent("error", error=self.error)]
             return
         # PCM16/24kHz mono, so bytes = seconds * 24000 * 2.
-        frames = int(self.seconds * 24000)
+        if isinstance(self.seconds, (int, float)):
+            turn_seconds = float(self.seconds)
+        else:
+            durations = list(self.seconds) or [2.0]
+            turn_seconds = float(durations[min(self.turn, len(durations) - 1)])
+        frames = int(turn_seconds * 24000)
         pcm = (self.marker * frames)[: frames * 2]
         text = self.transcripts[self.turn] if self.turn < len(self.transcripts) else f"turn {self.turn}"
         self.turn += 1
