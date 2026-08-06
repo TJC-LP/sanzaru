@@ -45,6 +45,7 @@ from .budget import CostBudget
 from .pricing import OUTPUT_TOKENS_PER_SECOND
 from .types import (
     DEFAULT_TURN_SECONDS,
+    MAX_ACT_TURNS,
     REALTIME_SAMPLE_RATE,
     REALTIME_VOICES,
     ActBrief,
@@ -82,6 +83,25 @@ still bounding a runaway."""
 
 DEFAULT_TURN_TOKENS = 0
 """0 → derive from `turn_seconds` (see `turn_token_cap`)."""
+
+TURN_EXTENSION_FACTOR = 1.5
+"""How far past `max_turns` an act may extend to fill its `target_seconds`.
+
+`max_turns` was a hard stop, which made act length a function of how long the
+model's turns happen to run: gpt-realtime's full-size turns measured ~10s
+against the mini's ~17.5s under the same 15s rule, so full-model acts stopped
+a third short of their target. The turn budget stays what the planner priced —
+extension turns only happen inside the time the act was already budgeted for,
+and the absolute ceiling (`MAX_ACT_TURNS`) still binds."""
+
+EXTENSION_NOTE = (
+    "Take this somewhere new: one concrete example, implication, or sharper objection. "
+    "Do not summarize, do not repeat anything already said, and do not start wrapping up."
+)
+"""Default steering for turns past the planned budget. An act that outlives its
+talking points drifts into recap loops — the audible form is two hosts trading
+restatements and premature goodbyes — so extension turns get pushed toward new
+ground instead of left to run on momentum."""
 
 
 def turn_token_cap(turn_seconds: float) -> int:
@@ -199,7 +219,12 @@ def build_instructions(
         lines.append("Do not sign off or thank listeners — the episode continues after this segment.")
     elif is_last_act:
         lines.append("")
-        lines.append("This is the end of the episode. Land the through-line and sign off warmly, once.")
+        lines.append(
+            "The episode ends after this segment, but do NOT start wrapping up on your own — keep the "
+            "conversation moving until the producer cues the close. When cued, land the through-line and "
+            "sign off briefly, exactly once. If your co-host has already said goodbye, one short goodbye "
+            "back and nothing more."
+        )
 
     lines.extend(
         [
@@ -209,9 +234,11 @@ def build_instructions(
             f"{settings.turn_seconds:.0f} seconds. If you have two things to say, say one and let "
             "the other person answer — this is a fast back-and-forth, not a monologue.",
             "  - React to what the other person actually just said. Disagree where you genuinely would.",
+            "  - Never repeat, echo, or rephrase a sentence the other person just said, and never quote "
+            "it back as agreement. Add something new, sharpen it, or push back.",
             "  - Interrupt yourself, trail off, think out loud. Real conversation, not narration.",
-            "  - Never speak stage directions, never say your own name as a label, never summarize what "
-            "was already said.",
+            "  - Never speak stage directions, never summarize what was already said, and never speak a "
+            "name followed by a colon — yours or anyone's. You are heard, not read.",
             "  - Introduce yourself at most once, in the whole episode.",
             "",
             host.persona or f"You are {host.name}.",
@@ -324,8 +351,23 @@ def _resolve_order(brief: ActBrief, hosts: Sequence[HostSpec], start_index: int)
     Defaults to round-robin from `start_index` (rotated per act so the same voice
     does not open every segment). A `speaking_order` on the brief replaces that
     outright, so a caller can choreograph a host following their own point.
+
+    An act that carries `turn_notes` but no `speaking_order` pins the rotation to
+    the first listed host instead: index-keyed notes are written against *some*
+    assumed rotation, and the per-act start rotation silently reassigned them —
+    a note written as Dan's objection landed in Maya's mouth on odd acts, which
+    is how a mandated reveal got dropped in a live run. Deterministic beats
+    varied here.
     """
     if not brief.speaking_order:
+        if brief.turn_notes and len(hosts) > 1 and start_index != 0:
+            logger.info(
+                "act %r: turn_notes present without speaking_order - pinning the rotation to the "
+                "first listed host so notes land on the intended speaker (set speaking_order to "
+                "choreograph explicitly)",
+                brief.id,
+            )
+            start_index = 0
         return [(start_index + i) % len(hosts) for i in range(len(hosts))]
 
     by_id = {host.id: index for index, host in enumerate(hosts)}
@@ -406,27 +448,60 @@ async def run_act(
 
         turn_index = 0
         closing_delivered = False
+        # The planned budget is a scheduling assumption, not a stop: an act ends
+        # on its closing turn near target_seconds, and may borrow extra turns to
+        # get there when the model's turns run shorter than assumed.
+        hard_cap = min(MAX_ACT_TURNS, max(brief.max_turns, int(brief.max_turns * TURN_EXTENSION_FACTOR + 0.999)))
 
         while True:
-            if turn_index >= brief.max_turns:
-                result.stop_reason = "complete" if closing_delivered else "max_turns"
-                break
             over_time = result.seconds >= brief.target_seconds
-            if over_time and closing_delivered:
-                result.stop_reason = "target_seconds"
+            if closing_delivered:
+                result.stop_reason = "target_seconds" if over_time else "complete"
                 break
+            if turn_index >= hard_cap:
+                result.stop_reason = "max_turns"
+                break
+            if turn_index == brief.max_turns:
+                logger.info(
+                    "act %r: %d planned turns filled %.0fs of a %.0fs target - extending up to %d turns",
+                    brief.id,
+                    brief.max_turns,
+                    result.seconds,
+                    brief.target_seconds,
+                    hard_cap,
+                )
 
-            is_final_turn = over_time or turn_index == brief.max_turns - 1
+            # Cue the close when one more average turn would reach the target,
+            # not after the target is already overshot: the closing turn itself
+            # still has to fit.
+            avg_turn = (result.seconds / turn_index) if turn_index >= 2 else settings.turn_seconds
+            is_final_turn = (
+                over_time or (result.seconds + avg_turn >= brief.target_seconds) or turn_index == hard_cap - 1
+            )
             agent = agents[order[turn_index % len(order)]]
 
-            note = _steering_note(
-                brief,
-                turn_index,
-                is_final_turn=is_final_turn,
-                is_first_act=is_first_act,
-                is_last_act=is_last_act,
-                point_index=schedule.get(turn_index),
-            )
+            # A caller note on the last *planned* turn is the caller taking over
+            # the landing. Extension moves the landing, so the note rides with
+            # the closing turn wherever it ends up rather than firing mid-act.
+            closing_override = brief.turn_notes.get(brief.max_turns - 1) if brief.max_turns > 1 else None
+            if closing_override is not None and is_final_turn:
+                note = closing_override or None
+            elif closing_override is not None and turn_index == brief.max_turns - 1:
+                note = EXTENSION_NOTE
+            else:
+                note = _steering_note(
+                    brief,
+                    turn_index,
+                    is_final_turn=is_final_turn,
+                    is_first_act=is_first_act,
+                    is_last_act=is_last_act,
+                    point_index=schedule.get(turn_index),
+                )
+                if note is None and not is_final_turn and turn_index >= brief.max_turns - 1:
+                    # Past the planned budget the point schedule has nothing left
+                    # to say, and an unsteered extension turn is where recap
+                    # loops start.
+                    note = EXTENSION_NOTE
             # One bound over the whole turn rather than over `speak()` alone: a
             # stalled session hangs on the steer, or on feeding the others, just
             # as readily. Everything downstream — the act's checkpoint, the

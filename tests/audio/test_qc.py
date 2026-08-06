@@ -433,3 +433,20 @@ class TestActVerdict:
     def test_the_defaults_are_the_models_the_tool_advertises(self):
         assert DEFAULT_TRANSCRIBE_MODEL == "gpt-transcribe"
         assert DEFAULT_JUDGE_MODEL.startswith("gpt-")
+
+
+@pytest.mark.unit
+class TestTruncationCoupling:
+    """Truncated turns were counted but never fed the flag logic (#tail-truncation)."""
+
+    def test_a_tail_truncated_act_is_flagged(self):
+        from sanzaru.audio.realtime.qc import ActVerdict
+
+        verdict = ActVerdict(act_id="a1", similarity=0.95, tail_truncated=True)
+        assert verdict.flagged
+
+    def test_mid_act_truncation_alone_does_not_flag(self):
+        from sanzaru.audio.realtime.qc import ActVerdict
+
+        verdict = ActVerdict(act_id="a1", similarity=0.95, truncated_turns=2, tail_truncated=False)
+        assert not verdict.flagged

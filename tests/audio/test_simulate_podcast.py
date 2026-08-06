@@ -866,6 +866,44 @@ class TestReportedCost:
         # Four takes at 1M audio-out tokens each, $64/1M — the discarded one included.
         assert result.cost.usd == pytest.approx(4 * 64.0)
 
+    async def test_qc_retry_preserves_the_take_it_replaces(self, rundown, media_dir, monkeypatch):
+        """Re-recording a flagged act must not destroy the only copy of the prior take.
+
+        QC verdicts have been observed to disagree run-to-run on the same
+        material, so the replaced take has to stay recoverable for the caller
+        to choose from.
+        """
+        from sanzaru.audio.realtime.qc import ActVerdict, QCReport
+
+        async def fake_run_act(brief, hosts, settings, **kwargs):
+            kwargs["budget"].charge(RealtimeUsage(output_audio_tokens=1_000), settings.model)
+            return _fake_act(brief.id)
+
+        reports = iter(
+            [
+                QCReport(verdict="warn", acts=[ActVerdict(act_id="act2", similarity=0.1)], flagged_acts=["act2"]),
+                QCReport(verdict="pass"),
+            ]
+        )
+
+        async def fake_run_qc(*args, **kwargs):
+            return next(reports)
+
+        monkeypatch.setattr(sim, "run_act", fake_run_act)
+        monkeypatch.setattr(sim, "run_qc", fake_run_qc)
+
+        await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, run_id="testrun", qc=True, qc_retry=True))
+
+        names = {f.name for f in media_dir.iterdir()}
+        slug = sim._safe_title("Stitch Test")
+        # The retried act's first take survives under a _take1 suffix...
+        assert f"{slug}_testrun_act2_take1.mp3" in names
+        assert f"{slug}_testrun_act2_take1.json" in names
+        # ...the live checkpoint names still hold exactly one truth for resume...
+        assert f"{slug}_testrun_act2.mp3" in names
+        # ...and unflagged acts were not touched.
+        assert f"{slug}_testrun_act1_take1.mp3" not in names
+
     async def test_a_resumed_run_reports_the_spend_it_replayed(self, rundown, media_dir, stub_run_act):
         first = await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))
         resumed = await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="testrun", qc=False))

@@ -66,13 +66,23 @@ class ActVerdict(BaseModel):
     missed_points: list[str] = Field(default_factory=list)
     repeats_earlier: bool = False
     off_brief: bool = False
+    truncated_turns: int = 0
+    """Turns in this act that hit the token cap, from the recording itself."""
+    tail_truncated: bool = False
+    """True when the act's *final* turn was cut off. A mid-act truncation can
+    pass as a barge-in; an act that ends mid-sentence is an audible defect and
+    was the one truncation QC consistently failed to flag."""
     notes: str = ""
     transcription_error: str = ""
 
     @property
     def flagged(self) -> bool:
         return bool(
-            self.missed_points or self.repeats_earlier or self.off_brief or self.similarity < SIMILARITY_WARN_THRESHOLD
+            self.missed_points
+            or self.repeats_earlier
+            or self.off_brief
+            or self.tail_truncated
+            or self.similarity < SIMILARITY_WARN_THRESHOLD
         )
 
 
@@ -169,9 +179,19 @@ async def _judge(rundown: Rundown, rendered: dict[str, str], model: str) -> _Jud
         "  - off_brief: true if the conversation wandered away from the act's topic.",
         "  - notes: one sentence, only if something is worth a human's attention.",
         "",
-        "Be strict about repeats_earlier — parallel recording makes it the most "
-        "likely failure, and it is the least obvious one to a listener until the "
-        "second time they hear the same anecdote.",
+        "Calibrate repeats_earlier for how these acts are made: they record in "
+        "parallel and only know each other as one line of text, so brief thematic "
+        "overlap, a one-line recap at an act boundary, and the episode's core "
+        "tension resurfacing are all STRUCTURAL and must not be flagged — a "
+        "re-record cannot remove them. Flag repeats_earlier only when an act "
+        "re-tells the same story or example an earlier act already told, spends "
+        "multiple exchanges on ground an earlier act already settled, or "
+        "re-introduces the show or the hosts.",
+        "",
+        "Calibrate off_brief the same way: hosts paraphrase talking points in "
+        "their own words, and a fluent paraphrase that keeps the substance is "
+        "on-brief. Flag off_brief only when the substance changed or the "
+        "conversation left the act's topic.",
     ]
     for act in rundown.acts:
         transcript = rendered.get(act.id, "")
@@ -267,6 +287,8 @@ async def run_qc(
                 similarity=round(similarity(intended, text), 3) if text else 0.0,
                 rendered_words=len(text.split()),
                 intended_words=len(intended.split()),
+                truncated_turns=sum(1 for t in turns if t.truncated),
+                tail_truncated=bool(turns) and turns[-1].truncated,
                 transcription_error=error,
             )
         )

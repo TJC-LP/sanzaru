@@ -356,6 +356,14 @@ async def podcast_rundown(
     help="Re-use checkpointed acts from an earlier run and record only what is missing.",
 )
 @click.option(
+    "--run-id",
+    "run_id_opt",
+    default=None,
+    metavar="RUN_ID",
+    help="Record under this run id instead of a minted one, so --resume is predictable. "
+    "A top-level \"run_id\" in a rundown BRIEF does the same thing.",
+)
+@click.option(
     "--stems/--no-stems", default=False, show_default=True, help="Also write one time-aligned track per host."
 )
 @click.option(
@@ -398,6 +406,7 @@ async def podcast_simulate(
     max_cost: float | None,
     max_sessions: int | None,
     resume_id: str | None,
+    run_id_opt: str | None,
     stems: bool,
     qc: bool,
     qc_retry: bool,
@@ -453,7 +462,17 @@ async def podcast_simulate(
         # and they overlap: both carry `premise`. `acts` is what separates them —
         # a list of act briefs in a rundown, an integer count in a brief.
         is_rundown = "rundown" not in parsed and isinstance(parsed.get("acts"), list)
-        payload = {"rundown": parsed} if is_rundown else parsed
+        if is_rundown:
+            # A top-level "run_id" in a rundown file is caller intent, and losing
+            # it strands paid audio under a minted id that only ever appeared on
+            # stderr. Lift it out before the rundown is validated (Rundown has no
+            # such field) and let it seed the brief below.
+            lifted_run_id = parsed.pop("run_id", None)
+            payload = {"rundown": parsed}
+            if isinstance(lifted_run_id, str) and lifted_run_id:
+                payload["run_id"] = lifted_run_id
+        else:
+            payload = parsed
     if premise is not None:
         payload["premise"] = read_content_arg(premise, "--premise")
     if hosts:
@@ -483,6 +502,9 @@ async def podcast_simulate(
     payload["qc"] = qc
     payload["qc_retry"] = qc_retry
     payload["dry_run"] = dry_run
+    if run_id_opt:
+        # Explicit flag beats a run_id lifted from the BRIEF.
+        payload["run_id"] = run_id_opt
     if resume_id:
         payload["resume"] = True
         payload["run_id"] = resume_id

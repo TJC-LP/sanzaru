@@ -253,7 +253,8 @@ class TestRunAct:
     async def test_alternates_the_floor(self, fake_realtime, connect_factory, brief, hosts, settings):
         factory, _ = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
         result = await run_act(brief, hosts, settings, connect=factory)
-        assert [t.speaker_id for t in result.turns] == ["avery", "rory"] * 3
+        # 6 planned turns extend to the 9-turn cap: 1s turns never fill the 60s target.
+        assert [t.speaker_id for t in result.turns] == ["avery", "rory"] * 4 + ["avery"]
 
     async def test_start_index_rotates_who_opens(self, fake_realtime, connect_factory, brief, hosts, settings):
         factory, _ = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
@@ -266,18 +267,64 @@ class TestRunAct:
         one, two = fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0)
         factory, _ = connect_factory(one, two)
         await run_act(brief, hosts, settings, connect=factory)
-        # Six turns, three each: each connection hears only the other's three.
-        assert [name for name, _ in one.calls].count("input_audio_buffer.commit") == 3
-        assert [name for name, _ in two.calls].count("input_audio_buffer.commit") == 3
+        # Nine turns (extended), five for avery and four for rory: each connection
+        # hears only the other's turns.
+        assert [name for name, _ in one.calls].count("input_audio_buffer.commit") == 4
+        assert [name for name, _ in two.calls].count("input_audio_buffer.commit") == 5
 
-    async def test_stops_at_max_turns_having_delivered_a_closing(
+    async def test_stops_at_the_extension_cap_having_delivered_a_closing(
+        self, fake_realtime, connect_factory, brief, hosts, settings
+    ):
+        # 1s turns cannot fill a 60s target, so the act borrows extension turns
+        # up to 1.5x the planned budget, then lands on a cued closing.
+        factory, handed = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
+        result = await run_act(brief, hosts, settings, connect=factory)
+        assert len(result.turns) == 9
+        assert result.stop_reason == "complete"
+        assert any("Final turn" in note for conn in handed for note in conn.steers)
+
+    async def test_extension_turns_fill_toward_the_time_target(
+        self, fake_realtime, connect_factory, hosts, settings
+    ):
+        # 5s turns against a 40s target with a 6-turn plan: the old hard stop
+        # shipped 30s; extension lands the closing once one more average turn
+        # would reach the target.
+        act = ActBrief(id="fill", title="t", topic="x", target_seconds=40.0, max_turns=6)
+        factory, handed = connect_factory(fake_realtime.Connection(seconds=5.0), fake_realtime.Connection(seconds=5.0))
+        result = await run_act(act, hosts, settings, connect=factory)
+        assert result.stop_reason == "target_seconds"
+        assert len(result.turns) == 8
+        assert result.seconds == 40.0
+
+    async def test_extension_turns_are_steered_away_from_recap(
         self, fake_realtime, connect_factory, brief, hosts, settings
     ):
         factory, handed = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
+        await run_act(brief, hosts, settings, connect=factory)
+        notes = [note for conn in handed for note in conn.steers]
+        assert any("Do not summarize" in note for note in notes)
+
+    async def test_a_closing_override_rides_with_the_moved_closing_turn(
+        self, fake_realtime, connect_factory, brief, hosts, settings
+    ):
+        # The caller landed the act on turn 5 of 6; extension moves the closing
+        # to turn 8, and the caller's note must land there, not fire mid-act.
+        brief.turn_notes = {5: "Land it on the open question."}
+        factory, handed = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
         result = await run_act(brief, hosts, settings, connect=factory)
-        assert len(result.turns) == 6
-        assert result.stop_reason == "complete"
-        assert any("Final turn" in note for conn in handed for note in conn.steers)
+        assert len(result.turns) == 9
+        last_speaker_conn = handed[0]  # avery speaks turn 8
+        assert last_speaker_conn.steers[-1] == "Land it on the open question."
+
+    async def test_turn_notes_pin_the_rotation_without_speaking_order(
+        self, fake_realtime, connect_factory, brief, hosts, settings
+    ):
+        # Index-keyed notes are written against a rotation; the per-act start
+        # rotation must not silently reassign them to the other host.
+        brief.turn_notes = {2: "Object to that, concretely."}
+        factory, _ = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
+        result = await run_act(brief, hosts, settings, connect=factory, start_index=1)
+        assert result.turns[0].speaker_id == "avery"
 
     async def test_stops_on_the_duration_budget(self, fake_realtime, connect_factory, hosts, settings):
         # 40s turns against a 60s target: two turns overshoot, then it lands.
@@ -316,13 +363,13 @@ class TestRunAct:
     async def test_usage_accumulates_across_turns(self, fake_realtime, connect_factory, brief, hosts, settings):
         factory, _ = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
         result = await run_act(brief, hosts, settings, connect=factory)
-        assert result.usage.output_audio_tokens == 6 * 100
+        assert result.usage.output_audio_tokens == 9 * 100
 
     async def test_on_turn_fires_per_turn(self, fake_realtime, connect_factory, brief, hosts, settings):
         seen = []
         factory, _ = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
         await run_act(brief, hosts, settings, connect=factory, on_turn=seen.append)
-        assert [t.index for t in seen] == [0, 1, 2, 3, 4, 5]
+        assert [t.index for t in seen] == [0, 1, 2, 3, 4, 5, 6, 7, 8]
 
     async def test_budget_stops_the_act(self, fake_realtime, connect_factory, brief, hosts, settings):
         factory, _ = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
@@ -371,7 +418,9 @@ class TestRunAct:
         brief.speaking_order = ["avery", "rory", "rory", "avery"]
         factory, _ = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
         result = await run_act(brief, hosts, settings, connect=factory)
-        assert [t.speaker_id for t in result.turns] == ["avery", "rory", "rory", "avery", "avery", "rory"]
+        assert [t.speaker_id for t in result.turns] == [
+            "avery", "rory", "rory", "avery", "avery", "rory", "rory", "avery", "avery",
+        ]
 
     async def test_speaking_order_beats_start_index(self, fake_realtime, connect_factory, brief, hosts, settings):
         brief.speaking_order = ["rory"]

@@ -976,6 +976,24 @@ async def simulate_podcast(
         if effective.qc_retry and qc_report.flagged_acts:
             if on_progress is not None:
                 on_progress(f"qc flagged {', '.join(qc_report.flagged_acts)} - re-recording once")
+            # The retry take is not automatically better — QC verdicts have been
+            # observed to disagree run-to-run on the same material — so the take
+            # being replaced must survive it. Re-recording writes to the same
+            # checkpoint names, which used to make the original unrecoverable;
+            # park it under a `_take1` suffix first (never read by
+            # `_load_checkpoint`, so resume still sees exactly one truth).
+            for flagged_act_id in qc_report.flagged_acts:
+                for checkpoint_name in (
+                    _act_audio_name(slug, run_id, flagged_act_id),
+                    _act_meta_name(slug, run_id, flagged_act_id),
+                ):
+                    if await ckpt_storage.exists("audio", checkpoint_name):
+                        stem, _, ext = checkpoint_name.rpartition(".")
+                        backup_name = f"{stem}_take1.{ext}"
+                        await checkpoints.write_audio_file(
+                            backup_name, await ckpt_storage.read("audio", checkpoint_name)
+                        )
+                        logger.info("qc-retry: previous take preserved as %s", backup_name)
             recorded = await _record_all(
                 rundown,
                 effective,
