@@ -194,6 +194,56 @@ class TestPodcastSimulate:
         assert brief.rundown is not None
         assert brief.rundown.title == "Stitch"
 
+    def test_a_run_id_in_a_rundown_brief_is_lifted_into_the_run(self, runner, mocker, fake_result, tmp_path):
+        # SKILL docs told callers to set a top-level "run_id" in the rundown; the
+        # wrapper dropped it and the run recorded under a minted id that only
+        # ever appeared on stderr.
+        patched = mocker.patch("sanzaru.tools.simulate_podcast.simulate_podcast", return_value=fake_result())
+        path = tmp_path / "r.json"
+        path.write_text(json.dumps({**RUNDOWN, "run_id": "ep1-showcase"}))
+
+        result = runner.invoke(cli, ["podcast", "simulate", f"@{path}", "--dry-run"])
+        assert result.exit_code == 0
+        brief = patched.call_args.args[0]
+        assert brief.rundown is not None
+        assert brief.run_id == "ep1-showcase"
+
+    def test_the_run_id_flag_beats_the_brief(self, runner, mocker, fake_result, tmp_path):
+        patched = mocker.patch("sanzaru.tools.simulate_podcast.simulate_podcast", return_value=fake_result())
+        path = tmp_path / "r.json"
+        path.write_text(json.dumps({**RUNDOWN, "run_id": "from-the-file"}))
+
+        result = runner.invoke(cli, ["podcast", "simulate", f"@{path}", "--run-id", "from-the-flag", "--dry-run"])
+        assert result.exit_code == 0
+        assert patched.call_args.args[0].run_id == "from-the-flag"
+
+    def test_a_malformed_run_id_in_a_brief_is_rejected_not_dropped(self, runner, mocker, fake_result, tmp_path):
+        # Silently dropping a run id is the defect this feature exists to fix,
+        # so a wrong-typed or unusable one has to surface as a usage error.
+        mocker.patch("sanzaru.tools.simulate_podcast.simulate_podcast", return_value=fake_result())
+        for bad in (12345, "", "../../etc/passwd", "with space"):
+            path = tmp_path / "r.json"
+            path.write_text(json.dumps({**RUNDOWN, "run_id": bad}))
+            result = runner.invoke(cli, ["podcast", "simulate", f"@{path}", "--dry-run"])
+            assert result.exit_code == 2, bad
+
+    def test_two_different_run_ids_on_one_command_line_is_a_usage_error(self, runner, mocker, fake_result):
+        mocker.patch("sanzaru.tools.simulate_podcast.simulate_podcast", return_value=fake_result())
+        result = runner.invoke(
+            cli, ["podcast", "simulate", "-p", "x", "--resume", "runA", "--run-id", "runB", "--dry-run"]
+        )
+        assert result.exit_code == 2
+
+    def test_a_brief_that_resumes_conflicts_with_run_id_too(self, runner, mocker, fake_result, tmp_path):
+        # `resume: true` in a full BRIEF is the same two-ids ambiguity as the
+        # --resume flag, and checking only the flag missed it.
+        mocker.patch("sanzaru.tools.simulate_podcast.simulate_podcast", return_value=fake_result())
+        path = tmp_path / "b.json"
+        path.write_text(json.dumps({"premise": "x", "resume": True, "run_id": "runA"}))
+
+        result = runner.invoke(cli, ["podcast", "simulate", f"@{path}", "--run-id", "runB", "--dry-run"])
+        assert result.exit_code == 2
+
     def test_a_full_brief_is_used_as_is(self, runner, mocker, fake_result, tmp_path):
         patched = mocker.patch("sanzaru.tools.simulate_podcast.simulate_podcast", return_value=fake_result())
         path = tmp_path / "b.json"

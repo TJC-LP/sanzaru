@@ -14,6 +14,7 @@ transcoding between an agent's mouth and another agent's ears.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Annotated
 
@@ -36,6 +37,38 @@ overruns its target before the producer's closing turn lands."""
 MAX_ACT_TURNS = 200
 MAX_EPISODE_MINUTES = 240.0
 MAX_TURN_TOKENS = 32_000
+
+TURN_EXTENSION_FACTOR = 1.5
+"""How far past `max_turns` an act may extend to fill its `target_seconds`.
+
+`max_turns` was a hard stop, which made act length a function of how long the
+model's turns happen to run: gpt-realtime's full-size turns measured ~10s
+against the mini's ~17.5s under the same 15s rule, so full-model acts stopped a
+third short of their target. The turn budget stays what the planner priced —
+extension turns only happen inside the time the act was already budgeted for,
+and the absolute ceiling (`MAX_ACT_TURNS`) still binds. Lives here rather than
+in `producer` so the act's own budget warning can account for it without
+importing back the other way."""
+
+
+def extension_cap(max_turns: int) -> int:
+    """Absolute turn ceiling for an act whose planned budget is `max_turns`.
+
+    The one definition of the ceiling: `run_act` stops here, `ActBrief` bounds
+    `turn_notes` by it, and the act's budget warning measures against it.
+    Recomputing `max_turns * TURN_EXTENSION_FACTOR` inline instead diverges at
+    both ends — the single-turn exemption below and the `MAX_ACT_TURNS` clamp.
+
+    `max_turns == 1` is returned unchanged: rounding 1.5 up would silently make
+    every one-turn act a two-turn act, and a caller who plans exactly one turn
+    is stating a shape, not estimating a duration. (It also keeps the
+    `turn_notes[max_turns - 1]` closing-takeover contract intact there, which
+    only reads as a takeover while turn 0 is still the final turn.)
+    """
+    if max_turns <= 1:
+        return max_turns
+    return min(MAX_ACT_TURNS, math.ceil(max_turns * TURN_EXTENSION_FACTOR))
+
 
 DEFAULT_TURN_SECONDS = 15.0
 """Target upper bound for one turn, stated in the prompt. Enforced socially, not
@@ -167,8 +200,15 @@ class ActBrief(BaseModel):
 
     turn_notes: dict[int, str] = Field(default_factory=dict)
     """Producer notes by zero-based turn index, replacing the generated one for
-    that turn. An empty string suppresses the note entirely. Setting a note on
-    the last turn takes over the closing, so it is on you to land the act."""
+    that turn. An empty string suppresses the note entirely — except on the last
+    act's closing turn, where the hosts are told to wait for a cue and silence
+    would end the episode mid-conversation.
+
+    A note on the last *planned* turn (`max_turns - 1`) takes over the closing,
+    so it is on you to land the act — and it follows the closing turn if the act
+    extends, rather than firing mid-act. Indices up to `extension_cap(max_turns)`
+    are accepted, since extension turns are real turns. Setting any note pins the
+    act's rotation to the first listed host, so the indices mean what they say."""
 
     speaking_order: list[str] = Field(default_factory=list, max_length=MAX_ACT_TURNS)
     """Explicit host id per turn, cycled if shorter than the act. Empty means
@@ -177,11 +217,18 @@ class ActBrief(BaseModel):
 
     @model_validator(mode="after")
     def _check_turn_notes(self) -> ActBrief:
-        out_of_range = sorted(i for i in self.turn_notes if i < 0 or i >= self.max_turns)
+        """Reject notes keyed to turns this act can never reach.
+
+        The bound is the *extended* ceiling, not `max_turns`: extension turns
+        are real turns a caller can legitimately direct, and rejecting them
+        with "would never fire" would be false.
+        """
+        ceiling = extension_cap(self.max_turns)
+        out_of_range = sorted(i for i in self.turn_notes if i < 0 or i >= ceiling)
         if out_of_range:
             raise ValueError(
                 f"act {self.id!r}: turn_notes {out_of_range} are outside this act's "
-                f"turns (0-{self.max_turns - 1}) and would never fire"
+                f"turns (0-{ceiling - 1}, including extension) and would never fire"
             )
         return self
 
@@ -189,19 +236,23 @@ class ActBrief(BaseModel):
     def _warn_on_turn_budget(self) -> ActBrief:
         """Flag an act that will run out of turns before it runs out of time.
 
-        Such an act stops on its duration budget rather than on its scripted
-        closing turn, and its last talking point never gets air — exactly the
-        calibration bug the first live run hit. Turn length is assumed to be
+        Such an act stops on the turn cap rather than on its scripted closing
+        turn, and its last talking point never gets air — exactly the
+        calibration bug the first live run hit. Measured against the *extended*
+        ceiling, since that is what actually binds. Turn length is assumed to be
         `DEFAULT_TURN_SECONDS`, so an episode that raises `turn_seconds` can see
         this fire spuriously; it stays a log line for that reason.
         """
-        if self.max_turns * DEFAULT_TURN_SECONDS < self.target_seconds:
+        ceiling = extension_cap(self.max_turns)
+        if ceiling * DEFAULT_TURN_SECONDS < self.target_seconds:
             logger.warning(
-                "act %r: %d turns is unlikely to fill %.0fs (turns run ~%.0fs), so it will stop on "
-                "the duration budget before its closing turn - raise max_turns or lower target_seconds",
+                "act %r: %d turns is unlikely to fill %.0fs even extended to %d turns (turns run "
+                "~%.0fs), so it will stop on the turn cap short of its target - raise max_turns or "
+                "lower target_seconds",
                 self.id,
                 self.max_turns,
                 self.target_seconds,
+                ceiling,
                 DEFAULT_TURN_SECONDS,
             )
         return self
@@ -318,9 +369,16 @@ class ActResult:
     audio: list[TurnAudio] = field(default_factory=list)
     usage: RealtimeUsage = field(default_factory=RealtimeUsage)
     stop_reason: str = "complete"
-    """Why the act ended: complete | max_turns | target_seconds. A cost abort is
-    not one of these — `CostCeilingError` cancels the act rather than ending it,
-    so no result is ever built for it."""
+    """Why the act ended:
+
+    - `target_seconds` — it reached its duration target. The normal ending.
+    - `complete` — it delivered its closing turn before reaching the target,
+      because one more turn would have overshot it.
+    - `max_turns` — it hit the extension ceiling still short of the target. This
+      is the undershoot signal: the act is shorter than it was planned to be.
+
+    A cost abort is not one of these — `CostCeilingError` cancels the act rather
+    than ending it, so no result is ever built for it."""
 
     @property
     def turns(self) -> list[Turn]:

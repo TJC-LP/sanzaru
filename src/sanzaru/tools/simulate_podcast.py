@@ -132,6 +132,12 @@ class SimulationBrief(BaseModel):
     max_cost_usd: float | None = Field(default=None, gt=0)
 
     run_id: RunId | None = None
+    """Name this run instead of taking a minted id, so `resume` is predictable.
+
+    The minted id is printed on stderr only, which strands paid audio for a
+    caller that reads stdout. Recording under an id that already has a run is
+    refused rather than overwriting its manifest and checkpoints — resume it, or
+    pick another id. Planning (`dry_run`) against an existing id is always fine."""
     resume: bool = False
     stems: bool = False
     dry_run: bool = False
@@ -260,6 +266,12 @@ class SimulatedPodcastResult(BaseModel):
     transcript: str = ""
     stems: dict[str, str] = Field(default_factory=dict)
     checkpoints: list[str] = Field(default_factory=list)
+    preserved_takes: list[str] = Field(default_factory=list)
+    """Takes `qc_retry` replaced, parked under `_takeN` names and left on disk.
+
+    A retry is not automatically the better take — QC verdicts disagree
+    run-to-run — so these are here to be chosen from. They are outside what
+    `resume` reads, so the run still holds exactly one truth."""
     qc: QCReport | None = None
     rundown: Rundown | None = None
     dry_run: bool = False
@@ -337,6 +349,55 @@ def _act_audio_name(slug: str, run_id: str, act_id: str) -> str:
 
 def _act_meta_name(slug: str, run_id: str, act_id: str) -> str:
     return f"{slug}_{run_id}_{act_id}.json"
+
+
+_MAX_PRESERVED_TAKES = 50
+"""Sanity bound on the `_takeN` scan; a real run retries an act once or twice."""
+
+
+def _take_name(checkpoint_name: str, take: int) -> str:
+    """`foo.mp3`, 2 -> `foo_take2.mp3`; an extensionless name keeps its shape.
+
+    `Identifier` permits an act id ending in `_take1`, which would make that
+    act's live checkpoint indistinguishable from another act's preserved take.
+    Exotic enough to note rather than guard against, but it is the one input
+    that breaks the "`_takeN` names are never read by resume" promise.
+    """
+    stem, dot, ext = checkpoint_name.rpartition(".")
+    if not dot:
+        return f"{checkpoint_name}_take{take}"
+    return f"{stem}_take{take}.{ext}"
+
+
+async def _next_take_number(storage: StorageBackend, *checkpoint_names: str) -> int | None:
+    """The first take number NONE of `checkpoint_names` has been parked under.
+
+    None when the scan runs past `_MAX_PRESERVED_TAKES` — see below.
+
+    A fixed `_take1` would be correct for the single retry one invocation can
+    run, and wrong the moment a resumed run retries the same act again: the
+    second backup would overwrite the first take — the one a caller keeps
+    precisely because QC verdicts disagree run-to-run — and the storage layer
+    has no delete, so it would not be recoverable.
+
+    Scanning every name in the pair rather than just the audio is what keeps the
+    pairing honest from both sides: a `_take1.json` whose `.mp3` is gone (hand
+    pruned, or a pair that lost its audio) would otherwise hand back 1 and
+    overwrite that sidecar.
+    """
+    take = 1
+    # A list comprehension, not a generator: you cannot `await` inside the
+    # generator expression `any()` would consume. (Short-circuiting is not the
+    # issue — it would return the same number either way.)
+    while any([await storage.exists("audio", _take_name(name, take)) for name in checkpoint_names]):
+        take += 1
+        if take > _MAX_PRESERVED_TAKES:
+            # Bounded in case a backend ever answers `exists` wrong. Returning
+            # None rather than raising: by here the acts are recorded and paid
+            # for, and losing the episode over bookkeeping would be the worse
+            # failure. The caller skips preservation and says so.
+            return None
+    return take
 
 
 def _with_format_suffix(filename: str | None, output_format: str) -> str | None:
@@ -903,6 +964,21 @@ async def simulate_podcast(
             resume_command=resume_command,
         )
 
+    if not effective.resume and brief.run_id and await ckpt_storage.exists("audio", _manifest_name(run_id)):
+        # Recording over a run id that already exists would overwrite its
+        # manifest and every act checkpoint under it — with no delete op, the
+        # first run's audio is then stranded against a manifest that no longer
+        # describes it. Naming a run is the recommended workflow (`--run-id`),
+        # which makes this the easy mistake rather than an exotic one, so it
+        # fails before anything is recorded. Deliberately below the dry-run
+        # return: re-planning against a recorded run costs nothing, writes no
+        # manifest, and is how you decide whether to resume it.
+        raise ValueError(
+            f"run {run_id!r} already exists — resume it (resume=true / `--resume {run_id}`) to record "
+            "only what is missing, or choose a different run_id; recording over it would overwrite "
+            "the checkpoints it already paid for"
+        )
+
     # Written before any recording starts so an interrupted first act is still
     # resumable.
     await checkpoints.write_audio_file(
@@ -962,6 +1038,7 @@ async def simulate_podcast(
     )
 
     qc_report: QCReport | None = None
+    preserved_takes: list[str] = []
     if effective.qc:
         if on_progress is not None:
             on_progress(f"qc: transcribing {len(recorded)} acts with {effective.transcribe_model}")
@@ -973,9 +1050,60 @@ async def simulate_podcast(
             judge_model=effective.judge_model,
             limiter=anyio.CapacityLimiter(4),
         )
-        if effective.qc_retry and qc_report.flagged_acts:
+        # NOT every flagged act: a tail truncation is mechanical (the last turn
+        # hit the token cap), so re-recording it against the same cap mostly buys
+        # the same defect a second time. Those want `turn_tokens` raised by hand,
+        # which the flag itself still tells a human to do.
+        retryable = qc_report.retryable_acts if effective.qc_retry else []
+        skipped_retry = [a for a in qc_report.flagged_acts if a not in retryable]
+        if effective.qc_retry and skipped_retry and on_progress is not None:
+            on_progress(
+                f"qc flagged {', '.join(skipped_retry)} for truncation only - NOT re-recording "
+                "(raise turn_tokens and resume instead; the same cap would truncate again)"
+            )
+        if retryable:
             if on_progress is not None:
-                on_progress(f"qc flagged {', '.join(qc_report.flagged_acts)} - re-recording once")
+                on_progress(f"qc flagged {', '.join(retryable)} - re-recording once")
+            # The retry take is not automatically better — QC verdicts have been
+            # observed to disagree run-to-run on the same material — so the take
+            # being replaced must survive it. Re-recording writes to the same
+            # checkpoint names, which used to make the original unrecoverable;
+            # park it under a `_takeN` suffix first (never read by
+            # `_load_checkpoint`, so resume still sees exactly one truth).
+            for flagged_act_id in retryable:
+                names = (_act_audio_name(slug, run_id, flagged_act_id), _act_meta_name(slug, run_id, flagged_act_id))
+                # ONE take number for the pair: computing it per name lets a
+                # half-written pair drift apart (`…_take2.mp3` beside
+                # `…_take1.json`), and with no delete op that mis-pairing is
+                # permanent.
+                take = await _next_take_number(ckpt_storage, *names)
+                if take is None:
+                    logger.warning(
+                        "qc-retry: %r already has %d preserved takes - re-recording WITHOUT preserving "
+                        "this one; move some out of the media directory",
+                        flagged_act_id,
+                        _MAX_PRESERVED_TAKES,
+                    )
+                    continue
+                payloads = [
+                    (_take_name(name, take), await ckpt_storage.read("audio", name))
+                    for name in names
+                    if await ckpt_storage.exists("audio", name)
+                ]
+                # Only the WRITES are shielded, and only because an mp3 without
+                # its sidecar is paid-for audio nothing can interpret. Reading a
+                # whole act's audio inside the shield would make Ctrl-C wait on a
+                # download-and-reupload per flagged act on the remote backend.
+                with anyio.CancelScope(shield=True):
+                    for backup_name, payload in payloads:
+                        await checkpoints.write_audio_file(backup_name, payload)
+                        preserved_takes.append(backup_name)
+                        logger.info("qc-retry: previous take preserved as %s", backup_name)
+            # Only the log knew these existed, which made choosing between takes
+            # undiscoverable. They also ride out on the result, so a programmatic
+            # caller can find the takes it is being invited to choose between.
+            if preserved_takes and on_progress is not None:
+                on_progress(f"previous takes preserved: {', '.join(preserved_takes)}")
             recorded = await _record_all(
                 rundown,
                 effective,
@@ -984,7 +1112,7 @@ async def simulate_podcast(
                 slug=slug,
                 run_id=run_id,
                 budget=budget,
-                only=qc_report.flagged_acts,
+                only=retryable,
                 reuse={a.result.act_id: a for a in recorded},
                 on_progress=on_progress,
             )
@@ -1061,6 +1189,7 @@ async def simulate_podcast(
         transcript=_transcript(recorded),
         stems=stems,
         checkpoints=[a.checkpoint for a in recorded if a.checkpoint],
+        preserved_takes=preserved_takes,
         qc=qc_report,
         rundown=rundown,
         resume_command=resume_command,

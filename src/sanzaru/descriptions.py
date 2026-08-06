@@ -949,7 +949,12 @@ later acts own, filled in automatically), and `handoff` (where to leave off).
       {"id": string, "title": string, "topic": string,
        "talking_points": [string], // 3-4 concrete claims/examples, one sentence each
        "target_seconds": number,   // Soft duration budget for the act
-       "max_turns": number,        // Hard turn cap; roughly target_seconds/turn_seconds + 1
+       "max_turns": number,        // Planned turn budget; roughly target_seconds/turn_seconds + 1.
+                                   // NOT a hard cap: an act extends up to 1.5x this to reach
+                                   // target_seconds when turns run short (max_turns=1 never
+                                   // extends). Cost tracks target_seconds, not this, so do not
+                                   // inflate max_cost_usd by 1.5x — but DO expect acts to now
+                                   // reach target_seconds, where they used to fall short.
        "prior_context": string,    // What earlier acts covered. Empty for act 1.
        "upcoming": string,         // What later acts own. Derived when empty.
        "handoff": string,          // Where to leave the conversation. Empty for the last act.
@@ -958,7 +963,10 @@ later acts own, filled in automatically), and `handoff` (where to leave off).
        "direction": string,        // How to play this act, in your own words
        "turn_notes": {"0": string},// Producer note per turn index, replacing the default.
                                    // "" suppresses the note for that turn entirely.
-       "speaking_order": [string]} // Host ids per turn, cycled. Default: round-robin.
+                                   // Setting this without speaking_order pins the act to open
+                                   // on the FIRST listed host, so the indexes stay meaningful.
+       "speaking_order": [string]} // Host ids per turn, cycled. Default: round-robin, rotated
+                                   // per act (unless turn_notes pins it, above).
     ]
   },
   "title": string, "style": string,
@@ -975,7 +983,10 @@ later acts own, filled in automatically), and `handoff` (where to leave off).
   "max_concurrent_sessions": number, // Realtime sessions across all acts (default 6)
 
   "dry_run": boolean,              // Plan and project only. Records nothing. START HERE.
-  "run_id": string,                // Identify a run for resume
+  "run_id": string,                // Name the run so resume is predictable (the minted id is
+                                   // printed on stderr only). Recording twice under one id is
+                                   // refused, not merged — resume it or pick another. Planning
+                                   // (dry_run) against an existing id is always fine.
   "resume": boolean,               // Reuse checkpointed acts, record only what is missing
   "stems": boolean,                // Also write one time-aligned track per host
   "qc": boolean,                   // Verify the result (default true)
@@ -996,8 +1007,17 @@ usually write better direction than they do, and three fields on each act hand y
   heated." "No jokes, the subject is grim." "Rory should refuse to concede the point."
 - `turn_notes` — `{"0": "...", "4": "..."}`, keyed by zero-based turn index, replacing the
   default note for that turn. This is the strongest lever in the tool: it is how you make turn 4
-  a genuine objection rather than a topic change. Set `""` to say nothing that turn. A note on
-  the last turn takes over the closing, so it becomes your job to land the act.
+  a genuine objection rather than a topic change. Set `""` to say nothing that turn — except on
+  the last act's closing turn, where the hosts wait for a cue and silence would end the episode
+  mid-conversation. On the LAST act, a closing note you write has to cue the sign-off itself —
+  the hosts are told not to wrap up until cued, so "Land it on the open question." leaves them
+  waiting. A note on the last planned turn (`max_turns - 1`) takes over the closing, so it becomes your job to land
+  the act — and it follows the closing turn if the act extends, rather than firing mid-act.
+  Setting `turn_notes` at all pins the act to open on the first host in `hosts` (acts otherwise
+  rotate who opens), because an index-keyed note is written against an assumed rotation. Notes on
+  extension turns (indices at or past `max_turns`) are allowed and fire normally — but only
+  `max_turns - 1` takes over the closing, so a note on whichever turn the close lands on is
+  superseded by it (and logged), as is any note aimed past the close.
 - `speaking_order` — `["avery", "rory", "rory", "avery"]`, cycled. Lets a host follow their own
   point before handing back, instead of strict alternation.
 

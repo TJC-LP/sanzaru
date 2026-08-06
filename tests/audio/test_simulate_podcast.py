@@ -866,6 +866,108 @@ class TestReportedCost:
         # Four takes at 1M audio-out tokens each, $64/1M — the discarded one included.
         assert result.cost.usd == pytest.approx(4 * 64.0)
 
+    async def test_qc_retry_preserves_the_take_it_replaces(self, rundown, media_dir, monkeypatch):
+        """Re-recording a flagged act must not destroy the only copy of the prior take.
+
+        QC verdicts have been observed to disagree run-to-run on the same
+        material, so the replaced take has to stay recoverable for the caller
+        to choose from.
+        """
+        from sanzaru.audio.realtime.qc import ActVerdict, QCReport
+
+        async def fake_run_act(brief, hosts, settings, **kwargs):
+            kwargs["budget"].charge(RealtimeUsage(output_audio_tokens=1_000), settings.model)
+            return _fake_act(brief.id)
+
+        reports = iter(
+            [
+                QCReport(verdict="warn", acts=[ActVerdict(act_id="act2", similarity=0.1)], flagged_acts=["act2"]),
+                QCReport(verdict="pass"),
+            ]
+        )
+
+        async def fake_run_qc(*args, **kwargs):
+            return next(reports)
+
+        monkeypatch.setattr(sim, "run_act", fake_run_act)
+        monkeypatch.setattr(sim, "run_qc", fake_run_qc)
+
+        await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, run_id="testrun", qc=True, qc_retry=True))
+
+        names = {f.name for f in media_dir.iterdir()}
+        slug = sim._safe_title("Stitch Test")
+        # The retried act's first take survives under a _take1 suffix...
+        assert f"{slug}_testrun_act2_take1.mp3" in names
+        assert f"{slug}_testrun_act2_take1.json" in names
+        # ...the live checkpoint names still hold exactly one truth for resume...
+        assert f"{slug}_testrun_act2.mp3" in names
+        # ...and unflagged acts were not touched.
+        assert f"{slug}_testrun_act1_take1.mp3" not in names
+
+    async def test_a_second_retry_does_not_clobber_the_first_preserved_take(self, media_dir):
+        """`_take1` is a floor, not a fixed name — the storage layer has no delete."""
+        storage = sim.checkpoint_storage()
+        await storage.write("audio", "show_run_act2.mp3", b"take-1")
+        assert await sim._next_take_number(storage, "show_run_act2.mp3") == 1
+
+        await storage.write("audio", "show_run_act2_take1.mp3", b"take-1")
+        assert await sim._next_take_number(storage, "show_run_act2.mp3") == 2
+
+    async def test_the_take_number_is_shared_by_the_audio_and_its_sidecar(self, media_dir):
+        """A `_take2.mp3` beside a `_take1.json` describes two different takes.
+
+        Deriving the number per name lets a half-written pair drift apart, and
+        with no delete op the mis-pairing is permanent.
+        """
+        storage = sim.checkpoint_storage()
+        # The audio already has a take1; the sidecar's is missing (an interrupt
+        # between the two writes, or a checkpoint that never had one).
+        await storage.write("audio", "show_run_act2.mp3", b"live")
+        await storage.write("audio", "show_run_act2.json", b"{}")
+        await storage.write("audio", "show_run_act2_take1.mp3", b"take-1")
+
+        take = await sim._next_take_number(storage, "show_run_act2.mp3", "show_run_act2.json")
+
+        assert sim._take_name("show_run_act2.mp3", take) == "show_run_act2_take2.mp3"
+        assert sim._take_name("show_run_act2.json", take) == "show_run_act2_take2.json"
+
+    async def test_the_take_scan_covers_the_sidecar_too(self, media_dir):
+        """The mirror case: a `_take1.json` whose `.mp3` is gone must not be overwritten."""
+        storage = sim.checkpoint_storage()
+        await storage.write("audio", "show_run_act2.mp3", b"live")
+        await storage.write("audio", "show_run_act2.json", b"{}")
+        await storage.write("audio", "show_run_act2_take1.json", b"{}")
+
+        assert await sim._next_take_number(storage, "show_run_act2.mp3", "show_run_act2.json") == 2
+
+    async def test_recording_over_an_existing_run_id_is_refused(self, rundown, media_dir, stub_run_act):
+        """Naming a run is the recommended workflow, so reusing one must not overwrite it.
+
+        Re-recording under an existing id would replace the manifest and every
+        act checkpoint beneath it, stranding the first run's audio against a
+        manifest that no longer describes it — and storage has no delete.
+        """
+        await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))
+
+        with pytest.raises(ValueError, match="already exists"):
+            await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))
+
+        # ...and resuming it, which is what the error tells you to do, works.
+        resumed = await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="testrun", qc=False))
+        assert resumed.run_id == "testrun"
+
+    async def test_planning_against_an_existing_run_id_is_allowed(self, rundown, media_dir, stub_run_act):
+        """A dry run writes no manifest, so re-planning a recorded run costs nothing.
+
+        Blocking it would break the obvious way to decide whether to resume.
+        """
+        await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))
+
+        planned = await sim.simulate_podcast(
+            sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun", dry_run=True)
+        )
+        assert planned.dry_run
+
     async def test_a_resumed_run_reports_the_spend_it_replayed(self, rundown, media_dir, stub_run_act):
         first = await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))
         resumed = await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="testrun", qc=False))
@@ -1190,7 +1292,30 @@ class TestRundownValidation:
     def test_an_underbudgeted_act_warns(self, caplog):
         with caplog.at_level("WARNING", logger="sanzaru"):
             ActBrief(id="act1", title="t", topic="x", target_seconds=600, max_turns=4)
-        assert "stop on the duration budget" in caplog.text
+        # The threshold accounts for extension: 4 planned turns reach 6, and 6
+        # turns still cannot fill 600s.
+        assert "stop on the turn cap short of its target" in caplog.text
+
+    def test_turn_notes_may_address_the_turns_extension_creates(self):
+        # 6 planned turns reach 9, so a note on turn 7 does fire — rejecting it
+        # as out of range would be a validator disagreeing with the loop.
+        brief = ActBrief(id="act1", title="t", topic="x", max_turns=6, turn_notes={7: "push harder"})
+        assert brief.turn_notes[7] == "push harder"
+        with pytest.raises(ValidationError):
+            ActBrief(id="act1", title="t", topic="x", max_turns=6, turn_notes={9: "never fires"})
+
+    def test_a_single_turn_act_does_not_warn_about_extension_it_cannot_use(self, caplog):
+        # extension_cap(1) == 1, so the warning must not promise two turns.
+        with caplog.at_level("WARNING", logger="sanzaru"):
+            ActBrief(id="act1", title="t", topic="x", target_seconds=180, max_turns=1)
+        assert "extended to 1 turns" in caplog.text
+
+    def test_an_act_that_extension_can_fill_does_not_warn(self, caplog):
+        # 8 turns extend to 12, which covers 150s at ~15s a turn. Warning here
+        # would train the planner to over-budget turns it does not need.
+        with caplog.at_level("WARNING", logger="sanzaru"):
+            ActBrief(id="act1", title="t", topic="x", target_seconds=150, max_turns=8)
+        assert "turn cap" not in caplog.text
 
 
 @pytest.mark.unit

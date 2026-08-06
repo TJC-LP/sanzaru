@@ -40,6 +40,20 @@ So `producer.py` does three jobs, and all three matter:
 
 Steering notes are system messages. The audience never hears them.
 
+**`max_turns` is a budget, not a stop.** It was a hard cap, which made act length a function of
+how long the model's turns happen to run: full-size `gpt-realtime` turns measured ~10s against
+the mini's ~17.5s under the same 15s rule, so full-model acts landed about a third short of
+their targets. An act now borrows up to **1.5x** its planned turns (bounded by `MAX_ACT_TURNS`)
+to reach `target_seconds`, and the closing turn is cued once one more *measured* average turn
+would reach the target — before the overshoot, because the closing turn still has to fit.
+Extension turns carry an anti-recap steer, since an act that outlives its talking points drifts
+into restatement. A single-turn act (`max_turns: 1`) never extends: one turn is a shape you
+asked for, not an estimate. An act that spends every extension turn and still lands short
+reports `stop_reason: "max_turns"` — that value is the undershoot signal, not a routine ending.
+
+Measured on the same episode family: 6:28 against a 7–9 minute target became **11:36 against an
+11:15 plan, with all five acts on their marks**.
+
 ### 2. `max_output_tokens` counts the transcript too
 
 Audio output runs a very steady **20 tokens per second** of speech — three independently
@@ -96,6 +110,10 @@ recording. Three fields, all optional, all replacing the default rather than add
 | `turn_notes` | the generated steering note, per turn index (`""` = say nothing) |
 | `speaking_order` | round-robin; cycles if shorter than the act |
 
+Setting `turn_notes` without `speaking_order` also **pins who opens the act**. Acts otherwise
+rotate their starting host, which silently reassigned index-keyed notes to the other host on odd
+acts — that is how a mandated reveal went missing in a live run.
+
 ```json
 {
   "id": "act1",
@@ -112,12 +130,16 @@ recording. Three fields, all optional, all replacing the default rather than add
 }
 ```
 
-Recorded, that produces Rory → Avery → Avery → Rory → Rory, with Avery's second turn reaching
+Recorded, that produces Rory → Avery → Avery → Rory → Rory…, with Avery's second turn reaching
 for a concrete example instead of handing back, and the act ending unresolved. `turn_notes` is
 the strongest lever in the tool: it is the difference between "move onto the next point" and
 "object to what they just said."
 
-A note on the last turn takes over the closing, so landing the act becomes your job.
+A note on the **last planned turn** (`max_turns - 1`, turn 4 here) takes over the closing, so
+landing the act becomes your job. It follows the closing turn rather than firing on that index:
+if the act extends toward `target_seconds`, turn 4 becomes mid-act and the note waits for the
+real landing. Any other note the closing turn was carrying is superseded, and logged so you can
+see it happened.
 
 The workflow this is built for:
 
@@ -149,7 +171,7 @@ read the rule instead of discovering it by spending.
 | duplicate act ids | two acts share one checkpoint filename; a resumed run silently loses one |
 | duplicate host ids | two hosts collapse into one speaker, breaking stems and `speaking_order` |
 | `speaking_order` naming an unknown host | previously surfaced four acts into a paid run |
-| `turn_notes` past `max_turns` | the note would never fire, silently |
+| `turn_notes` past the extended ceiling (1.5x `max_turns`) | the note would never fire, silently |
 | a separator in an id, `run_id`, or `filename` | these reach filenames; storage sanitizes too, but late and confusingly |
 | out-of-range budgets | `acts` 1–24, `target_minutes` ≤ 240, `target_seconds` ≤ 2400/act, `max_cost_usd` > 0 |
 
@@ -157,8 +179,8 @@ read the rule instead of discovering it by spending.
 
 - an unknown voice (OpenAI ships them faster than we do, so this must not hard-fail)
 - a model with no known price, especially with `--max-cost` set: the ceiling cannot fire
-- an act with too few turns to fill its `target_seconds` — it will stop on the duration budget
-  before its closing turn, and its last talking point never gets air. This is the exact
+- an act with too few turns to fill its `target_seconds` *even extended* — it will stop on the
+  turn cap short of its target, and its last talking point never gets air. This is the exact
   calibration bug the first live run hit.
 
 ---
@@ -264,6 +286,12 @@ it matters:
 sanzaru: run d33730ea — resume with: sanzaru podcast simulate --resume d33730ea
 ```
 
+**stderr is the only place it appears**, which strands paid audio for any harness that parses
+only stdout. Name the run yourself instead — `--run-id ep1`, or a top-level `"run_id"` in the
+rundown JSON (the flag wins) — and `--resume ep1` is predictable even if the shell died before
+anyone read a line. Recording over an id that already exists is refused rather than silently
+overwriting that run's manifest and checkpoints; resume it, or pick another id.
+
 Resume needs nothing else — the manifest carries the rundown:
 
 ```bash
@@ -328,6 +356,17 @@ sanzaru: qc warn: act2 — see result.qc for why (--qc-retry re-records just tho
 
 `--qc-retry` re-records only the flagged acts, once. That is cheap precisely because acts are
 independent — the same property that makes checkpointing work.
+
+One flag is worth handling by hand: a `tail_truncated` act was cut off by
+`max_output_tokens`, so re-recording at the same cap is likely to reproduce it and bill you
+twice. Raise `--turn-tokens` before retrying that one.
+
+**A retry is not automatically the better take.** QC verdicts disagree run-to-run on the same
+material, and a live retry has lost a mandated figure the first take had. So the take being
+replaced is preserved beside it as `<slug>_<run>_<act>_take1.mp3` (`_take2`, … on later
+retries), with its `.json` sidecar. Those names are outside what `--resume` reads, so the run
+still holds exactly one truth while you stay free to assemble the best cut per act — which is
+how a real episode ended up with two acts from the retry and one from the preserved take.
 
 QC runs per act, not per episode: acts are already on disk, a 30-minute episode would exceed
 the 25MB upload limit, and per-act verdicts are what make selective retry possible. It costs
