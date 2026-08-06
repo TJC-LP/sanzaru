@@ -2,6 +2,7 @@
 """Unit tests for configuration management."""
 
 import os
+import sys
 from types import SimpleNamespace
 
 import pytest
@@ -376,6 +377,78 @@ class TestGetPathUnifiedMediaPath:
 
         assert result == videos_dir.resolve()
         assert (result / "existing.txt").exists()
+
+
+class _FakeAsyncElevenLabs:
+    """Records what get_elevenlabs_client passed to the SDK constructor.
+
+    The real AsyncElevenLabs cannot be used here: the [elevenlabs] extra is
+    optional and these tests run without it installed.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        self.kwargs = kwargs
+
+
+@pytest.fixture
+def fake_elevenlabs_sdk(mocker):
+    """Make the function-local `from elevenlabs.client import ...` resolve to a stub."""
+    mocker.patch.object(config, "_elevenlabs_override", None)
+    mocker.patch.object(config, "_elevenlabs_cached", None)
+    module = SimpleNamespace(AsyncElevenLabs=_FakeAsyncElevenLabs)
+    mocker.patch.dict(sys.modules, {"elevenlabs": SimpleNamespace(client=module), "elevenlabs.client": module})
+    return module
+
+
+@pytest.mark.unit
+class TestGetElevenLabsClient:
+    """Client construction: the key is required, the endpoint is overridable."""
+
+    def test_missing_api_key_raises(self, mocker, fake_elevenlabs_sdk):
+        mocker.patch.dict(os.environ, {}, clear=True)
+
+        with pytest.raises(RuntimeError, match="ELEVENLABS_API_KEY is not set"):
+            config.get_elevenlabs_client()
+
+    def test_defaults_to_the_sdks_own_endpoint(self, mocker, fake_elevenlabs_sdk):
+        mocker.patch.dict(os.environ, {"ELEVENLABS_API_KEY": "k"}, clear=True)
+
+        client = config.get_elevenlabs_client()
+
+        # None, not "": the SDK resolves None to its production environment and
+        # would take an empty string literally.
+        assert client.kwargs == {"api_key": "k", "base_url": None}
+
+    def test_base_url_env_overrides_the_endpoint(self, mocker, fake_elevenlabs_sdk):
+        """A sandboxed deploy points this at a loopback proxy holding the real key."""
+        mocker.patch.dict(
+            os.environ,
+            {"ELEVENLABS_API_KEY": "k", "ELEVENLABS_BASE_URL": "  http://127.0.0.1:8123  "},
+            clear=True,
+        )
+
+        client = config.get_elevenlabs_client()
+
+        assert client.kwargs == {"api_key": "k", "base_url": "http://127.0.0.1:8123"}
+
+    def test_blank_base_url_is_ignored(self, mocker, fake_elevenlabs_sdk):
+        mocker.patch.dict(os.environ, {"ELEVENLABS_API_KEY": "k", "ELEVENLABS_BASE_URL": "   "}, clear=True)
+
+        client = config.get_elevenlabs_client()
+
+        assert client.kwargs["base_url"] is None
+
+    def test_client_is_cached_across_calls(self, mocker, fake_elevenlabs_sdk):
+        mocker.patch.dict(os.environ, {"ELEVENLABS_API_KEY": "k"}, clear=True)
+
+        assert config.get_elevenlabs_client() is config.get_elevenlabs_client()
+
+    def test_override_wins_and_skips_construction(self, mocker, fake_elevenlabs_sdk):
+        sentinel = SimpleNamespace()
+        mocker.patch.object(config, "_elevenlabs_override", sentinel)
+        mocker.patch.dict(os.environ, {}, clear=True)
+
+        assert config.get_elevenlabs_client() is sentinel
 
 
 class _FakeHttpxPool:

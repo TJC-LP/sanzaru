@@ -1,7 +1,7 @@
 {
   "name": "sanzaru",
   "description": "MCP server for OpenAI multimodal APIs: Sora video, gpt-image-2, TTS (OpenAI or ElevenLabs), transcription, scripted podcasts, and simulated podcasts where realtime agents actually converse. Ships prompting guidance and an agent CLI skill.",
-  "version": "0.9.0",
+  "version": "0.9.1",
   "author": {
     "name": "TJC L.P.",
     "url": "https://github.com/TJC-LP"
