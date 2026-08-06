@@ -304,8 +304,15 @@ async def podcast_rundown(
         payload["file"] = {"path": str(target.resolve())}
 
     if not state.quiet:
+        # Local import: `sanzaru.cli` must stay free of pydantic at import time
+        # (tests/cli/test_root.py guards the startup weight).
+        from ..audio.realtime.types import extension_cap
+
         for act in rundown.acts:
-            note(f"  {act.id}: {act.title} — {act.target_seconds:.0f}s, up to {act.max_turns} turns")
+            note(
+                f"  {act.id}: {act.title} — {act.target_seconds:.0f}s, "
+                f"~{act.max_turns} planned turns (up to {extension_cap(act.max_turns)})"
+            )
     emit(success_envelope("podcast.rundown", payload, elapsed_s=time.monotonic() - started))
     return 0
 
@@ -510,14 +517,23 @@ async def podcast_simulate(
     # one is how the stranded-audio defect happened in the first place. Checked
     # against the resolved payload, not just the flag: a BRIEF carrying
     # `resume: true` with its own run_id is the same ambiguity.
-    resuming_run = resume_id or (payload.get("run_id") if payload.get("resume") else None)
-    if run_id_opt and resuming_run and run_id_opt != resuming_run:
-        raise CLIError(
-            "usage",
-            f"--run-id {run_id_opt!r} and the run being resumed ({resuming_run!r}) name different "
-            "runs; a resume already carries the id of the run to continue",
-            exit_code=EXIT_USAGE,
+    # `--run-id` beating a BRIEF's own id is a documented override. Disagreeing
+    # with the run being RESUMED is not an override, it is two answers to "which
+    # run is this?", and silently picking one is how the stranded-audio defect
+    # happened. Checked against the resolved payload, so a BRIEF carrying
+    # `resume: true` counts the same as the flag.
+    resume_target = resume_id or (payload.get("run_id") if payload.get("resume") else None)
+    if resume_target:
+        conflicting = sorted(
+            {i for i in (run_id_opt, payload.get("run_id")) if isinstance(i, str) and i and i != resume_target}
         )
+        if conflicting:
+            raise CLIError(
+                "usage",
+                f"{', '.join(repr(i) for i in conflicting)} names a different run than the one being "
+                f"resumed ({resume_target!r}); a resume already carries the id of the run to continue",
+                exit_code=EXIT_USAGE,
+            )
     if run_id_opt:
         # Explicit flag beats a run_id lifted from the BRIEF.
         payload["run_id"] = run_id_opt
@@ -611,9 +627,17 @@ def _note_dry_run(result: SimulatedPodcastResult, quiet: bool) -> None:
     """Human-readable projection on stderr; the envelope carries the numbers."""
     if quiet:
         return
-    note(f"dry run — {result.title!r}: {len(result.acts)} acts, up to {result.turn_count} turns")
+    # "up to N turns" was true when max_turns was a hard stop; an act now
+    # extends past it to reach its target, and the dry run is where a caller
+    # calibrates --max-cost.
+    from ..audio.realtime.types import extension_cap
+
+    note(f"dry run — {result.title!r}: {len(result.acts)} acts, ~{result.turn_count} planned turns")
     for act in result.acts:
-        note(f"  {act.act_id}: {act.title} — {act.seconds:.0f}s, up to {act.turns} turns")
+        note(
+            f"  {act.act_id}: {act.title} — {act.seconds:.0f}s, "
+            f"~{act.turns} planned turns (up to {extension_cap(act.turns)})"
+        )
     usage = result.cost.usage
     note(
         f"projected ~{result.duration_seconds / 60:.0f} min audio, "

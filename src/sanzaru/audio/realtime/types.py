@@ -14,6 +14,7 @@ transcoding between an agent's mouth and another agent's ears.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Annotated
 
@@ -66,7 +67,7 @@ def extension_cap(max_turns: int) -> int:
     """
     if max_turns <= 1:
         return max_turns
-    return min(MAX_ACT_TURNS, max(max_turns, int(max_turns * TURN_EXTENSION_FACTOR + 0.999)))
+    return min(MAX_ACT_TURNS, math.ceil(max_turns * TURN_EXTENSION_FACTOR))
 
 
 DEFAULT_TURN_SECONDS = 15.0
@@ -199,8 +200,13 @@ class ActBrief(BaseModel):
 
     turn_notes: dict[int, str] = Field(default_factory=dict)
     """Producer notes by zero-based turn index, replacing the generated one for
-    that turn. An empty string suppresses the note entirely. Setting a note on
-    the last turn takes over the closing, so it is on you to land the act."""
+    that turn. An empty string suppresses the note entirely.
+
+    A note on the last *planned* turn (`max_turns - 1`) takes over the closing,
+    so it is on you to land the act — and it follows the closing turn if the act
+    extends, rather than firing mid-act. Indices up to `extension_cap(max_turns)`
+    are accepted, since extension turns are real turns. Setting any note pins the
+    act's rotation to the first listed host, so the indices mean what they say."""
 
     speaking_order: list[str] = Field(default_factory=list, max_length=MAX_ACT_TURNS)
     """Explicit host id per turn, cycled if shorter than the act. Empty means
@@ -361,9 +367,16 @@ class ActResult:
     audio: list[TurnAudio] = field(default_factory=list)
     usage: RealtimeUsage = field(default_factory=RealtimeUsage)
     stop_reason: str = "complete"
-    """Why the act ended: complete | max_turns | target_seconds. A cost abort is
-    not one of these — `CostCeilingError` cancels the act rather than ending it,
-    so no result is ever built for it."""
+    """Why the act ended:
+
+    - `target_seconds` — it reached its duration target. The normal ending.
+    - `complete` — it delivered its closing turn before reaching the target,
+      because one more turn would have overshot it.
+    - `max_turns` — it hit the extension ceiling still short of the target. This
+      is the undershoot signal: the act is shorter than it was planned to be.
+
+    A cost abort is not one of these — `CostCeilingError` cancels the act rather
+    than ending it, so no result is ever built for it."""
 
     @property
     def turns(self) -> list[Turn]:

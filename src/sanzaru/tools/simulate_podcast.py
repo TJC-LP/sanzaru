@@ -339,6 +339,10 @@ def _act_meta_name(slug: str, run_id: str, act_id: str) -> str:
     return f"{slug}_{run_id}_{act_id}.json"
 
 
+_MAX_PRESERVED_TAKES = 50
+"""Sanity bound on the `_takeN` scan; a real run retries an act once or twice."""
+
+
 def _take_name(checkpoint_name: str, take: int) -> str:
     """`foo.mp3`, 2 -> `foo_take2.mp3`; an extensionless name keeps its shape."""
     stem, dot, ext = checkpoint_name.rpartition(".")
@@ -362,8 +366,18 @@ async def _next_take_number(storage: StorageBackend, *checkpoint_names: str) -> 
     overwrite that sidecar.
     """
     take = 1
+    # A list comprehension, not a generator: `any` short-circuits, and every name
+    # has to be checked or the pairing this function keeps honest stops being
+    # checked from one side.
     while any([await storage.exists("audio", _take_name(name, take)) for name in checkpoint_names]):
         take += 1
+        if take > _MAX_PRESERVED_TAKES:
+            # Bounded rather than spinning, in case a backend ever answers
+            # `exists` wrong.
+            raise RuntimeError(
+                f"{checkpoint_names[0]}: more than {_MAX_PRESERVED_TAKES} preserved takes; "
+                "move some out of the media directory"
+            )
     return take
 
 
@@ -886,6 +900,18 @@ async def simulate_podcast(
             raise ValueError(
                 f"no run manifest for run_id {run_id!r} — pass the rundown explicitly, or check the audio directory"
             )
+    elif brief.run_id and await ckpt_storage.exists("audio", _manifest_name(run_id)):
+        # Recording over a run id that already exists would overwrite its
+        # manifest and every act checkpoint under it — with no delete op, the
+        # first run's audio is then stranded against a manifest that no longer
+        # describes it. Naming a run is now the recommended workflow
+        # (`--run-id`), which makes this the easy mistake rather than an exotic
+        # one, so it fails before anything is recorded.
+        raise ValueError(
+            f"run {run_id!r} already exists — resume it (resume=true / `--resume {run_id}`) to record "
+            "only what is missing, or choose a different run_id; recording over it would overwrite "
+            "the checkpoints it already paid for"
+        )
 
     if rundown is None:
         rundown = await resolve_rundown(effective)

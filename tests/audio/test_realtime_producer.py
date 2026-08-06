@@ -428,6 +428,14 @@ class TestRunAct:
         assert "push back on the cost claim" in caplog.text
         assert "displaced" in caplog.text
 
+    async def test_a_single_turn_acts_note_is_honored(self, fake_realtime, connect_factory, hosts, settings):
+        # turn 0 IS `max_turns - 1` here, so it is the caller's closing takeover
+        # — exempting single-turn acts from the lookup dropped their only note.
+        act = ActBrief(id="one", title="t", topic="x", max_turns=1, turn_notes={0: "Say the number and stop."})
+        factory, handed = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
+        await run_act(act, hosts, settings, connect=factory)
+        assert handed[0].steers == ["Say the number and stop."]
+
     async def test_extension_turns_are_steered_away_from_recap(
         self, fake_realtime, connect_factory, brief, hosts, settings
     ):

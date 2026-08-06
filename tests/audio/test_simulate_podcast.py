@@ -940,6 +940,22 @@ class TestReportedCost:
 
         assert await sim._next_take_number(storage, "show_run_act2.mp3", "show_run_act2.json") == 2
 
+    async def test_recording_over_an_existing_run_id_is_refused(self, rundown, media_dir, stub_run_act):
+        """Naming a run is the recommended workflow, so reusing one must not overwrite it.
+
+        Re-recording under an existing id would replace the manifest and every
+        act checkpoint beneath it, stranding the first run's audio against a
+        manifest that no longer describes it — and storage has no delete.
+        """
+        await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))
+
+        with pytest.raises(ValueError, match="already exists"):
+            await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))
+
+        # ...and resuming it, which is what the error tells you to do, works.
+        resumed = await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="testrun", qc=False))
+        assert resumed.run_id == "testrun"
+
     async def test_a_resumed_run_reports_the_spend_it_replayed(self, rundown, media_dir, stub_run_act):
         first = await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))
         resumed = await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="testrun", qc=False))

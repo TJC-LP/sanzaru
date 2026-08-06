@@ -257,7 +257,17 @@ def _closing_note(brief: ActBrief, *, is_last_act: bool) -> str:
     return "Final turn of this segment: bring it to a natural rest. Two sentences. Do not sign off."
 
 
-def _steering_note(
+@dataclass(frozen=True, slots=True)
+class TurnNote:
+    """The steer for one turn, plus whatever choosing it discarded."""
+
+    text: str | None
+    """What to send, or None to let the agents run unsteered."""
+    displaced: str | None = None
+    """A caller note this turn was carrying that the closing cue superseded."""
+
+
+def _note_for_turn(
     brief: ActBrief,
     turn_index: int,
     *,
@@ -265,37 +275,70 @@ def _steering_note(
     is_first_act: bool,
     is_last_act: bool,
     point_index: int | None,
-) -> str | None:
-    """The producer note for one turn, or None to let the agents run.
+) -> TurnNote:
+    """The producer note for one turn.
 
-    A caller-supplied `turn_notes` entry wins outright — including on the final
-    turn, where taking it over means taking on the job of landing the act. An
-    empty string is a deliberate "say nothing this turn", distinct from having
-    no opinion — except on the last act's closing turn, where the hosts are
-    told to wait for a cue and saying nothing would end the episode
-    mid-conversation.
+    One function rather than a branch here and a branch in `run_act`: those two
+    copies drifted apart and dropped a single-turn act's only note in silence.
+
+    Precedence, and why:
+
+    1. **The turn that lands the act** gets the closing cue, wherever timing put
+       it — extension pushes it out, long turns pull it in, and the hosts are
+       told to keep going until they are cued. A caller takes the landing over
+       by writing a note on the last *planned* turn; that note rides along to
+       the real closing turn. Anything else the closing turn was carrying is
+       reported as `displaced` rather than silently lost.
+    2. **The last planned turn of an act that extended past it** is now mid-act,
+       so the takeover note has moved on and this turn is steered away from
+       recap instead.
+    3. **A caller note for this turn** wins over any generated note. `""` is a
+       deliberate "say nothing", distinct from having no opinion — the one
+       exception being the last act's closing turn, where silence would leave
+       the hosts waiting for a cue that never comes.
+    4. Otherwise: open the act, walk the scheduled talking point, or — past the
+       planned budget, where the schedule has nothing left — steer away from
+       recap.
     """
-    override = brief.turn_notes.get(turn_index)
-    if override is not None:
-        if override:
-            return override
-        return _closing_note(brief, is_last_act=is_last_act) if (is_final_turn and is_last_act) else None
+    own = brief.turn_notes.get(turn_index)
+    # `max_turns - 1` is the takeover index even for a single-turn act, where it
+    # is turn 0: dropping it there discarded the caller's only note.
+    closing_override = brief.turn_notes.get(brief.max_turns - 1)
 
     if is_final_turn:
-        return _closing_note(brief, is_last_act=is_last_act)
+        if closing_override is not None:
+            text = closing_override or (_closing_note(brief, is_last_act=is_last_act) if is_last_act else None)
+        else:
+            text = _closing_note(brief, is_last_act=is_last_act)
+        displaced = own if (own and turn_index != brief.max_turns - 1) else None
+        return TurnNote(text, displaced)
+
+    if closing_override is not None and turn_index == brief.max_turns - 1:
+        # Extended past the planned landing: the takeover rides with the close,
+        # and a blank one still means silence.
+        return TurnNote(EXTENSION_NOTE if closing_override else None)
+
+    if own is not None:
+        return TurnNote(own or None)
 
     if turn_index == 0:
         if is_first_act:
-            return "Open the episode in ONE short sentence, then put the topic to your co-host."
-        return (
+            return TurnNote("Open the episode in ONE short sentence, then put the topic to your co-host.")
+        return TurnNote(
             "Pick up mid-conversation — no greeting, no re-introduction. "
             "One short sentence that moves onto this segment's topic."
         )
 
     if point_index is not None:
-        return f"Move the conversation onto: {brief.talking_points[point_index]}"
+        return TurnNote(f"Move the conversation onto: {brief.talking_points[point_index]}")
 
-    return None
+    if turn_index >= brief.max_turns - 1:
+        # At the end of the planned budget and beyond it, the point schedule has
+        # nothing left to say, and an unsteered turn there is where recap loops
+        # start.
+        return TurnNote(EXTENSION_NOTE)
+
+    return TurnNote(None)
 
 
 def _point_schedule(brief: ActBrief) -> dict[int, int]:
@@ -497,34 +540,26 @@ async def run_act(
             is_final_turn = over_time or close_is_due or turn_index == hard_cap - 1
             agent = agents[order[turn_index % len(order)]]
 
-            # A caller note on the last *planned* turn is the caller taking over
-            # the landing. Extension moves the landing, so the note rides with
-            # the closing turn wherever it ends up rather than firing mid-act.
-            closing_override = brief.turn_notes.get(brief.max_turns - 1) if brief.max_turns > 1 else None
+            decision = _note_for_turn(
+                brief,
+                turn_index,
+                is_final_turn=is_final_turn,
+                is_first_act=is_first_act,
+                is_last_act=is_last_act,
+                point_index=schedule.get(turn_index),
+            )
+            note = decision.text
+            # Dropping a producer instruction in silence is the failure the
+            # rotation pinning above exists to prevent.
+            if decision.displaced:
+                logger.warning(
+                    "act %r: the close landed on turn %d, so its note (%r) was displaced by the "
+                    "closing note - move the note earlier, or retime the act, to keep both",
+                    brief.id,
+                    turn_index,
+                    decision.displaced,
+                )
             if is_final_turn:
-                # The closing cue belongs to whichever turn LANDS the act, not to
-                # an index. Timing moves that turn in both directions — extension
-                # pushes it out, long turns pull it in — and the hosts are told to
-                # keep going until they are cued, so a final turn that instead
-                # carries some mid-act note ends the episode mid-conversation.
-                if closing_override is not None:
-                    # An empty takeover means "say nothing"; honored mid-episode,
-                    # where nothing is waiting on a cue, but not on the last act.
-                    note = closing_override or (_closing_note(brief, is_last_act=is_last_act) if is_last_act else None)
-                else:
-                    note = _closing_note(brief, is_last_act=is_last_act)
-                # Whatever the caller wrote for THIS turn loses to the close, and
-                # dropping a producer instruction in silence is the failure the
-                # rotation pinning above exists to prevent.
-                displaced = brief.turn_notes.get(turn_index)
-                if displaced and turn_index != brief.max_turns - 1:
-                    logger.warning(
-                        "act %r: the close landed on turn %d, so its note (%r) was displaced by the "
-                        "closing note - move the note earlier, or retime the act, to keep both",
-                        brief.id,
-                        turn_index,
-                        displaced,
-                    )
                 # Points scheduled past an early close never get air. QC reports
                 # them as missed after the act is paid for; say so now.
                 skipped = sorted(p for t, p in schedule.items() if t > turn_index)
@@ -537,22 +572,6 @@ async def run_act(
                         len(skipped),
                         "; ".join(brief.talking_points[p] for p in skipped),
                     )
-            elif closing_override is not None and turn_index == brief.max_turns - 1:
-                note = EXTENSION_NOTE
-            else:
-                note = _steering_note(
-                    brief,
-                    turn_index,
-                    is_final_turn=False,
-                    is_first_act=is_first_act,
-                    is_last_act=is_last_act,
-                    point_index=schedule.get(turn_index),
-                )
-                if note is None and turn_index >= brief.max_turns - 1:
-                    # At the end of the planned budget and beyond it, the point
-                    # schedule has nothing left to say, and an unsteered turn
-                    # there is where recap loops start.
-                    note = EXTENSION_NOTE
             # One bound over the whole turn rather than over `speak()` alone: a
             # stalled session hangs on the steer, or on feeding the others, just
             # as readily. Everything downstream — the act's checkpoint, the
