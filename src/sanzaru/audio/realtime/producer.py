@@ -48,6 +48,7 @@ from .types import (
     MAX_ACT_TURNS,
     REALTIME_SAMPLE_RATE,
     REALTIME_VOICES,
+    TURN_EXTENSION_FACTOR,
     ActBrief,
     ActResult,
     HostSpec,
@@ -84,16 +85,6 @@ still bounding a runaway."""
 DEFAULT_TURN_TOKENS = 0
 """0 → derive from `turn_seconds` (see `turn_token_cap`)."""
 
-TURN_EXTENSION_FACTOR = 1.5
-"""How far past `max_turns` an act may extend to fill its `target_seconds`.
-
-`max_turns` was a hard stop, which made act length a function of how long the
-model's turns happen to run: gpt-realtime's full-size turns measured ~10s
-against the mini's ~17.5s under the same 15s rule, so full-model acts stopped
-a third short of their target. The turn budget stays what the planner priced —
-extension turns only happen inside the time the act was already budgeted for,
-and the absolute ceiling (`MAX_ACT_TURNS`) still binds."""
-
 EXTENSION_NOTE = (
     "Take this somewhere new: one concrete example, implication, or sharper objection. "
     "Do not summarize, do not repeat anything already said, and do not start wrapping up."
@@ -102,6 +93,20 @@ EXTENSION_NOTE = (
 talking points drifts into recap loops — the audible form is two hosts trading
 restatements and premature goodbyes — so extension turns get pushed toward new
 ground instead of left to run on momentum."""
+
+
+def _extension_cap(max_turns: int) -> int:
+    """Absolute turn ceiling for an act whose planned budget is `max_turns`.
+
+    `max_turns == 1` is returned unchanged: rounding 1.5 up would silently make
+    every one-turn act a two-turn act, and a caller who plans exactly one turn
+    is stating a shape, not estimating a duration. (It also keeps the
+    `turn_notes[max_turns - 1]` closing-takeover contract intact there, which
+    only reads as a takeover while turn 0 is still the final turn.)
+    """
+    if max_turns <= 1:
+        return max_turns
+    return min(MAX_ACT_TURNS, max(max_turns, int(max_turns * TURN_EXTENSION_FACTOR + 0.999)))
 
 
 def turn_token_cap(turn_seconds: float) -> int:
@@ -448,18 +453,23 @@ async def run_act(
 
         turn_index = 0
         closing_delivered = False
+        ran_out_of_turns = False
         # The planned budget is a scheduling assumption, not a stop: an act ends
         # on its closing turn near target_seconds, and may borrow extra turns to
-        # get there when the model's turns run shorter than assumed.
-        hard_cap = min(MAX_ACT_TURNS, max(brief.max_turns, int(brief.max_turns * TURN_EXTENSION_FACTOR + 0.999)))
+        # get there when the model's turns run shorter than assumed. A
+        # single-turn act is exempt — one turn is the caller asking for exactly
+        # one, not an estimate to be filled out.
+        hard_cap = _extension_cap(brief.max_turns)
 
         while True:
             over_time = result.seconds >= brief.target_seconds
             if closing_delivered:
-                result.stop_reason = "target_seconds" if over_time else "complete"
-                break
-            if turn_index >= hard_cap:
-                result.stop_reason = "max_turns"
+                # An act that spent every extension turn and still landed short
+                # was capped, not completed — the undershoot this extension
+                # exists to prevent has to stay visible in the result.
+                result.stop_reason = (
+                    "target_seconds" if over_time else ("max_turns" if ran_out_of_turns else "complete")
+                )
                 break
             if turn_index == brief.max_turns:
                 logger.info(
@@ -476,9 +486,10 @@ async def run_act(
             # still has to fit. Never on the opening turn, though — `target_seconds`
             # only has to be > 0, and an act targeting less than one turn would
             # otherwise open with its own sign-off. `over_time` and the hard cap
-            # still bind, so a genuine one-turn act (max_turns=1) still lands.
-            avg_turn = (result.seconds / turn_index) if turn_index >= 2 else settings.turn_seconds
+            # still bind, so a one-turn act still lands on its one turn.
+            avg_turn = (result.seconds / turn_index) if turn_index >= 1 else settings.turn_seconds
             close_is_due = turn_index >= 1 and result.seconds + avg_turn >= brief.target_seconds
+            ran_out_of_turns = turn_index == hard_cap - 1 and not over_time and not close_is_due
             is_final_turn = over_time or close_is_due or turn_index == hard_cap - 1
             agent = agents[order[turn_index % len(order)]]
 
@@ -500,9 +511,9 @@ async def run_act(
                     point_index=schedule.get(turn_index),
                 )
                 if note is None and not is_final_turn and turn_index >= brief.max_turns - 1:
-                    # Past the planned budget the point schedule has nothing left
-                    # to say, and an unsteered extension turn is where recap
-                    # loops start.
+                    # At the end of the planned budget and beyond it, the point
+                    # schedule has nothing left to say, and an unsteered turn
+                    # there is where recap loops start.
                     note = EXTENSION_NOTE
             # One bound over the whole turn rather than over `speak()` alone: a
             # stalled session hangs on the steer, or on feeding the others, just

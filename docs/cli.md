@@ -272,6 +272,15 @@ you paid for:
 sanzaru podcast simulate --resume d33730ea   # records only the missing acts
 ```
 
+The printed id goes to **stderr**, so choose it yourself when a harness parses only stdout:
+`--run-id ep1`, or a top-level `"run_id"` in the rundown JSON (the flag wins). Then `--resume ep1`
+is predictable even if the shell died before you read anything.
+
+`--qc-retry` re-records flagged acts, and the take it replaces is preserved beside it as
+`<slug>_<run>_<act>_take1.mp3` (`_take2`, … on later retries) — never read by `--resume`, so the
+run keeps exactly one truth while you stay free to assemble the best cut per act. QC verdicts do
+disagree run-to-run, so a retry is not automatically the better take.
+
 This composes with `-o`: the episode and stems go where you asked, while the manifest and the act
 checkpoints always stay in the media dir, so the printed resume command works verbatim with no
 `-o` of its own. A resume also reinstates the run's settings from the manifest — including
@@ -282,8 +291,8 @@ that cannot fit under the restored one stops before it records anything.
 
 Options: `-p/--premise`, `--acts`, `-m/--target-minutes`, `--title`, `--style`, `--host`,
 `--model`, `--planner-model`, `--turn-seconds`, `--turn-tokens`, `--max-cost`, `--max-sessions`,
-`--resume RUN_ID`, `--stems`, `--qc/--no-qc`, `--qc-retry`, `--dry-run`, `--act-gap`, `--format`,
-`--bitrate`, `-o`.
+`--resume RUN_ID`, `--run-id RUN_ID`, `--stems`, `--qc/--no-qc`, `--qc-retry`, `--dry-run`,
+`--act-gap`, `--format`, `--bitrate`, `-o`.
 
 Exit codes are the usual contract plus one: **6** means the cost ceiling stopped the run — the
 envelope carries `spent_usd`, `suggested_limit_usd`, `completed_acts`, and a `resume` command.

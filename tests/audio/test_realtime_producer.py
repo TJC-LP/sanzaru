@@ -280,8 +280,11 @@ class TestRunAct:
         factory, handed = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
         result = await run_act(brief, hosts, settings, connect=factory)
         assert len(result.turns) == 9
-        assert result.stop_reason == "complete"
         assert any("Final turn" in note for conn in handed for note in conn.steers)
+        # 9s of a 60s target: it closed because it ran out of turns, not because
+        # it arrived. Reporting "complete" here would hide the exact undershoot
+        # extension exists to prevent.
+        assert result.stop_reason == "max_turns"
 
     async def test_extension_turns_fill_toward_the_time_target(self, fake_realtime, connect_factory, hosts, settings):
         # 5s turns against a 40s target with a 6-turn plan: the old hard stop
@@ -303,6 +306,16 @@ class TestRunAct:
         result = await run_act(act, hosts, settings, connect=factory)
         assert len(result.turns) == 2
         assert "Final turn" not in handed[0].steers[0]
+
+    async def test_a_single_turn_act_records_exactly_one_turn(self, fake_realtime, connect_factory, hosts, settings):
+        # Rounding 1.5x up would turn max_turns=1 into two turns and move the
+        # closing note off turn 0 — a caller planning one turn is stating a
+        # shape, not estimating a duration.
+        act = ActBrief(id="one", title="t", topic="x", target_seconds=60.0, max_turns=1)
+        factory, handed = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
+        result = await run_act(act, hosts, settings, connect=factory)
+        assert len(result.turns) == 1
+        assert "Final turn" in handed[0].steers[0]
 
     async def test_extension_turns_are_steered_away_from_recap(
         self, fake_realtime, connect_factory, brief, hosts, settings
@@ -334,13 +347,25 @@ class TestRunAct:
         result = await run_act(brief, hosts, settings, connect=factory, start_index=1)
         assert result.turns[0].speaker_id == "avery"
 
+    async def test_an_explicit_speaking_order_still_beats_turn_notes(
+        self, fake_realtime, connect_factory, brief, hosts, settings
+    ):
+        # Pinning is a fallback for un-choreographed acts; a caller who wrote
+        # the order down owns it, notes or not.
+        brief.turn_notes = {2: "Object to that, concretely."}
+        brief.speaking_order = ["rory", "avery"]
+        factory, _ = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
+        result = await run_act(brief, hosts, settings, connect=factory, start_index=1)
+        assert result.turns[0].speaker_id == "rory"
+
     async def test_stops_on_the_duration_budget(self, fake_realtime, connect_factory, hosts, settings):
-        # 40s turns against a 60s target: two turns overshoot, then it lands.
+        # 40s turns against a 60s target: turn 1 is cued to close, because by
+        # then the measured average says a third turn would land 60s over.
         long_act = ActBrief(id="act1", title="t", topic="x", target_seconds=60.0, max_turns=20)
         factory, _ = connect_factory(fake_realtime.Connection(seconds=40.0), fake_realtime.Connection(seconds=40.0))
         result = await run_act(long_act, hosts, settings, connect=factory)
         assert result.stop_reason == "target_seconds"
-        assert len(result.turns) == 3
+        assert len(result.turns) == 2
 
     async def test_opening_note_differs_by_act_position(self, fake_realtime, connect_factory, brief, hosts, settings):
         factory, handed = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))

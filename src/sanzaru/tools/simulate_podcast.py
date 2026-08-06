@@ -339,6 +339,22 @@ def _act_meta_name(slug: str, run_id: str, act_id: str) -> str:
     return f"{slug}_{run_id}_{act_id}.json"
 
 
+async def _next_take_name(storage: StorageBackend, checkpoint_name: str) -> str:
+    """`foo.mp3` -> the first free `foo_takeN.mp3`, counting from 1.
+
+    A fixed `_take1` would be correct for the single retry one invocation can
+    run, and wrong the moment a resumed run retries the same act again: the
+    second backup would overwrite the first take — the one a caller keeps
+    precisely because QC verdicts disagree run-to-run — and the storage layer
+    has no delete, so it would not be recoverable.
+    """
+    stem, _, ext = checkpoint_name.rpartition(".")
+    take = 1
+    while await storage.exists("audio", f"{stem}_take{take}.{ext}"):
+        take += 1
+    return f"{stem}_take{take}.{ext}"
+
+
 def _with_format_suffix(filename: str | None, output_format: str) -> str | None:
     """Re-point a filename at the container that is actually being written."""
     if not filename:
@@ -980,20 +996,25 @@ async def simulate_podcast(
             # observed to disagree run-to-run on the same material — so the take
             # being replaced must survive it. Re-recording writes to the same
             # checkpoint names, which used to make the original unrecoverable;
-            # park it under a `_take1` suffix first (never read by
+            # park it under a `_takeN` suffix first (never read by
             # `_load_checkpoint`, so resume still sees exactly one truth).
+            preserved: list[str] = []
             for flagged_act_id in qc_report.flagged_acts:
                 for checkpoint_name in (
                     _act_audio_name(slug, run_id, flagged_act_id),
                     _act_meta_name(slug, run_id, flagged_act_id),
                 ):
                     if await ckpt_storage.exists("audio", checkpoint_name):
-                        stem, _, ext = checkpoint_name.rpartition(".")
-                        backup_name = f"{stem}_take1.{ext}"
+                        backup_name = await _next_take_name(ckpt_storage, checkpoint_name)
                         await checkpoints.write_audio_file(
                             backup_name, await ckpt_storage.read("audio", checkpoint_name)
                         )
+                        preserved.append(backup_name)
                         logger.info("qc-retry: previous take preserved as %s", backup_name)
+            # Only the log knew these existed, which made choosing between takes
+            # undiscoverable from the tool's own output.
+            if preserved and on_progress is not None:
+                on_progress(f"previous takes preserved: {', '.join(preserved)}")
             recorded = await _record_all(
                 rundown,
                 effective,

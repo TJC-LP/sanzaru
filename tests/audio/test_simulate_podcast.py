@@ -904,6 +904,15 @@ class TestReportedCost:
         # ...and unflagged acts were not touched.
         assert f"{slug}_testrun_act1_take1.mp3" not in names
 
+    async def test_a_second_retry_does_not_clobber_the_first_preserved_take(self, media_dir):
+        """`_take1` is a floor, not a fixed name — the storage layer has no delete."""
+        storage = sim.checkpoint_storage()
+        await storage.write("audio", "show_run_act2.mp3", b"take-1")
+        assert await sim._next_take_name(storage, "show_run_act2.mp3") == "show_run_act2_take1.mp3"
+
+        await storage.write("audio", "show_run_act2_take1.mp3", b"take-1")
+        assert await sim._next_take_name(storage, "show_run_act2.mp3") == "show_run_act2_take2.mp3"
+
     async def test_a_resumed_run_reports_the_spend_it_replayed(self, rundown, media_dir, stub_run_act):
         first = await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="testrun"))
         resumed = await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="testrun", qc=False))
@@ -1228,7 +1237,16 @@ class TestRundownValidation:
     def test_an_underbudgeted_act_warns(self, caplog):
         with caplog.at_level("WARNING", logger="sanzaru"):
             ActBrief(id="act1", title="t", topic="x", target_seconds=600, max_turns=4)
-        assert "stop on the duration budget" in caplog.text
+        # The threshold accounts for extension: 4 planned turns reach 6, and 6
+        # turns still cannot fill 600s.
+        assert "stop on the turn cap short of its target" in caplog.text
+
+    def test_an_act_that_extension_can_fill_does_not_warn(self, caplog):
+        # 8 turns extend to 12, which covers 150s at ~15s a turn. Warning here
+        # would train the planner to over-budget turns it does not need.
+        with caplog.at_level("WARNING", logger="sanzaru"):
+            ActBrief(id="act1", title="t", topic="x", target_seconds=150, max_turns=8)
+        assert "turn cap" not in caplog.text
 
 
 @pytest.mark.unit

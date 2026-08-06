@@ -37,6 +37,18 @@ MAX_ACT_TURNS = 200
 MAX_EPISODE_MINUTES = 240.0
 MAX_TURN_TOKENS = 32_000
 
+TURN_EXTENSION_FACTOR = 1.5
+"""How far past `max_turns` an act may extend to fill its `target_seconds`.
+
+`max_turns` was a hard stop, which made act length a function of how long the
+model's turns happen to run: gpt-realtime's full-size turns measured ~10s
+against the mini's ~17.5s under the same 15s rule, so full-model acts stopped a
+third short of their target. The turn budget stays what the planner priced —
+extension turns only happen inside the time the act was already budgeted for,
+and the absolute ceiling (`MAX_ACT_TURNS`) still binds. Lives here rather than
+in `producer` so the act's own budget warning can account for it without
+importing back the other way."""
+
 DEFAULT_TURN_SECONDS = 15.0
 """Target upper bound for one turn, stated in the prompt. Enforced socially, not
 mechanically — a hard cut mid-sentence sounds far worse than a long turn. Turns
@@ -195,13 +207,15 @@ class ActBrief(BaseModel):
         `DEFAULT_TURN_SECONDS`, so an episode that raises `turn_seconds` can see
         this fire spuriously; it stays a log line for that reason.
         """
-        if self.max_turns * DEFAULT_TURN_SECONDS < self.target_seconds:
+        if self.max_turns * TURN_EXTENSION_FACTOR * DEFAULT_TURN_SECONDS < self.target_seconds:
             logger.warning(
-                "act %r: %d turns is unlikely to fill %.0fs (turns run ~%.0fs), so it will stop on "
-                "the duration budget before its closing turn - raise max_turns or lower target_seconds",
+                "act %r: %d turns is unlikely to fill %.0fs even extended to %.0f turns (turns run "
+                "~%.0fs), so it will stop on the turn cap short of its target - raise max_turns or "
+                "lower target_seconds",
                 self.id,
                 self.max_turns,
                 self.target_seconds,
+                self.max_turns * TURN_EXTENSION_FACTOR,
                 DEFAULT_TURN_SECONDS,
             )
         return self

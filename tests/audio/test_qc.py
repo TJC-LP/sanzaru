@@ -217,6 +217,45 @@ class TestRunQc:
         assert report.transcribed_minutes == pytest.approx(1.0)
         assert len(client.responses.calls) == 1
 
+    async def test_an_act_cut_off_mid_sentence_is_flagged(self, qc_client):
+        """The recording, not the judge, is what knows a turn hit the token cap.
+
+        A judge reading a transcript missed this consistently; an act whose
+        *final* turn was truncated ends mid-sentence, which is audible.
+        """
+        qc_client(
+            transcripts={"act1.mp3": "the plumbing under it", "act2.mp3": "and what it costs"},
+            judgement=_Judgement(
+                summary="reads clean",
+                acts=[
+                    _JudgedAct(
+                        act_id=act_id,
+                        covered_points=["a point"],
+                        missed_points=[],
+                        repeats_earlier=False,
+                        off_brief=False,
+                        notes="",
+                    )
+                    for act_id in ("act1", "act2")
+                ],
+            ),
+        )
+        cut_off = _turn("act2", 1, "and what it costs")
+        cut_off.truncated = True
+        report = await run_qc(
+            _rundown(),
+            {"act1": b"one", "act2": b"two"},
+            {
+                "act1": [_turn("act1", 0, "the plumbing under it")],
+                # A mid-act truncation reads as a barge-in; only the tail counts.
+                "act2": [_turn("act2", 0, "and what it costs"), cut_off],
+            },
+        )
+        assert report.flagged_acts == ["act2"]
+        act2 = next(v for v in report.acts if v.act_id == "act2")
+        assert act2.tail_truncated
+        assert act2.truncated_turns == 1
+
     async def test_nothing_to_verify_is_not_a_failure(self, qc_client):
         client = qc_client()
         report = await run_qc(_rundown(), {}, {})
