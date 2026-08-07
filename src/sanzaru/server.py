@@ -331,8 +331,9 @@ if check_audio_available():
         script: podcast.PodcastScript,
         model: SpeechModel | ElevenLabsModel = "gpt-4o-mini-tts",
         provider: TTSProviderName = "openai",
+        output_filename: str | None = None,
     ):
-        return await podcast.generate_podcast(script, model=model, provider=provider)
+        return await podcast.generate_podcast(script, model=model, provider=provider, filename=output_filename)
 
     @mcp.tool(description=SIMULATE_PODCAST, annotations=WRITE_OPEN)
     async def simulate_podcast(brief: simulate.SimulationBrief):

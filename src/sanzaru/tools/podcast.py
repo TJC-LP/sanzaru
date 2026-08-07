@@ -701,15 +701,20 @@ async def generate_podcast(
 
     written_name = filename or f"{_safe_title(title)}_{int(time.time())}.{output_format}"
     if filename is not None:
-        suffix = pathlib.PurePosixPath(filename).suffix.lstrip(".").lower()
-        if suffix and suffix != output_format:
+        # PurePath, not PurePosixPath: a Windows-style name would keep its
+        # backslashes inside `suffix` on POSIX and skip the check below.
+        suffix = pathlib.PurePath(filename).suffix.lstrip(".").lower()
+        if suffix != output_format:
             # The bytes are whatever `config.output_format` says; the name is
             # whatever the caller asked for. Renaming used to happen after the
             # write, so this mismatch was equally possible and equally silent.
+            # A suffix-less name warns too — an extension-less audio file is the
+            # more confusing outcome, not the less.
             logger.warning(
-                "Podcast filename %r ends in .%s but config.output_format is %r — the file contains %s audio",
+                "Podcast filename %r does not end in .%s but the file contains %s audio — "
+                "rename it to .%s, or set config.output_format to match",
                 filename,
-                suffix,
+                output_format,
                 output_format,
                 output_format,
             )

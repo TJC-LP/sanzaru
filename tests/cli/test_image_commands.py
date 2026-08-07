@@ -226,6 +226,41 @@ def test_image_prepare_renders_tuple_sizes(mocker, tmp_path):
 
 
 @pytest.mark.integration
+def test_image_prepare_reports_the_final_name_across_dirs(mocker, tmp_path):
+    """#54 on the image side: the input pins the reference dir, so `-o` into a
+    different one makes plan_output stage under a __sanzaru_tmp name. The
+    envelope must name the file that survives the move, not the staging one."""
+    in_dir, out_dir = tmp_path / "in", tmp_path / "out"
+    in_dir.mkdir()
+    (in_dir / "hero.png").write_bytes(b"x")
+
+    async def fake_prepare(input_filename, target_size, output_filename, resize_mode):
+        (in_dir / output_filename).write_bytes(b"prepared")
+        return {
+            "output_filename": output_filename,
+            "original_size": (1536, 1024),
+            "target_size": (1280, 720),
+            "resize_mode": resize_mode,
+        }
+
+    prepare = mocker.patch(
+        "sanzaru.tools.reference.prepare_reference_image", mocker.AsyncMock(side_effect=fake_prepare)
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        ["image", "prepare", str(in_dir / "hero.png"), "--size", "1280x720", "-o", str(out_dir / "ref.png")],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert prepare.call_args.kwargs["output_filename"] == "ref__sanzaru_tmp.png"
+    parsed = json.loads(result.stdout)
+    assert parsed["result"]["output_filename"] == "ref.png"
+    assert parsed["result"]["file"]["path"] == str(out_dir / "ref.png")
+    assert (out_dir / "ref.png").read_bytes() == b"prepared"
+
+
+@pytest.mark.integration
 def test_top_level_wait_dispatches_mixed_types(mocker):
     mocker.patch("sanzaru.polling.wait_for_video", mocker.AsyncMock(return_value=_video()))
     mocker.patch(

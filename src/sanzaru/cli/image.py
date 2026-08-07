@@ -169,6 +169,12 @@ async def wait_one_image(
                 resume=resume,
                 extra={"id": response_id, "status": "completed"},
             )
+        # `payload` starts as an ImageResponse ({id, status, created_at}), which
+        # carries no name — so without seeding it here `jq -r .result.filename`
+        # would be null for `create --download` and `wait --download` while
+        # `image download` returns one. reconcile then points it at the final
+        # path, the same as every other write site.
+        payload["filename"] = dl["filename"]
         payload["size"] = dl["size"]
         payload["format"] = dl["format"]
         payload["file"] = _file_payload(final_path)
