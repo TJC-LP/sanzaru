@@ -320,6 +320,28 @@ class TestMalformedScriptsStayUsageErrors:
         with pytest.raises(ValueError, match=re.escape(expected)):
             _validate_script(minimal_script)
 
+    @pytest.mark.parametrize("field", ["name", "voice"])
+    def test_non_string_name_or_voice_is_a_usage_error(self, field, minimal_script):
+        """The sharpest case in the family. With an explicit `id`, a non-string
+        `name` passed every other check: the episode rendered, the mp3 was
+        *written*, and only then did PodcastResult fail pydantic — exit 1, with
+        paid-for audio orphaned under a name the caller never learns."""
+        minimal_script["speakers"] = [{"id": "a", "name": "A", "voice": "ash", field: 123}]
+        minimal_script["segments"][0]["speaker"] = "a"
+
+        with pytest.raises(ValueError, match=rf"field\(s\) must be strings: '{field}' is int"):
+            _validate_script(minimal_script)
+
+    @pytest.mark.parametrize("key", ["default_pause_ms", "intro_silence_ms", "outro_silence_ms"])
+    def test_non_integer_silence_is_a_usage_error(self, key, minimal_script):
+        """A string builds a pause list of strings, and `sum()` in the duration
+        estimate raises TypeError — the segment-level `pause_after` was already
+        checked, these were not."""
+        minimal_script["config"][key] = "600"
+
+        with pytest.raises(ValueError, match=rf"{key}' must be an integer, got str"):
+            _validate_script(minimal_script)
+
     def test_string_speed_is_a_usage_error(self, minimal_script):
         """A classic hand-authored-JSON slip, and #36 making `speed` optional
         means the authors most likely to type it are writing it by hand."""
@@ -813,6 +835,40 @@ async def test_generate_podcast_happy_path(mocker, tmp_audio_path):
     assert result.transcript == (
         "**Alex:** Welcome to the show.\n\n**Sam:** Great to be here.\n\n**Alex:** Let us get started."
     )
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_a_bad_speaker_type_costs_nothing(mocker, tmp_audio_path):
+    """`_validate_script` promises to "fail before spending a single API call".
+    A non-string `name` alongside an explicit `id` broke that promise the
+    hardest: it rendered, wrote the file, then died in PodcastResult."""
+    from sanzaru.storage.local import LocalStorageBackend
+
+    mock_response = mocker.MagicMock()
+    mock_response.content = b"FAKE"
+    mock_client = mocker.MagicMock()
+    mock_client.audio.speech.create = mocker.AsyncMock(return_value=mock_response)
+    mocker.patch("sanzaru.audio.providers.openai_provider.get_client", return_value=mock_client)
+    stitch = mocker.patch("sanzaru.tools.podcast._stitch_audio", return_value=b"STITCHED")
+    mocker.patch(
+        "sanzaru.infrastructure.file_system.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"audio": tmp_audio_path}),
+    )
+
+    from sanzaru.tools.podcast import generate_podcast
+
+    with pytest.raises(ValueError, match="must be strings"):
+        await generate_podcast(
+            {
+                "speakers": [{"id": "a", "name": 123, "voice": "ash"}],
+                "segments": [{"speaker": "a", "text": "hello"}],
+            }
+        )
+
+    assert mock_client.audio.speech.create.call_count == 0
+    assert stitch.call_count == 0
+    assert not list(tmp_audio_path.iterdir())  # no orphaned mp3
 
 
 @pytest.mark.integration

@@ -344,6 +344,17 @@ def _validate_script(
     ):
         errors.append(f"PodcastConfig 'max_concurrency' must be a positive integer, got {config['max_concurrency']}")
 
+    # The silence knobs, whose segment-level counterpart (`pause_after`) is
+    # already checked. A string here builds a pause list of strings, and
+    # `sum(pause_ms_list)` in the duration estimate raises TypeError — exit 1.
+    for ms_key, ms_value in (
+        ("default_pause_ms", config.get("default_pause_ms")),
+        ("intro_silence_ms", config.get("intro_silence_ms")),
+        ("outro_silence_ms", config.get("outro_silence_ms")),
+    ):
+        if ms_value is not None and (isinstance(ms_value, bool) or not isinstance(ms_value, int)):
+            errors.append(f"PodcastConfig {ms_key!r} must be an integer, got {type(ms_value).__name__}")
+
     render_mode: PodcastRenderMode = config.get("render_mode", DEFAULT_RENDER_MODE)
     if render_mode not in RENDER_MODES:
         errors.append(f"PodcastConfig 'render_mode' must be one of: {', '.join(RENDER_MODES)}, got {render_mode!r}")
@@ -411,6 +422,21 @@ def _validate_script(
 
         if missing:
             errors.append(f"{label} missing required field(s): {', '.join(repr(f) for f in missing)}")
+        # Present but wrong type. This is the sharpest case in the family: with
+        # an explicit `id`, a non-string `name` passes every other check, the
+        # episode renders and is *written*, and only then does
+        # `PodcastResult(speakers=[s["name"] ...])` fail pydantic — exit 1, with
+        # paid-for audio orphaned on disk under a name the caller never learns.
+        wrong_type = [
+            (field, value)
+            for field, value in (("name", speaker.get("name")), ("voice", speaker.get("voice")))
+            if field not in missing and not isinstance(value, str)
+        ]
+        if wrong_type:
+            errors.append(
+                f"{label} field(s) must be strings: "
+                + ", ".join(f"{field!r} is {type(value).__name__}" for field, value in wrong_type)
+            )
         if "speed" in speaker and (isinstance(speaker["speed"], bool) or not isinstance(speaker["speed"], int | float)):
             # `"speed": "1.0"` is a classic hand-authored-JSON slip, and #36
             # making the field optional means the authors most likely to type it
@@ -418,7 +444,7 @@ def _validate_script(
             # float/str comparison — a TypeError, i.e. exit 1, blaming the tool.
             errors.append(f"{label} 'speed' must be a number, got {type(speaker['speed']).__name__}")
             continue
-        if missing or not id_ok:
+        if missing or wrong_type or not id_ok:
             continue
 
         speaker_ok = True
