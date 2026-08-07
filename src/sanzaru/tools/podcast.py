@@ -17,7 +17,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from io import BytesIO
-from typing import Literal, NotRequired, TypedDict
+from typing import Literal, NoReturn, NotRequired, TypedDict, cast
 
 import anyio
 from aioresult import ResultCapture  # type: ignore[import-untyped]
@@ -54,13 +54,38 @@ from ..infrastructure import FileSystemRepository
 
 _ELEVENLABS_MODEL_NAMES = frozenset(ELEVENLABS_MODELS)
 
+# Defaults the render path already applied via `config.get(...)` while
+# `_validate_script` rejected scripts that omitted the same keys — the validator
+# was strictly stricter than the renderer, so the requirement bought nothing but
+# an edit cycle (#36). Named once here so the two can never disagree.
+DEFAULT_PAUSE_MS = 600
+DEFAULT_NORMALIZE_LOUDNESS = True
+DEFAULT_OUTPUT_FORMAT: Literal["mp3", "wav"] = "mp3"
+
+#: Neutral speed. ElevenLabs' no-speed models require exactly this, so it is
+#: also the only value that is safe to supply on a speaker's behalf.
+DEFAULT_SPEAKER_SPEED = 1.0
+
+#: Stand-in title. No timestamp: the generated filename appends its own, and
+#: `_safe_title` falls back to this same value, so naming it once keeps the two
+#: from drifting the way the config defaults above would have.
+DEFAULT_TITLE = "podcast"
+
 
 class Speaker(TypedDict):
-    id: str
+    """One voice in an episode, as authored.
+
+    `name` and `voice` are the only fields a caller must supply: everything else
+    has a defensible default, and demanding it just costs an edit cycle (#36).
+    `_validate_script` returns speakers with `id` and `speed` filled in, so the
+    render path can index them unconditionally.
+    """
+
     name: str
     voice: str
-    speed: float
-    instructions: str
+    id: NotRequired[str]
+    speed: NotRequired[float]
+    instructions: NotRequired[str]
     role: NotRequired[str]
     provider: NotRequired[TTSProviderName]
     model: NotRequired[str]
@@ -76,11 +101,14 @@ class Segment(TypedDict):
 
 
 class PodcastConfig(TypedDict):
-    default_pause_ms: int
+    """Episode-wide render settings. Every field is optional — the render path
+    already defaulted these three, so requiring them only cost a round trip."""
+
+    default_pause_ms: NotRequired[int]
     intro_silence_ms: NotRequired[int]
     outro_silence_ms: NotRequired[int]
-    normalize_loudness: bool
-    output_format: Literal["mp3", "wav"]
+    normalize_loudness: NotRequired[bool]
+    output_format: NotRequired[Literal["mp3", "wav"]]
     output_bitrate: NotRequired[str]
     provider: NotRequired[TTSProviderName]
     max_concurrency: NotRequired[int]
@@ -89,11 +117,13 @@ class PodcastConfig(TypedDict):
 
 
 class PodcastScript(TypedDict):
-    title: str
-    description: NotRequired[str]
+    """A whole episode. Only `speakers` and `segments` are required."""
+
     speakers: list[Speaker]
     segments: list[Segment]
-    config: PodcastConfig
+    title: NotRequired[str]
+    description: NotRequired[str]
+    config: NotRequired[PodcastConfig]
 
 
 class PodcastResult(BaseModel):
@@ -165,87 +195,293 @@ def _resolve_segment_speech(segment: Segment, speaker: Speaker) -> tuple[float, 
     return speed, settings
 
 
+def _speaker_label(index: int, speaker: object) -> str:
+    """`Speaker 0`, plus its id or name when it has one.
+
+    An author fixing a four-speaker script should not have to count array
+    positions to find the one being complained about.
+    """
+    if isinstance(speaker, dict):
+        for key in ("id", "name"):
+            value = speaker.get(key)
+            if isinstance(value, str) and value.strip():
+                return f"Speaker {index} ({value.strip()!r})"
+    return f"Speaker {index}"
+
+
+def _raise_validation_errors(errors: list[str]) -> NoReturn:
+    """Report every problem found in this pass, not just the first.
+
+    One error keeps the historical single-line message. Several are listed
+    together: the caller is usually an agent that has to re-read the whole
+    schema on each round trip, so N errors must not cost N renders (#53).
+    """
+    if len(errors) == 1:
+        raise ValueError(errors[0])
+    listed = "\n".join(f"  - {error}" for error in errors)
+    raise ValueError(f"PodcastScript has {len(errors)} problems:\n{listed}")
+
+
+def _normalize_speaker(speaker: Speaker) -> Speaker:
+    """Apply the speaker defaults from #36 / #53.
+
+    `instructions` is deliberately left absent rather than defaulted to `""`:
+    the render path distinguishes "no direction" from an explicitly empty
+    `instruction_override`, and ElevenLabs warns on any non-empty value.
+    """
+    normalized = dict(speaker)
+    # Strip an explicit id as well as a derived one: otherwise {"id": " Alex "}
+    # demands {"speaker": " Alex "} back — the same trap stripping the derived
+    # one avoids — and " Alex " vs "Alex" are two ids that print identically in
+    # every log line and error message.
+    explicit_id = normalized.get("id")
+    if isinstance(explicit_id, str):
+        normalized["id"] = explicit_id.strip()
+    name = normalized.get("name")
+    if not normalized.get("id") and isinstance(name, str) and name.strip():
+        # Segments may then reference the speaker by name, which is what an
+        # author writes first anyway.
+        normalized["id"] = name.strip()
+    normalized.setdefault("speed", DEFAULT_SPEAKER_SPEED)
+    return cast(Speaker, normalized)
+
+
 def _validate_script(
     script: PodcastScript,
     default_provider: TTSProviderName = "openai",
     default_model: str | None = None,
 ) -> tuple[str, list[Speaker], list[Segment], PodcastConfig]:
-    """Validate PodcastScript structure and return its components.
+    """Validate a PodcastScript, apply defaults, and return its components.
 
     `default_model` must be the same value the render path will use, or
     validation checks a model the episode never runs on.
 
+    Errors are collected per phase rather than raised on the first one, because
+    a later phase cannot be trusted once an earlier one failed: segment checks
+    need resolved speaker ids, and speaker checks need a usable provider. Within
+    a phase every problem is reported at once.
+
+    Collection is across items, not within one: a speaker with both a bad
+    `speed` and bad `voice_settings` reports only the speed, because each item's
+    later checks depend on its earlier ones holding. So "one edit cycle" is a
+    promise per item, not an absolute — deliberately, not an oversight.
+
+    Returns speakers with `id` and `speed` filled in, so the render path can
+    index them unconditionally.
+
     Raises ValueError if the script is invalid.
     """
-    for key in ("title", "speakers", "segments", "config"):
+    errors: list[str] = []
+
+    # ---- phase 1: shape. Nothing else is checkable until these exist. ----
+    for key in ("speakers", "segments"):
         if key not in script:
-            raise ValueError(f"PodcastScript missing required field: '{key}'")
+            errors.append(f"PodcastScript missing required field: '{key}'")
+    if errors:
+        _raise_validation_errors(errors)
 
-    title = script["title"]
-    if not title or not title.strip():
-        raise ValueError("PodcastScript 'title' must not be empty")
+    # Container types first. The script arrives from a raw `json.loads` with no
+    # pydantic in the way, so anything below that is structurally used — len(),
+    # enumerate(), dict() — would otherwise raise TypeError from deep inside and
+    # land as an `internal` envelope at exit 1 rather than the usage error it is.
+    # `{"speakers": {"host": {...}}}` is the one worth naming: an object keyed by
+    # id instead of an array is a very plausible mistake, and it used to surface
+    # as "dictionary update sequence element #0 has length 4; 2 is required".
+    # Literal subscripts, not a loop variable: mypy cannot narrow the latter to
+    # a TypedDict key.
+    for key, value in (("speakers", script["speakers"]), ("segments", script["segments"])):
+        if not isinstance(value, list):
+            errors.append(f"PodcastScript '{key}' must be an array, got {type(value).__name__}")
+    raw_config = script.get("config")
+    if raw_config is not None and not isinstance(raw_config, dict):
+        errors.append(f"PodcastScript 'config' must be an object, got {type(raw_config).__name__}")
+    if errors:
+        _raise_validation_errors(errors)
 
-    speakers = script["speakers"]
-    if not speakers:
-        raise ValueError("PodcastScript must have at least 1 speaker")
-    if len(speakers) > 4:
-        raise ValueError("PodcastScript supports at most 4 speakers")
+    speakers_raw = script["speakers"]
+    if not speakers_raw:
+        errors.append("PodcastScript must have at least 1 speaker")
+    elif len(speakers_raw) > 4:
+        errors.append("PodcastScript supports at most 4 speakers")
+    if not script["segments"]:
+        errors.append("PodcastScript must have at least 1 segment")
 
-    config = script["config"]
-    for key in ("default_pause_ms", "normalize_loudness", "output_format"):
-        if key not in config:
-            raise ValueError(f"PodcastConfig missing required field: '{key}'")
+    # Speaker elements only. Segment elements are checked in phase 3, where the
+    # rest of the segment rules live: a malformed segment does not stop speaker
+    # validation, so raising on it here would suppress the very speaker errors
+    # #53 is about — the caller would fix the segment, re-run, and only then
+    # meet the speakers.
+    for i, entry in enumerate(speakers_raw):
+        if not isinstance(entry, dict):
+            errors.append(f"Speaker {i} must be an object, got {type(entry).__name__}")
+    if errors:
+        _raise_validation_errors(errors)
 
-    if config["output_format"] not in ("mp3", "wav"):
-        raise ValueError("PodcastConfig 'output_format' must be 'mp3' or 'wav'")
+    # `title` is presentational — it names the default output file and rides in
+    # the result. A plain default is fine; refusing to render without one was
+    # not (#36). No timestamp: the generated filename appends its own.
+    raw_title = script.get("title")
+    title = raw_title.strip() if isinstance(raw_title, str) and raw_title.strip() else DEFAULT_TITLE
 
+    config: PodcastConfig = raw_config or cast(PodcastConfig, {})
+
+    # ---- phase 2: config and speakers, collected together ----
+    output_format = config.get("output_format", DEFAULT_OUTPUT_FORMAT)
+    if output_format not in ("mp3", "wav"):
+        errors.append(f"PodcastConfig 'output_format' must be 'mp3' or 'wav', got {output_format!r}")
+
+    config_provider_ok = True
     if "provider" in config:
-        validate_provider_name(config["provider"], "PodcastConfig 'provider'")
+        try:
+            validate_provider_name(config["provider"], "PodcastConfig 'provider'")
+        except ValueError as exc:
+            errors.append(str(exc))
+            # Every speaker inherits this, so probing them would just restate it.
+            config_provider_ok = False
+
     if "max_concurrency" in config and (
         not isinstance(config["max_concurrency"], int) or config["max_concurrency"] < 1
     ):
-        raise ValueError(f"PodcastConfig 'max_concurrency' must be a positive integer, got {config['max_concurrency']}")
+        errors.append(f"PodcastConfig 'max_concurrency' must be a positive integer, got {config['max_concurrency']}")
+
+    # The silence knobs, whose segment-level counterpart (`pause_after`) is
+    # already checked. A string here builds a pause list of strings, and
+    # `sum(pause_ms_list)` in the duration estimate raises TypeError — exit 1.
+    for ms_key, ms_value in (
+        ("default_pause_ms", config.get("default_pause_ms")),
+        ("intro_silence_ms", config.get("intro_silence_ms")),
+        ("outro_silence_ms", config.get("outro_silence_ms")),
+    ):
+        if ms_value is not None and (isinstance(ms_value, bool) or not isinstance(ms_value, int)):
+            errors.append(f"PodcastConfig {ms_key!r} must be an integer, got {type(ms_value).__name__}")
 
     render_mode: PodcastRenderMode = config.get("render_mode", DEFAULT_RENDER_MODE)
     if render_mode not in RENDER_MODES:
-        raise ValueError(f"PodcastConfig 'render_mode' must be one of: {', '.join(RENDER_MODES)}, got {render_mode!r}")
+        errors.append(f"PodcastConfig 'render_mode' must be one of: {', '.join(RENDER_MODES)}, got {render_mode!r}")
     if "dialogue_stability" in config:
         stability = config["dialogue_stability"]
         if not isinstance(stability, int | float) or not 0.0 <= stability <= 1.0:
-            raise ValueError(f"PodcastConfig 'dialogue_stability' must be between 0.0 and 1.0, got {stability}")
-        if render_mode != "dialogue":
+            errors.append(f"PodcastConfig 'dialogue_stability' must be between 0.0 and 1.0, got {stability}")
+        elif render_mode != "dialogue":
             logger.warning("PodcastConfig 'dialogue_stability' is ignored unless render_mode is 'dialogue'")
 
+    speakers = [_normalize_speaker(s) for s in speakers_raw]
+
+    # Two sets, and they are equal by the time phase 3 runs — any speaker that
+    # bails out early also appends to `errors`, which raises before then. They
+    # are kept apart because they answer different questions at different times,
+    # and collapsing them would couple this to that reasoning staying true.
+    #
+    # `speaker_ids` is the fully-validated set, populated at the bottom of a
+    # successful iteration in lockstep with `speaker_providers`/`speaker_probes`
+    # — so phase 3 can index those safely for any id it contains.
     speaker_ids: set[str] = set()
+    # `seen_ids` is every id whose *shape* was valid, whether or not the rest of
+    # that speaker checked out. Duplicate detection has to read this one: a
+    # speaker that bails out early never reaches the bottom of the loop, so
+    # testing against the validated set would hide a collision behind an
+    # unrelated error on the first of the pair — the extra round trip #53 exists
+    # to remove.
+    seen_ids: set[str] = set()
     # Per speaker id, so the segment pass below can re-probe with the same
     # provider, model, and voice the render will use.
     speaker_providers: dict[str, TTSProviderName] = {}
     speaker_probes: dict[str, tuple[Speaker, TTSProvider, SpeechRequest]] = {}
 
     for i, speaker in enumerate(speakers):
-        for field in ("id", "name", "voice", "speed", "instructions"):
-            if field not in speaker:
-                raise ValueError(f"Speaker {i} missing required field: '{field}'")
+        label = _speaker_label(i, speaker)
 
+        # Id bookkeeping first. A missing `voice` does not stop us knowing the
+        # id, so registering it before the required-field check is what lets a
+        # duplicate be reported in the *same* pass as the missing field rather
+        # than on the next run — the round trip #53 exists to remove.
+        #
+        # Read through `.get`: `id` is only synthesized from a non-blank string
+        # name, so a name of "   " (or a non-string) leaves it absent — and a
+        # presence check cannot see that, because the key *is* there.
+        # `name` and `voice` are the only fields with no defensible default.
+        missing = [field for field in ("name", "voice") if field not in speaker]
+
+        speaker_id = speaker.get("id")
+        id_ok = isinstance(speaker_id, str) and bool(speaker_id.strip())
+        if not id_ok:
+            # Silent when `name` is what is missing: that error is already
+            # reported below and is the actual diagnosis, so saying "needs an
+            # id, or a name to derive one from" too would be one defect
+            # described twice.
+            if "name" not in missing:
+                errors.append(f"{label} needs a non-empty string 'id', or a non-empty 'name' to derive one from")
+        elif speaker_id in seen_ids:
+            # Newly reachable now that `id` defaults to `name`: two speakers
+            # sharing one would silently collapse in the render path's
+            # speaker_map, and only one of them would ever be heard.
+            errors.append(f"{label} duplicates the speaker id {speaker_id!r}; ids must be unique")
+            id_ok = False
+        else:
+            seen_ids.add(cast(str, speaker_id))
+
+        if missing:
+            errors.append(f"{label} missing required field(s): {', '.join(repr(f) for f in missing)}")
+        # Present but wrong type. This is the sharpest case in the family: with
+        # an explicit `id`, a non-string `name` passes every other check, the
+        # episode renders and is *written*, and only then does
+        # `PodcastResult(speakers=[s["name"] ...])` fail pydantic — exit 1, with
+        # paid-for audio orphaned on disk under a name the caller never learns.
+        wrong_type = [
+            (field, value)
+            for field, value in (("name", speaker.get("name")), ("voice", speaker.get("voice")))
+            if field not in missing and not isinstance(value, str)
+        ]
+        if wrong_type:
+            errors.append(
+                f"{label} field(s) must be strings: "
+                + ", ".join(f"{field!r} is {type(value).__name__}" for field, value in wrong_type)
+            )
+        if "speed" in speaker and (isinstance(speaker["speed"], bool) or not isinstance(speaker["speed"], int | float)):
+            # `"speed": "1.0"` is a classic hand-authored-JSON slip, and #36
+            # making the field optional means the authors most likely to type it
+            # are the ones writing it by hand. Left unchecked it reached a
+            # float/str comparison — a TypeError, i.e. exit 1, blaming the tool.
+            errors.append(f"{label} 'speed' must be a number, got {type(speaker['speed']).__name__}")
+            continue
+        if missing or wrong_type or not id_ok:
+            continue
+
+        speaker_ok = True
         if "provider" in speaker:
-            validate_provider_name(speaker["provider"], f"Speaker {i} 'provider'")
+            try:
+                validate_provider_name(speaker["provider"], f"{label} 'provider'")
+            except ValueError as exc:
+                errors.append(str(exc))
+                speaker_ok = False
+        if not speaker_ok or not config_provider_ok:
+            continue
+
         provider_name = _resolve_provider_name(speaker, config, default_provider)
 
         low, high = _speed_range(provider_name)
         if not low <= speaker["speed"] <= high:
-            raise ValueError(
-                f"Speaker {i} speed must be between {low} and {high} for provider='{provider_name}', "
-                f"got {speaker['speed']}"
+            errors.append(
+                f"{label} speed must be between {low} and {high} for provider='{provider_name}', got {speaker['speed']}"
             )
+            continue
 
         if "voice_settings" in speaker:
-            check_voice_settings_types(speaker["voice_settings"], f"Speaker {i} ")
+            try:
+                check_voice_settings_types(speaker["voice_settings"], f"{label} ")
+            except ValueError as exc:
+                errors.append(str(exc))
+                continue
 
         # Fail before spending a single API call: this resolves the model,
         # rejects cross-provider model names, and applies provider-specific
         # rules (eleven_v3 has no speed, ElevenLabs needs a voice id).
         provider = get_provider(provider_name)
-        model = _resolve_model(speaker, provider, default_model)
+        try:
+            model = _resolve_model(speaker, provider, default_model)
+        except ValueError as exc:
+            errors.append(f"{label}: {exc}")
+            continue
 
         if render_mode == "dialogue" and "voice_settings" in speaker:
             # The dialogue endpoint takes one `stability` for the whole request,
@@ -263,44 +499,84 @@ def _validate_script(
                     speaker["id"],
                 )
 
-        probe = SpeechRequest(
-            text="validation probe",
-            voice=provider.resolve_voice(speaker["voice"]),
-            model=model,
-            speed=speaker["speed"],
-            instructions=speaker["instructions"],
-            voice_settings=speaker.get("voice_settings"),
-        )
-        provider.validate(probe)
+        try:
+            probe = SpeechRequest(
+                text="validation probe",
+                voice=provider.resolve_voice(speaker["voice"]),
+                model=model,
+                speed=speaker["speed"],
+                instructions=speaker.get("instructions"),
+                voice_settings=speaker.get("voice_settings"),
+            )
+            provider.validate(probe)
+        except ValueError as exc:
+            errors.append(f"{label}: {exc}")
+            continue
 
         speaker_ids.add(speaker["id"])
         speaker_providers[speaker["id"]] = provider_name
         speaker_probes[speaker["id"]] = (speaker, provider, probe)
 
+    if errors:
+        _raise_validation_errors(errors)
+
+    # ---- phase 3: segments, which need the resolved speaker ids above ----
     segments = script["segments"]
-    if not segments:
-        raise ValueError("PodcastScript must have at least 1 segment")
 
     for i, segment in enumerate(segments):
-        if "speaker" not in segment:
-            raise ValueError(f"Segment {i} missing required field: 'speaker'")
-        if "text" not in segment:
-            raise ValueError(f"Segment {i} missing required field: 'text'")
+        # `["Alex: hello"]` — a flat list of strings — is the single most
+        # plausible thing an agent hands over without reading the schema, and it
+        # did not even crash: `"speaker" in "Alex: hello"` is a *substring*
+        # test, so it reported missing fields on something that is not an object.
+        if not isinstance(segment, dict):
+            errors.append(f"Segment {i} must be an object, got {type(segment).__name__}")
+            continue
+        missing = [field for field in ("speaker", "text") if field not in segment]
+        if missing:
+            errors.append(f"Segment {i} missing required field(s): {', '.join(repr(f) for f in missing)}")
+            continue
+        # Leaf types before anything uses them structurally: a non-string
+        # `speaker` is unhashable against the id set and a non-string `text`
+        # has no `.strip()` — both TypeError/AttributeError, i.e. exit 1.
+        if not isinstance(segment["speaker"], str):
+            errors.append(f"Segment {i} 'speaker' must be a string, got {type(segment['speaker']).__name__}")
+            continue
+        if not isinstance(segment["text"], str):
+            errors.append(f"Segment {i} 'text' must be a string, got {type(segment['text']).__name__}")
+            continue
         if segment["speaker"] not in speaker_ids:
-            raise ValueError(f"Segment {i} references unknown speaker id: '{segment['speaker']}'")
+            known = ", ".join(sorted(speaker_ids))
+            errors.append(f"Segment {i} references unknown speaker id: '{segment['speaker']}' — known ids: {known}")
+            continue
         if not segment["text"].strip():
-            raise ValueError(f"Segment {i} text must not be empty")
+            errors.append(f"Segment {i} text must not be empty")
+            continue
         if len(segment["text"]) > 40000:
-            raise ValueError(f"Segment {i} text exceeds 40000 characters")
+            errors.append(f"Segment {i} text exceeds 40000 characters")
+            continue
+        if "pause_after" in segment and (
+            isinstance(segment["pause_after"], bool) or not isinstance(segment["pause_after"], int)
+        ):
+            # Detonates in pydub rather than here if it gets through.
+            errors.append(f"Segment {i} 'pause_after' must be an integer, got {type(segment['pause_after']).__name__}")
+            continue
+        if "speed_override" in segment and (
+            isinstance(segment["speed_override"], bool) or not isinstance(segment["speed_override"], int | float)
+        ):
+            errors.append(
+                f"Segment {i} 'speed_override' must be a number, got {type(segment['speed_override']).__name__}"
+            )
+            continue
         if "speed_override" in segment:
             # Checked against the owning speaker's provider range, which is why
             # this runs after the speaker pass.
             low, high = _speed_range(speaker_providers[segment["speaker"]])
             if not low <= segment["speed_override"] <= high:
-                raise ValueError(
+                errors.append(
                     f"Segment {i} speed_override must be between {low} and {high} for "
                     f"provider='{speaker_providers[segment['speaker']]}', got {segment['speed_override']}"
                 )
+                continue
             # The range above is provider-wide; per-model rules (eleven_v3 has no
             # speed at all) live in provider.validate, which the speaker pass only
             # ever ran against speaker["speed"]. Re-probe each override or an
@@ -313,7 +589,10 @@ def _validate_script(
                 # ElevenLabs ignoring them, and this must not repeat it per segment.
                 owner_provider.validate(replace(probe, speed=speed, instructions=None, voice_settings=settings))
             except ValueError as exc:
-                raise ValueError(f"Segment {i} speed_override: {exc}") from exc
+                errors.append(f"Segment {i} speed_override: {exc}")
+
+    if errors:
+        _raise_validation_errors(errors)
 
     return title, speakers, segments, config
 
@@ -431,7 +710,7 @@ def _derive_concurrency_limits(providers: dict[str, TTSProvider], models: dict[s
 
 def _safe_title(title: str) -> str:
     """Convert a podcast title to a filesystem-safe slug."""
-    return "".join(c if c.isalnum() or c in "-_" else "_" for c in title).strip("_") or "podcast"
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in title).strip("_") or DEFAULT_TITLE
 
 
 @dataclass(frozen=True, slots=True)
@@ -605,7 +884,7 @@ async def generate_podcast(
                 "dialogue-capable provider and model (eleven_v3) - rendering per segment"
             )
 
-    pause_ms_list = _build_pause_list(units, segments, config.get("default_pause_ms", 600))
+    pause_ms_list = _build_pause_list(units, segments, config.get("default_pause_ms", DEFAULT_PAUSE_MS))
     estimated_duration = _estimate_duration(segments, speakers, pause_ms_list, config)
     logger.info(
         f"Podcast '{title}': {len(segments)} segments, {len(speakers)} speakers, ~{estimated_duration:.0f}s estimated"
@@ -619,7 +898,9 @@ async def generate_podcast(
         speed, voice_settings = _resolve_segment_speech(segment, speaker)
         # `in`-check rather than `or`: an intentional empty-string override must
         # not silently fall back to the speaker's instructions.
-        instructions = segment["instruction_override"] if "instruction_override" in segment else speaker["instructions"]
+        instructions = (
+            segment["instruction_override"] if "instruction_override" in segment else speaker.get("instructions")
+        )
         # "Queued", not "Generating": the limiter is acquired downstream in
         # synthesize_speech, so this line fires before the request goes out.
         logger.info(
@@ -676,8 +957,8 @@ async def generate_podcast(
 
     intro_ms = config.get("intro_silence_ms") or 0
     outro_ms = config.get("outro_silence_ms") or 0
-    normalize_loudness = config.get("normalize_loudness", True)
-    output_format = config.get("output_format", "mp3")
+    normalize_loudness = config.get("normalize_loudness", DEFAULT_NORMALIZE_LOUDNESS)
+    output_format = config.get("output_format", DEFAULT_OUTPUT_FORMAT)
     output_bitrate = config.get("output_bitrate", "192k")
 
     logger.info("Stitching podcast audio...")
