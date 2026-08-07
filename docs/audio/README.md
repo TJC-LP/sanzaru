@@ -84,10 +84,25 @@ Full rationale and measured numbers: [simulated-podcasts.md](simulated-podcasts.
   exchange itself. Distinctly more natural conversation.
 
 Grouping is per-run: turns that can't join one (OpenAI speakers, other models, lone turns,
-stretches in one voice, turns that alone fill the 2000-character request budget) still render per segment, so mixed-provider
-episodes work in either mode. Inside a run, `pause_after` and per-speaker `voice_settings` don't
-apply — use `config.dialogue_stability` (0–1) instead. Runs split at turn boundaries to stay under
-2000 characters, the ceiling ElevenLabs documents for a reliable dialogue request.
+stretches in one voice, turns that alone fill the 2000-character request budget) still render
+per segment, so mixed-provider episodes work in either mode. Inside a run, `pause_after` and
+per-speaker `voice_settings` don't apply — use `config.dialogue_stability` (0–1) instead. Runs
+split at turn boundaries to stay under 2000 characters, the ceiling ElevenLabs documents for a
+reliable dialogue request.
+
+**The trade is partial retry.** A run is a single request, so one bad line cannot be re-rendered
+alone — fixing it re-spends every character in the batch. Since ElevenLabs draws quota down per
+character submitted, and per-turn direction inside a run has to live in inline audio tags
+(`[whispers]`) that count too, the expressive mode is also the one where a retry is most expensive.
+
+The budget is per request, not per turn, so where a run splits decides what gets batched: a turn
+left single-voice after a split silently renders as an ordinary segment (regaining its `pause_after`
+and per-speaker tuning, losing the model-paced turn-taking). Nothing fails and nothing costs extra —
+you just don't get dialogue for that turn. The render logs
+`Dialogue mode: N/M segments batched into K conversation request(s)`; `M - N` is how many turns did
+not batch — your stranded turns in an all-ElevenLabs episode, an upper bound in a mixed one, where
+it also counts turns that were never eligible. Full rules and worked examples in
+[`docs/cli.md`](../cli.md#render-modes).
 
 ## Available Tools
 
