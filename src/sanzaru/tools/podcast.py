@@ -306,15 +306,14 @@ def _validate_script(
     if not script["segments"]:
         errors.append("PodcastScript must have at least 1 segment")
 
-    # Both element lists, not just speakers. `["Alex: hello"]` is the single
-    # most plausible thing an agent hands over without reading the schema, and
-    # it does not even crash: `"speaker" in "Alex: hello"` is a *substring*
-    # test, so it used to report missing fields on something that is not an
-    # object at all.
-    for kind, entries in (("Speaker", speakers_raw), ("Segment", script["segments"])):
-        for i, entry in enumerate(entries):
-            if not isinstance(entry, dict):
-                errors.append(f"{kind} {i} must be an object, got {type(entry).__name__}")
+    # Speaker elements only. Segment elements are checked in phase 3, where the
+    # rest of the segment rules live: a malformed segment does not stop speaker
+    # validation, so raising on it here would suppress the very speaker errors
+    # #53 is about — the caller would fix the segment, re-run, and only then
+    # meet the speakers.
+    for i, entry in enumerate(speakers_raw):
+        if not isinstance(entry, dict):
+            errors.append(f"Speaker {i} must be an object, got {type(entry).__name__}")
     if errors:
         _raise_validation_errors(errors)
 
@@ -499,6 +498,13 @@ def _validate_script(
     segments = script["segments"]
 
     for i, segment in enumerate(segments):
+        # `["Alex: hello"]` — a flat list of strings — is the single most
+        # plausible thing an agent hands over without reading the schema, and it
+        # did not even crash: `"speaker" in "Alex: hello"` is a *substring*
+        # test, so it reported missing fields on something that is not an object.
+        if not isinstance(segment, dict):
+            errors.append(f"Segment {i} must be an object, got {type(segment).__name__}")
+            continue
         missing = [field for field in ("speaker", "text") if field not in segment]
         if missing:
             errors.append(f"Segment {i} missing required field(s): {', '.join(repr(f) for f in missing)}")
