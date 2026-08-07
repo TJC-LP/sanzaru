@@ -101,10 +101,25 @@ async def test_generate_podcast_tool_forwards_output_filename(audio_server, mock
 @pytest.mark.anyio
 async def test_generate_podcast_tool_rejects_a_path_as_output_filename(audio_server, mocker) -> None:
     """Typed as `Filename`, so the schema refuses a path before an episode is
-    synthesized — not the storage layer after it is paid for."""
+    synthesized — not the storage layer after it is paid for.
+
+    The script has to be *valid*: with `script={}` the call fails on
+    PodcastScript's own required keys, and since pydantic writes "N validation
+    errors" into every message, a loose `match` would pass with `str` here and
+    guard nothing. Asserting the field name is what makes this test real.
+    """
     generate = mocker.patch("sanzaru.tools.podcast.generate_podcast", mocker.AsyncMock())
+    valid_script = {
+        "title": "T",
+        "speakers": [{"id": "a", "name": "A", "voice": "ash", "speed": 1.0, "instructions": ""}],
+        "segments": [{"speaker": "a", "text": "hi"}],
+        "config": {"default_pause_ms": 300, "normalize_loudness": True, "output_format": "mp3"},
+    }
 
-    with pytest.raises(Exception, match=r"output_filename|validation|pattern|match"):
-        await audio_server.mcp.call_tool("generate_podcast", {"script": {}, "output_filename": "../escape.mp3"})
+    with pytest.raises(Exception) as exc_info:
+        await audio_server.mcp.call_tool(
+            "generate_podcast", {"script": valid_script, "output_filename": "../escape.mp3"}
+        )
 
+    assert "output_filename" in str(exc_info.value)
     generate.assert_not_called()
