@@ -66,6 +66,11 @@ DEFAULT_OUTPUT_FORMAT: Literal["mp3", "wav"] = "mp3"
 #: also the only value that is safe to supply on a speaker's behalf.
 DEFAULT_SPEAKER_SPEED = 1.0
 
+#: Stand-in title. No timestamp: the generated filename appends its own, and
+#: `_safe_title` falls back to this same value, so naming it once keeps the two
+#: from drifting the way the config defaults above would have.
+DEFAULT_TITLE = "podcast"
+
 
 class Speaker(TypedDict):
     """One voice in an episode, as authored.
@@ -225,12 +230,17 @@ def _normalize_speaker(speaker: Speaker) -> Speaker:
     `instruction_override`, and ElevenLabs warns on any non-empty value.
     """
     normalized = dict(speaker)
+    # Strip an explicit id as well as a derived one: otherwise {"id": " Alex "}
+    # demands {"speaker": " Alex "} back — the same trap stripping the derived
+    # one avoids — and " Alex " vs "Alex" are two ids that print identically in
+    # every log line and error message.
+    explicit_id = normalized.get("id")
+    if isinstance(explicit_id, str):
+        normalized["id"] = explicit_id.strip()
     name = normalized.get("name")
-    if "id" not in normalized and isinstance(name, str) and name.strip():
+    if not normalized.get("id") and isinstance(name, str) and name.strip():
         # Segments may then reference the speaker by name, which is what an
-        # author writes first anyway — so store the *stripped* name, or
-        # {"name": "  Alex  "} would demand {"speaker": "  Alex  "} back.
-        # Every other id-ish comparison here strips too.
+        # author writes first anyway.
         normalized["id"] = name.strip()
     normalized.setdefault("speed", DEFAULT_SPEAKER_SPEED)
     return cast(Speaker, normalized)
@@ -296,9 +306,15 @@ def _validate_script(
     if not script["segments"]:
         errors.append("PodcastScript must have at least 1 segment")
 
-    for i, entry in enumerate(speakers_raw):
-        if not isinstance(entry, dict):
-            errors.append(f"Speaker {i} must be an object, got {type(entry).__name__}")
+    # Both element lists, not just speakers. `["Alex: hello"]` is the single
+    # most plausible thing an agent hands over without reading the schema, and
+    # it does not even crash: `"speaker" in "Alex: hello"` is a *substring*
+    # test, so it used to report missing fields on something that is not an
+    # object at all.
+    for kind, entries in (("Speaker", speakers_raw), ("Segment", script["segments"])):
+        for i, entry in enumerate(entries):
+            if not isinstance(entry, dict):
+                errors.append(f"{kind} {i} must be an object, got {type(entry).__name__}")
     if errors:
         _raise_validation_errors(errors)
 
@@ -306,7 +322,7 @@ def _validate_script(
     # the result. A plain default is fine; refusing to render without one was
     # not (#36). No timestamp: the generated filename appends its own.
     raw_title = script.get("title")
-    title = raw_title.strip() if isinstance(raw_title, str) and raw_title.strip() else "podcast"
+    title = raw_title.strip() if isinstance(raw_title, str) and raw_title.strip() else DEFAULT_TITLE
 
     config: PodcastConfig = raw_config or cast(PodcastConfig, {})
 
@@ -364,26 +380,47 @@ def _validate_script(
 
     for i, speaker in enumerate(speakers):
         label = _speaker_label(i, speaker)
+
+        # Id bookkeeping first. A missing `voice` does not stop us knowing the
+        # id, so registering it before the required-field check is what lets a
+        # duplicate be reported in the *same* pass as the missing field rather
+        # than on the next run — the round trip #53 exists to remove.
+        #
+        # Read through `.get`: `id` is only synthesized from a non-blank string
+        # name, so a name of "   " (or a non-string) leaves it absent — and a
+        # presence check cannot see that, because the key *is* there.
         # `name` and `voice` are the only fields with no defensible default.
         missing = [field for field in ("name", "voice") if field not in speaker]
-        if missing:
-            errors.append(f"{label} missing required field(s): {', '.join(repr(f) for f in missing)}")
-            continue
 
-        # Read through `.get`: `id` is only synthesized from a non-blank string
-        # name, so a name of "   " (or a non-string) leaves it absent — and the
-        # presence check above cannot see that, because the key *is* there.
         speaker_id = speaker.get("id")
-        if not isinstance(speaker_id, str) or not speaker_id.strip():
-            errors.append(f"{label} needs a non-empty string 'id', or a non-empty 'name' to derive one from")
-            continue
-        if speaker_id in seen_ids:
+        id_ok = isinstance(speaker_id, str) and bool(speaker_id.strip())
+        if not id_ok:
+            # Silent when `name` is what is missing: that error is already
+            # reported below and is the actual diagnosis, so saying "needs an
+            # id, or a name to derive one from" too would be one defect
+            # described twice.
+            if "name" not in missing:
+                errors.append(f"{label} needs a non-empty string 'id', or a non-empty 'name' to derive one from")
+        elif speaker_id in seen_ids:
             # Newly reachable now that `id` defaults to `name`: two speakers
             # sharing one would silently collapse in the render path's
             # speaker_map, and only one of them would ever be heard.
             errors.append(f"{label} duplicates the speaker id {speaker_id!r}; ids must be unique")
+            id_ok = False
+        else:
+            seen_ids.add(cast(str, speaker_id))
+
+        if missing:
+            errors.append(f"{label} missing required field(s): {', '.join(repr(f) for f in missing)}")
+        if "speed" in speaker and (isinstance(speaker["speed"], bool) or not isinstance(speaker["speed"], int | float)):
+            # `"speed": "1.0"` is a classic hand-authored-JSON slip, and #36
+            # making the field optional means the authors most likely to type it
+            # are the ones writing it by hand. Left unchecked it reached a
+            # float/str comparison — a TypeError, i.e. exit 1, blaming the tool.
+            errors.append(f"{label} 'speed' must be a number, got {type(speaker['speed']).__name__}")
             continue
-        seen_ids.add(speaker_id)
+        if missing or not id_ok:
+            continue
 
         speaker_ok = True
         if "provider" in speaker:
@@ -466,6 +503,15 @@ def _validate_script(
         if missing:
             errors.append(f"Segment {i} missing required field(s): {', '.join(repr(f) for f in missing)}")
             continue
+        # Leaf types before anything uses them structurally: a non-string
+        # `speaker` is unhashable against the id set and a non-string `text`
+        # has no `.strip()` — both TypeError/AttributeError, i.e. exit 1.
+        if not isinstance(segment["speaker"], str):
+            errors.append(f"Segment {i} 'speaker' must be a string, got {type(segment['speaker']).__name__}")
+            continue
+        if not isinstance(segment["text"], str):
+            errors.append(f"Segment {i} 'text' must be a string, got {type(segment['text']).__name__}")
+            continue
         if segment["speaker"] not in speaker_ids:
             known = ", ".join(sorted(speaker_ids))
             errors.append(f"Segment {i} references unknown speaker id: '{segment['speaker']}' — known ids: {known}")
@@ -475,6 +521,19 @@ def _validate_script(
             continue
         if len(segment["text"]) > 40000:
             errors.append(f"Segment {i} text exceeds 40000 characters")
+            continue
+        if "pause_after" in segment and (
+            isinstance(segment["pause_after"], bool) or not isinstance(segment["pause_after"], int)
+        ):
+            # Detonates in pydub rather than here if it gets through.
+            errors.append(f"Segment {i} 'pause_after' must be an integer, got {type(segment['pause_after']).__name__}")
+            continue
+        if "speed_override" in segment and (
+            isinstance(segment["speed_override"], bool) or not isinstance(segment["speed_override"], int | float)
+        ):
+            errors.append(
+                f"Segment {i} 'speed_override' must be a number, got {type(segment['speed_override']).__name__}"
+            )
             continue
         if "speed_override" in segment:
             # Checked against the owning speaker's provider range, which is why
@@ -619,7 +678,7 @@ def _derive_concurrency_limits(providers: dict[str, TTSProvider], models: dict[s
 
 def _safe_title(title: str) -> str:
     """Convert a podcast title to a filesystem-safe slug."""
-    return "".join(c if c.isalnum() or c in "-_" else "_" for c in title).strip("_") or "podcast"
+    return "".join(c if c.isalnum() or c in "-_" else "_" for c in title).strip("_") or DEFAULT_TITLE
 
 
 @dataclass(frozen=True, slots=True)

@@ -1,6 +1,7 @@
 """Tests for the multi-voice podcast generation tool."""
 
 import copy
+import re
 
 import pytest
 
@@ -289,6 +290,44 @@ class TestMalformedScriptsStayUsageErrors:
         with pytest.raises(ValueError, match="'speakers' must be an array, got dict"):
             _validate_script(minimal_script)
 
+    @pytest.mark.parametrize(
+        ("entry", "kind"),
+        [(None, "NoneType"), (5, "int"), ("Alex: hello", "str")],
+    )
+    def test_non_object_segment_is_a_usage_error(self, entry, kind, minimal_script):
+        """`["Alex: hello"]` is the one worth naming: `"speaker" in "Alex: ..."`
+        is a *substring* test, so it did not crash — it reported missing fields
+        on something that is not an object at all."""
+        minimal_script["segments"] = [entry]
+
+        with pytest.raises(ValueError, match=rf"Segment 0 must be an object, got {kind}"):
+            _validate_script(minimal_script)
+
+    @pytest.mark.parametrize(
+        ("field", "value", "expected"),
+        [
+            ("text", 5, "'text' must be a string, got int"),
+            ("speaker", ["A"], "'speaker' must be a string, got list"),
+            ("pause_after", "500", "'pause_after' must be an integer, got str"),
+            ("speed_override", "1.0", "'speed_override' must be a number, got str"),
+        ],
+    )
+    def test_segment_leaf_types_are_usage_errors(self, field, value, expected, minimal_script):
+        """Non-string speaker is unhashable against the id set, non-string text
+        has no .strip() — TypeError/AttributeError, i.e. exit 1."""
+        minimal_script["segments"] = [{"speaker": "host", "text": "hi", field: value}]
+
+        with pytest.raises(ValueError, match=re.escape(expected)):
+            _validate_script(minimal_script)
+
+    def test_string_speed_is_a_usage_error(self, minimal_script):
+        """A classic hand-authored-JSON slip, and #36 making `speed` optional
+        means the authors most likely to type it are writing it by hand."""
+        minimal_script["speakers"][0]["speed"] = "1.0"
+
+        with pytest.raises(ValueError, match="'speed' must be a number, got str"):
+            _validate_script(minimal_script)
+
     def test_non_object_config_is_a_usage_error(self, minimal_script):
         minimal_script["config"] = "mp3"
 
@@ -481,6 +520,32 @@ class TestValidationReportsEveryProblem:
         message = str(excinfo.value)
         assert "speed must be between" in message
         assert "duplicates the speaker id 'A'" in message
+
+    def test_a_duplicate_id_is_reported_even_when_the_first_speaker_lacks_a_voice(self, minimal_script):
+        """The missing-field guard used to `continue` before the id was
+        registered, so this reported only the missing 'voice' and the duplicate
+        arrived on the next run."""
+        minimal_script["speakers"] = [{"name": "A"}, {"name": "A", "voice": "nova"}]
+        minimal_script["segments"][0]["speaker"] = "A"
+
+        with pytest.raises(ValueError) as excinfo:
+            _validate_script(minimal_script)
+
+        message = str(excinfo.value)
+        assert "'voice'" in message
+        assert "duplicates the speaker id 'A'" in message
+
+    def test_a_nameless_speaker_is_not_also_blamed_for_its_id(self, minimal_script):
+        """The missing name *causes* the id failure, so reporting both would
+        describe one defect twice."""
+        minimal_script["speakers"] = [{"voice": "nova"}]
+
+        with pytest.raises(ValueError) as excinfo:
+            _validate_script(minimal_script)
+
+        message = str(excinfo.value)
+        assert "'name'" in message
+        assert "needs a non-empty string 'id'" not in message
 
     def test_a_duplicate_id_survives_a_bad_config_provider(self, minimal_script):
         """`config_provider_ok` makes every speaker bail before the bottom of
