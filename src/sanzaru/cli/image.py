@@ -170,15 +170,15 @@ async def wait_one_image(
                 extra={"id": response_id, "status": "completed"},
             )
         # `payload` starts as an ImageResponse ({id, status, created_at}), which
-        # carries no name — so without seeding it here `jq -r .result.filename`
-        # would be null for `create --download` and `wait --download` while
-        # `image download` returns one. reconcile then points it at the final
-        # path, the same as every other write site.
-        payload["filename"] = dl["filename"]
+        # carries no name — so without setting one here `jq -r .result.filename`
+        # is null for `create --download` and `wait --download` while
+        # `image download` returns one. Set directly rather than seeding from
+        # `dl["filename"]` and reconciling: the final path is what the caller
+        # needs, and seeding first only obscures that `dl`'s value is discarded.
+        payload["filename"] = pathlib.PurePath(final_path).name
         payload["size"] = dl["size"]
         payload["format"] = dl["format"]
         payload["file"] = _file_payload(final_path)
-        reconcile_output_name(payload, final_path)
 
     elapsed = None if started_at is None else time.monotonic() - started_at
     return 0, success_envelope(command, payload, elapsed_s=elapsed)
