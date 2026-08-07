@@ -814,24 +814,14 @@ script must be a JSON object matching this structure:
   boundaries to stay under 2000 characters per request.
 
 **Choosing a mode — dialogue buys pacing and sells partial retry:**
-A dialogue run is ONE request, so it is all-or-nothing. One bad line cannot be
-re-rendered by itself; fixing it re-spends every character in the batch. In
-"segments" each turn is independent, so a bad one costs only itself.
-
-This matters most on ElevenLabs, where characters are the metered unit and tiers
-are small (the free tier is 10,000/month). Inside a batched run all direction has
-to live in inline audio tags like [whispers], because pause_after and per-speaker
-voice_settings are inert there — and tags count against quota too. So the
-expressive mode is also the one where a retry costs the most.
-
-Plan against the 2000-character request budget BEFORE writing the script rather
-than discovering it at render time: past that ceiling the stream can terminate
-early, which reads as a short but successful take. Choose "segments" for exact
-gaps, per-speaker tuning, cheap retry, or a tight character budget; "dialogue"
-for natural conversation on a script you are confident in.
-
-  Prefer "segments" when you need exact gap control or per-speaker tuning;
-  prefer "dialogue" for natural back-and-forth conversation.
+A run is ONE request, so it is all-or-nothing: one bad line cannot be re-rendered
+alone, and fixing it re-spends every character in the batch. That bites on
+ElevenLabs, where quota is drawn down per character submitted and inline audio
+tags — the only direction that works inside a run — count too. Keep turns well
+under the 2000-character budget when writing the script: a turn too long to
+batch silently renders as an ordinary segment, so you pay for dialogue and get
+fixed gaps for that turn. Prefer "segments" for exact gaps, per-speaker tuning,
+cheap retry, or a tight character budget.
 
 **Voice guide (OpenAI):**
 - ash: Authoritative, confident — good for hosts and anchors

@@ -90,11 +90,12 @@ apply — use `config.dialogue_stability` (0–1) instead. Runs split at turn bo
 2000 characters, the ceiling ElevenLabs documents for a reliable dialogue request.
 
 **The trade is partial retry.** A run is a single request, so one bad line cannot be re-rendered
-alone — fixing it re-spends every character in the batch. Since characters are ElevenLabs' metered
-unit, and all direction inside a run has to live in inline audio tags (`[whispers]`) that count
-against quota too, the expressive mode is also the one where a retry is most expensive. Treat the
-2000-character budget as a planning constraint you write *to*, not an error you discover: past it
-the stream can terminate early, which reads as a short but successful take.
+alone — fixing it re-spends every character in the batch. Since ElevenLabs draws quota down per
+character submitted, and all direction inside a run has to live in inline audio tags (`[whispers]`)
+that count too, the expressive mode is also the one where a retry is most expensive. Write turns
+against the 2000-character budget rather than meeting it at render time: nothing fails, but a turn
+too long to batch falls back to an ordinary segment, so you pay for dialogue and get fixed gaps for
+that turn.
 
 ## Available Tools
 
