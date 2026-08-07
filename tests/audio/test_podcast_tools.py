@@ -480,6 +480,73 @@ async def test_generate_podcast_honors_an_explicit_filename(mocker, tmp_audio_pa
 
 @pytest.mark.integration
 @pytest.mark.anyio
+@pytest.mark.parametrize("bad", ["../escape.mp3", "sub/ep.mp3", "a\\b.mp3", "..", "x" * 201])
+async def test_generate_podcast_rejects_a_bad_filename_before_spending(bad, mocker, tmp_audio_path):
+    """The storage layer would catch traversal too — but only at the final
+    write, after the whole episode has been synthesized and billed. And the
+    Databricks backend *strips* directories instead of rejecting them, which
+    would put a name in the envelope that no file on disk has."""
+    from sanzaru.storage.local import LocalStorageBackend
+
+    mock_client = mocker.MagicMock()
+    mock_client.audio.speech.create = mocker.AsyncMock()
+    mocker.patch("sanzaru.audio.providers.openai_provider.get_client", return_value=mock_client)
+    stitch = mocker.patch("sanzaru.tools.podcast._stitch_audio", return_value=b"STITCHED")
+    storage = LocalStorageBackend(path_overrides={"audio": tmp_audio_path})
+    mocker.patch("sanzaru.infrastructure.file_system.get_storage", return_value=storage)
+
+    script = {
+        "title": "ep",
+        "speakers": [{"id": "host", "name": "Alex", "voice": "ash", "speed": 1.0, "instructions": ""}],
+        "segments": [{"speaker": "host", "text": "Hello."}],
+        "config": {"default_pause_ms": 300, "normalize_loudness": True, "output_format": "mp3"},
+    }
+
+    from sanzaru.tools.podcast import generate_podcast
+
+    with pytest.raises(ValueError, match="filename"):
+        await generate_podcast(script, filename=bad)
+
+    # Nothing was rendered and nothing was written.
+    assert mock_client.audio.speech.create.call_count == 0
+    assert stitch.call_count == 0
+    assert not list(tmp_audio_path.iterdir())
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_generate_podcast_treats_an_empty_filename_as_absent(mocker, tmp_audio_path, caplog):
+    """`written_name = filename or <auto>` already read "" as absent, so warning
+    about it described a file that was never written."""
+    from sanzaru.storage.local import LocalStorageBackend
+
+    mock_response = mocker.MagicMock()
+    mock_response.content = b"FAKE"
+    mock_client = mocker.MagicMock()
+    mock_client.audio.speech.create = mocker.AsyncMock(return_value=mock_response)
+    mocker.patch("sanzaru.audio.providers.openai_provider.get_client", return_value=mock_client)
+    mocker.patch("sanzaru.tools.podcast._stitch_audio", return_value=b"STITCHED")
+    storage = LocalStorageBackend(path_overrides={"audio": tmp_audio_path})
+    mocker.patch("sanzaru.infrastructure.file_system.get_storage", return_value=storage)
+
+    script = {
+        "title": "ep",
+        "speakers": [{"id": "host", "name": "Alex", "voice": "ash", "speed": 1.0, "instructions": ""}],
+        "segments": [{"speaker": "host", "text": "Hello."}],
+        "config": {"default_pause_ms": 300, "normalize_loudness": True, "output_format": "mp3"},
+    }
+
+    from sanzaru.tools.podcast import generate_podcast
+
+    with caplog.at_level("WARNING"):
+        result = await generate_podcast(script, filename="")
+
+    assert result.output_file.startswith("ep_")
+    assert "does not end in" not in caplog.text
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
 async def test_generate_podcast_warns_when_filename_suffix_contradicts_format(mocker, tmp_audio_path, caplog):
     """A .wav name on an mp3 render is the caller's call, but it gets said out loud."""
     from sanzaru.storage.local import LocalStorageBackend
