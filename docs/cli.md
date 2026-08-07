@@ -330,11 +330,30 @@ guests, 8 segments batched into 3 dialogue requests while the 3 host turns rende
 
 Inside a dialogue run, `pause_after` is ignored (the model owns pacing) and per-speaker
 `voice_settings`/`speed` don't apply — the endpoint takes a single `config.dialogue_stability`
-(0–1) for the whole request. Runs split at turn boundaries to stay under 2000 chars, the ceiling
-ElevenLabs documents for a reliable dialogue request.
+(0–1) for the whole request.
 
-Prefer `segments` for exact gap control, per-speaker tuning, or cheap per-segment retry; prefer
-`dialogue` for natural conversation.
+##### The trade: dialogue buys pacing and sells partial retry
+
+**A run is one request, so it is all-or-nothing.** If a single line comes out wrong there is no
+way to re-render just that line — re-running the batch re-spends every character in it. `segments`
+renders each turn independently, so a bad one costs only itself.
+
+That matters most on ElevenLabs, because **characters are the metered unit** and the tier is often
+small (the free tier is 10,000/month, shared firm-wide). Compounding it: inside a batched run all
+your direction has to live in **inline audio tags** (`[whispers]`), since `pause_after` and
+per-speaker `voice_settings` are inert there — and tags count against quota too. So the expressive
+mode is also the one where a retry costs the most. A production 11-turn run spent 1,730 characters;
+one bad line would have cost that again to fix.
+
+**Plan against the 2000-character request budget before you write the script**, not after. Runs
+split at turn boundaries to stay under it — the ceiling ElevenLabs documents for a reliable
+dialogue request, past which the stream can terminate early and read as a short but *successful*
+take. An episode written without it in mind either fails or gets split somewhere you didn't choose.
+A turn too long to share a request opens a run of its own, which closes as a single-voice run and
+falls back to a normally-chunked segment.
+
+Rules of thumb: `segments` for exact gap control, per-speaker tuning, cheap retry, or a tight
+character budget; `dialogue` for natural conversation on a script you're confident in.
 
 ```bash
 sanzaru podcast generate @episode.json --render-mode dialogue -o ep.mp3

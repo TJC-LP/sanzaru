@@ -89,6 +89,13 @@ episodes work in either mode. Inside a run, `pause_after` and per-speaker `voice
 apply — use `config.dialogue_stability` (0–1) instead. Runs split at turn boundaries to stay under
 2000 characters, the ceiling ElevenLabs documents for a reliable dialogue request.
 
+**The trade is partial retry.** A run is a single request, so one bad line cannot be re-rendered
+alone — fixing it re-spends every character in the batch. Since characters are ElevenLabs' metered
+unit, and all direction inside a run has to live in inline audio tags (`[whispers]`) that count
+against quota too, the expressive mode is also the one where a retry is most expensive. Treat the
+2000-character budget as a planning constraint you write *to*, not an error you discover: past it
+the stream can terminate early, which reads as a short but successful take.
+
 ## Available Tools
 
 ### File Management

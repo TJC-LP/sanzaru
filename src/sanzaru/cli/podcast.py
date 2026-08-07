@@ -140,6 +140,12 @@ async def podcast_generate(
     mixed episodes keep working. Inside a dialogue run, pause_after and
     per-speaker voice_settings do not apply.
     \b
+    The trade: a run is ONE request, so it is all-or-nothing on retry — fixing a
+    single bad line re-spends every character in the batch, where segments mode
+    retries one turn. Characters are ElevenLabs' metered unit and inline audio
+    tags count too, so the expressive mode is the costly one to redo. Write the
+    script against the 2000-char budget rather than hitting it at render time.
+    \b
     Provider precedence: speaker.provider > config.provider > --provider. Speakers
     may differ, so one episode can mix OpenAI and ElevenLabs voices. ElevenLabs
     speakers need a voice id, cap speed at 0.7-1.2 (eleven_v3: unsupported), and
