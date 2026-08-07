@@ -98,8 +98,9 @@ character submitted, and per-turn direction inside a run has to live in inline a
 The budget is per request, not per turn, so where a run splits decides what gets batched: a turn
 left single-voice after a split silently renders as an ordinary segment (regaining its `pause_after`
 and per-speaker tuning, losing the model-paced turn-taking). Nothing fails and nothing costs extra —
-you just don't get dialogue for that turn. Full rules and worked examples in
-[`docs/cli.md`](../cli.md#render-modes).
+you just don't get dialogue for that turn. The render logs
+`Dialogue mode: N/M segments batched into K conversation request(s)`; `N < M` is your stranded
+turns. Full rules and worked examples in [`docs/cli.md`](../cli.md#render-modes).
 
 ## Available Tools
 

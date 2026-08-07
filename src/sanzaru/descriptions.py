@@ -824,8 +824,13 @@ decides what gets batched: a turn left single-voice after a split renders as an
 ordinary segment instead (regaining pause_after and per-speaker tuning, losing
 the model-paced turn-taking). Nothing fails and nothing costs extra — you simply
 do not get dialogue for that turn, and it can happen with every turn well under
-the ceiling. Plan the running total, not just each turn. Prefer "segments" for
-exact gaps, per-speaker tuning, cheap retry, or a tight character budget.
+the ceiling. You need not work it out in advance: every dialogue render logs
+"Dialogue mode: N/M segments batched into K conversation request(s)", and N < M
+is the count of stranded turns.
+
+Choose "segments" for exact gaps, per-speaker tuning, cheap retry, or a tight
+character budget; "dialogue" for natural conversation on a script you are
+confident in.
 
 **Voice guide (OpenAI):**
 - ash: Authoritative, confident — good for hosts and anchors

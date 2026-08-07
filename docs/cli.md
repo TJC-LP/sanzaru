@@ -354,17 +354,29 @@ failure. A turn left alone in its own voice after a split renders as an ordinary
 but without the model-paced turn-taking you chose `dialogue` for. It costs no extra characters —
 what you lose is pacing, not quota.
 
-Two ways to land there, and the first is the likelier one:
+Two ways to land there, and the first is both likelier and quieter:
 
 - **A split strands the tail.** Three 900-character turns (`a, b, a`) batch as one request of turns
   1–2, leaving turn 3 alone as a segment — with no turn anywhere near the ceiling.
 - **One over-long turn takes its neighbours with it.** `a, b, a` with a 2500-character middle
-  renders *all three* as segments, because the flush leaves each short turn single-voice too.
+  renders *all three* as segments, because the flush leaves each short turn single-voice too. This
+  one at least announces itself: with no run left to batch, the render logs a warning.
 
 So "keep every turn short" is not sufficient advice on its own — plan the running total, and expect
-the tail of a split run to fall back when it lands single-voice. (The ceiling exists because an
-over-budget request can terminate the stream mid-conversation, indistinguishable from a complete
-take, so the provider layer refuses one outright rather than return a short one.)
+the tail of a split run to fall back when it lands single-voice.
+
+**You don't have to work it out in your head.** Every dialogue render logs
+
+```
+Dialogue mode: N/M segments batched into K conversation request(s)
+```
+
+on stderr. In an all-ElevenLabs episode, `N < M` is exactly your stranded turns — the first example
+above reports `2/3 segments batched into 1 conversation request(s)`.
+
+(The ceiling exists because an over-budget request can terminate the stream mid-conversation,
+indistinguishable from a complete take, so the provider layer refuses one outright rather than
+return a short one.)
 
 Rules of thumb: `segments` for exact gap control, per-speaker tuning, cheap retry, or a tight
 character budget; `dialogue` for natural conversation on a script you're confident in.
