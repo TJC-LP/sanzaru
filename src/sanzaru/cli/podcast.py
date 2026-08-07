@@ -146,8 +146,10 @@ async def podcast_generate(
     audio tags count too, so the expressive mode is the costly one to redo. The
     budget is per request, not per turn: a turn left single-voice after a run
     splits quietly renders as a plain segment, even well under the ceiling. The
-    render logs "N/M segments batched into K conversation request(s)" — N < M is
-    your stranded turns. See docs/cli.md (Render modes) for the full rules.
+    render logs "N/M segments batched into K conversation request(s)" on stderr;
+    M-N is how many turns did not batch (exactly your stranded turns in an
+    all-ElevenLabs episode, an upper bound in a mixed one). See docs/cli.md
+    (Render modes) for the full rules.
     \b
     Provider precedence: speaker.provider > config.provider > --provider. Speakers
     may differ, so one episode can mix OpenAI and ElevenLabs voices. ElevenLabs

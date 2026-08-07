@@ -99,8 +99,10 @@ The budget is per request, not per turn, so where a run splits decides what gets
 left single-voice after a split silently renders as an ordinary segment (regaining its `pause_after`
 and per-speaker tuning, losing the model-paced turn-taking). Nothing fails and nothing costs extra —
 you just don't get dialogue for that turn. The render logs
-`Dialogue mode: N/M segments batched into K conversation request(s)`; `N < M` is your stranded
-turns. Full rules and worked examples in [`docs/cli.md`](../cli.md#render-modes).
+`Dialogue mode: N/M segments batched into K conversation request(s)`; `M - N` is how many turns did
+not batch — your stranded turns in an all-ElevenLabs episode, an upper bound in a mixed one, where
+it also counts turns that were never eligible. Full rules and worked examples in
+[`docs/cli.md`](../cli.md#render-modes).
 
 ## Available Tools
 

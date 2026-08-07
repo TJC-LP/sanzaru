@@ -453,6 +453,32 @@ class TestDialogueRendering:
         assert "no run of 2+ consecutive turns" in caplog.text
         assert openai_client.audio.speech.create.await_count == 2
 
+    async def test_batching_log_reports_the_shortfall_docs_tell_callers_to_read(self, mocker, podcast_env, caplog):
+        """docs/cli.md, docs/audio/README.md, descriptions.py and `--help` all
+        quote this line verbatim and tell callers `M - N` is what did not batch.
+        Nothing pinned the format or the numbers, so a reworded f-string would
+        silently make four documents wrong — the same gap the planner example
+        closed. The 3x900 script is the one the docs use.
+        """
+        from sanzaru.tools.podcast import generate_podcast
+
+        # The fake exposes both endpoints, so the stranded turn renders through
+        # text_to_speech while the pair goes through text_to_dialogue.
+        client = FakeDialogueClient()
+        mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=client)
+
+        script = dialogue_script()
+        script["segments"] = [
+            {"speaker": "a", "text": "y" * 900},
+            {"speaker": "b", "text": "y" * 900},
+            {"speaker": "a", "text": "y" * 900},
+        ]
+
+        with caplog.at_level("INFO"):
+            await generate_podcast(script)
+
+        assert "Dialogue mode: 2/3 segments batched into 1 conversation request(s)" in caplog.text
+
     async def test_unbounded_concurrency_still_renders_dialogue(self, mocker, podcast_env, monkeypatch):
         """SANZARU_ELEVENLABS_MAX_CONCURRENCY=0 is the documented unbounded mode,
         which leaves the limiter None — the dialogue path must not assume one."""

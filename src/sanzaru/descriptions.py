@@ -824,9 +824,9 @@ decides what gets batched: a turn left single-voice after a split renders as an
 ordinary segment instead (regaining pause_after and per-speaker tuning, losing
 the model-paced turn-taking). Nothing fails and nothing costs extra — you simply
 do not get dialogue for that turn, and it can happen with every turn well under
-the ceiling. You need not work it out in advance: every dialogue render logs
-"Dialogue mode: N/M segments batched into K conversation request(s)", and N < M
-is the count of stranded turns.
+the ceiling, so plan the running total rather than each turn in isolation.
+(A CLI caller can read the shortfall off the render log; over MCP there is no
+stderr channel, so the batching counts are not observable from here.)
 
 Choose "segments" for exact gaps, per-speaker tuning, cheap retry, or a tight
 character budget; "dialogue" for natural conversation on a script you are

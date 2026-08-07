@@ -371,8 +371,11 @@ the tail of a split run to fall back when it lands single-voice.
 Dialogue mode: N/M segments batched into K conversation request(s)
 ```
 
-on stderr. In an all-ElevenLabs episode, `N < M` is exactly your stranded turns — the first example
-above reports `2/3 segments batched into 1 conversation request(s)`.
+on stderr, where `M - N` is how many turns did *not* batch. In an all-ElevenLabs episode those are
+exactly your stranded turns: the first example above reports `2/3 segments batched into 1
+conversation request(s)`, and the 1 is turn 3. In a **mixed** episode the gap also counts turns that
+were never eligible — OpenAI speakers, non-`eleven_v3` models — so treat it as an upper bound there
+and read the shortfall against the turns you expected to batch.
 
 (The ceiling exists because an over-budget request can terminate the stream mid-conversation,
 indistinguishable from a complete take, so the provider layer refuses one outright rather than
