@@ -346,13 +346,25 @@ production run behind this note was a single 11-turn dialogue request totalling 
 one bad line would have cost all 1,730 again. (Per-run, not per-episode — an episode split across
 three requests only re-spends the one containing the bad line.)
 
-**Write the script against the 2000-character request budget rather than meeting it at render
-time.** The planner never emits an over-budget request, so nothing fails — the consequence is
-quieter than that: a turn too long to share a request opens a run of its own, closes as a
-single-voice run, and renders as an ordinary segment. You asked for `dialogue`, paid for it, and got
-fixed gaps for that turn. (The ceiling exists because an over-budget request can terminate the
-stream mid-conversation, which is indistinguishable from a complete take, so the provider layer
-refuses one outright rather than return a short one.)
+**Watch total run length, not just turn length.** The 2000-character budget is per *request* —
+the sum of consecutive turns — so where a run splits decides what actually gets batched. The
+planner never emits an over-budget request, so nothing fails; the consequence is quieter than a
+failure. A turn left alone in its own voice after a split renders as an ordinary segment: exactly as
+`segments` mode would, so it *regains* its `pause_after` and per-speaker `voice_settings`/`speed`,
+but without the model-paced turn-taking you chose `dialogue` for. It costs no extra characters —
+what you lose is pacing, not quota.
+
+Two ways to land there, and the first is the likelier one:
+
+- **A split strands the tail.** Three 900-character turns (`a, b, a`) batch as one request of turns
+  1–2, leaving turn 3 alone as a segment — with no turn anywhere near the ceiling.
+- **One over-long turn takes its neighbours with it.** `a, b, a` with a 2500-character middle
+  renders *all three* as segments, because the flush leaves each short turn single-voice too.
+
+So "keep every turn short" is not sufficient advice on its own — plan the running total, and expect
+the tail of a split run to fall back when it lands single-voice. (The ceiling exists because an
+over-budget request can terminate the stream mid-conversation, indistinguishable from a complete
+take, so the provider layer refuses one outright rather than return a short one.)
 
 Rules of thumb: `segments` for exact gap control, per-speaker tuning, cheap retry, or a tight
 character budget; `dialogue` for natural conversation on a script you're confident in.

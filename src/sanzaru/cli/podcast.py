@@ -143,9 +143,10 @@ async def podcast_generate(
     The trade: a run is ONE request, so it is all-or-nothing on retry — fixing a
     single bad line re-spends every character in the batch, where segments mode
     retries one turn. ElevenLabs draws quota per character submitted and inline
-    audio tags count too, so the expressive mode is the costly one to redo. Keep
-    turns well under the 2000-char budget: one too long to batch quietly renders
-    as an ordinary segment, so you pay for dialogue and get fixed gaps there.
+    audio tags count too, so the expressive mode is the costly one to redo. The
+    budget is per request, not per turn: a turn left single-voice after a run
+    splits quietly renders as a plain segment, even well under the ceiling. See
+    docs/cli.md (Render modes) for the full rules.
     \b
     Provider precedence: speaker.provider > config.provider > --provider. Speakers
     may differ, so one episode can mix OpenAI and ElevenLabs voices. ElevenLabs
