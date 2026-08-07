@@ -13,6 +13,7 @@ Speakers choose their provider independently, so a single episode can mix
 OpenAI and ElevenLabs voices — the stitch path is mp3-in, mp3-out.
 """
 
+import pathlib
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -549,6 +550,7 @@ async def generate_podcast(
     script: PodcastScript,
     model: SpeechModel | ElevenLabsModel = "gpt-4o-mini-tts",
     provider: TTSProviderName = "openai",
+    filename: str | None = None,
 ) -> PodcastResult:
     """Generate a multi-voice podcast from a structured PodcastScript.
 
@@ -560,6 +562,10 @@ async def generate_podcast(
             unless they set their own `model`.
         provider: Episode-wide default provider, itself overridden by
             `config.provider` and then by each speaker's `provider`.
+        filename: Name to write the episode under, mirroring
+            `SimulationBrief.filename`. Defaults to a title-and-timestamp slug.
+            `PodcastResult.output_file` always reports the name actually
+            written, so a caller never has to guess which of two names is real.
 
     Raises ValueError if the script fails validation.
     """
@@ -693,16 +699,28 @@ async def generate_podcast(
         )
     )
 
-    timestamp = int(time.time())
-    output_filename = f"{_safe_title(title)}_{timestamp}.{output_format}"
+    written_name = filename or f"{_safe_title(title)}_{int(time.time())}.{output_format}"
+    if filename is not None:
+        suffix = pathlib.PurePosixPath(filename).suffix.lstrip(".").lower()
+        if suffix and suffix != output_format:
+            # The bytes are whatever `config.output_format` says; the name is
+            # whatever the caller asked for. Renaming used to happen after the
+            # write, so this mismatch was equally possible and equally silent.
+            logger.warning(
+                "Podcast filename %r ends in .%s but config.output_format is %r — the file contains %s audio",
+                filename,
+                suffix,
+                output_format,
+                output_format,
+            )
     file_repo = FileSystemRepository()
-    await file_repo.write_audio_file(output_filename, final_audio)
-    logger.info(f"Podcast written: {output_filename} ({len(final_audio):,} bytes)")
+    await file_repo.write_audio_file(written_name, final_audio)
+    logger.info(f"Podcast written: {written_name} ({len(final_audio):,} bytes)")
 
     transcript = "\n\n".join(f"**{speaker_map[s['speaker']]['name']}:** {s['text']}" for s in segments)
 
     return PodcastResult(
-        output_file=output_filename,
+        output_file=written_name,
         title=title,
         segment_count=len(segments),
         estimated_duration_seconds=round(estimated_duration, 1),

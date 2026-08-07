@@ -12,6 +12,7 @@ from sanzaru.cli._io import (
     install_overrides,
     plan_output,
     read_content_arg,
+    reconcile_output_name,
     resolve_input,
 )
 from sanzaru.cli._runtime import CLIError
@@ -249,3 +250,37 @@ async def test_finalize_copies_bytes_out_of_default_backend(tmp_path, monkeypatc
     assert final == str(target / "tts.mp3")
     assert (target / "tts.mp3").read_bytes() == b"speech"
     assert (media / "tts.mp3").exists()  # library copy retained
+
+
+# ---------- reconcile_output_name (#54) ----------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("key", ["output_file", "output_filename", "filename"])
+def test_reconcile_rewrites_every_name_spelling(key, tmp_path):
+    payload: dict[str, object] = {key: "Some_Title_1737000000.mp3", "title": "Some Title"}
+
+    reconcile_output_name(payload, str(tmp_path / "eleven-demo.mp3"))
+
+    assert payload[key] == "eleven-demo.mp3"
+    assert payload["title"] == "Some Title"  # untouched
+
+
+@pytest.mark.unit
+def test_reconcile_replaces_tmp_name_left_by_a_cross_dir_move(tmp_path):
+    # plan_output hands the tool layer a __sanzaru_tmp name when the output dir
+    # differs from the one the inputs pinned; finalize_output then moves it.
+    payload: dict[str, object] = {"output_file": "converted__sanzaru_tmp.wav"}
+
+    reconcile_output_name(payload, str(tmp_path / "out" / "converted.wav"))
+
+    assert payload["output_file"] == "converted.wav"
+
+
+@pytest.mark.unit
+def test_reconcile_is_a_noop_without_a_name_field():
+    payload: dict[str, object] = {"id": "vid_123"}
+
+    reconcile_output_name(payload, "/tmp/whatever.mp4")
+
+    assert payload == {"id": "vid_123"}
