@@ -270,10 +270,31 @@ def test_podcast_render_mode_on_non_object_config_is_usage_error():
 
 
 @pytest.mark.integration
-def test_podcast_render_mode_does_not_mask_a_missing_config():
-    """The flag must not fabricate a config: doing so hides the real diagnostic
-    behind whatever validation error the script trips over next."""
-    script = {"title": "T", "speakers": [], "segments": []}
+def test_podcast_render_mode_applies_to_a_script_without_a_config(mocker, tmp_path):
+    """`config` became optional in #36, so the flag now has to create one.
+
+    It used to be merged only into an existing config, because fabricating one
+    would have masked the "missing required field: 'config'" diagnostic. That
+    error is gone — withholding the merge would now drop the flag in silence.
+    """
+    script = {
+        "title": "T",
+        "speakers": [{"name": "Host", "voice": "nova"}],
+        "segments": [{"speaker": "Host", "text": "Hi."}],
+    }
+
+    async def fake_podcast(parsed_script, model, provider):
+        return PodcastResult(
+            output_file="ep.mp3",
+            title="T",
+            segment_count=1,
+            estimated_duration_seconds=1.0,
+            speakers=["Host"],
+            transcript="Host: Hi.",
+        )
+
+    generate = mocker.patch("sanzaru.tools.podcast.generate_podcast", mocker.AsyncMock(side_effect=fake_podcast))
+    mocker.patch("sanzaru.cli.podcast.finalize_output", mocker.AsyncMock(return_value=str(tmp_path / "ep.mp3")))
 
     result = CliRunner().invoke(
         cli,
@@ -281,10 +302,8 @@ def test_podcast_render_mode_does_not_mask_a_missing_config():
         input=json.dumps(script),
     )
 
-    assert result.exit_code == 2, result.stdout
-    parsed = json.loads(result.stdout)
-    assert parsed["error"]["type"] == "usage"
-    assert "missing required field: 'config'" in parsed["error"]["message"]
+    assert result.exit_code == 0, result.stderr
+    assert generate.call_args.args[0]["config"]["render_mode"] == "dialogue"
 
 
 @pytest.mark.integration
