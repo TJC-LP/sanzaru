@@ -304,12 +304,16 @@ Full rationale, measured numbers, and tuning notes:
 
 #### `generate`
 
-`generate SCRIPT` renders a multi-voice podcast from a PodcastScript JSON
-(`{"title", "speakers": [...], "segments": [...], "config": {...}}`); segments TTS in parallel
-internally, bounded per provider. `config` **requires** `default_pause_ms` (int),
-`normalize_loudness` (bool), and `output_format` (`"mp3"|"wav"`); optional: `intro_silence_ms`,
-`outro_silence_ms`, `output_bitrate`, `provider`, `max_concurrency`, `render_mode`,
-`dialogue_stability`. Speakers accept optional `provider`, `model`, and `voice_settings`, resolved
+`generate SCRIPT` renders a multi-voice podcast from a PodcastScript JSON; segments TTS in
+parallel internally, bounded per provider. Only `speakers` and `segments` are required — the
+smallest script that renders is
+`{"speakers": [{"name": "Alex", "voice": "ash"}], "segments": [{"speaker": "Alex", "text": "Hi."}]}`.
+A speaker's `id` defaults to its `name` (so segments can reference it by name) and `speed` to
+`1.0`; `instructions` is optional and OpenAI-only. `title` defaults, and `config` is optional
+in full: `default_pause_ms` (600), `normalize_loudness` (true), `output_format` (`"mp3"`),
+plus `intro_silence_ms`, `outro_silence_ms`, `output_bitrate`, `provider`, `max_concurrency`,
+`render_mode`, `dialogue_stability`. An invalid script reports every problem at once rather
+than one per run. Speakers accept optional `provider`, `model`, and `voice_settings`, resolved
 as `speaker.provider > config.provider > --provider` — so one episode can mix OpenAI and ElevenLabs
 voices. The envelope includes the full transcript — pipe to a file for long episodes.
 

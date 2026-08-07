@@ -72,10 +72,14 @@ class TestValidateScript:
         assert len(segments) == 3
 
     def test_missing_title_defaults_instead_of_raising(self, minimal_script):
-        """#36: title is presentational — a timestamp stands in for it."""
+        """#36: title is presentational, so it gets a plain default.
+
+        No timestamp in it: the generated filename appends its own, and
+        `podcast_<epoch>_<stamp>.mp3` reads as a bug.
+        """
         del minimal_script["title"]
         title, _, _, _ = _validate_script(minimal_script)
-        assert title.startswith("podcast_")
+        assert title == "podcast"
 
     def test_missing_speakers_key(self, minimal_script):
         """Missing speakers raises ValueError."""
@@ -99,7 +103,7 @@ class TestValidateScript:
         """A whitespace-only title is as absent as no title at all."""
         minimal_script["title"] = "   "
         title, _, _, _ = _validate_script(minimal_script)
-        assert title.startswith("podcast_")
+        assert title == "podcast"
 
     def test_no_speakers_raises(self, minimal_script):
         """Empty speakers list raises ValueError."""
@@ -179,6 +183,65 @@ class TestValidateScript:
         with pytest.raises(ValueError, match="text must not be empty"):
             _validate_script(minimal_script)
 
+    def test_speaker_speed_out_of_range_raises(self, minimal_script):
+        """Speaker speed outside 0.25–4.0 raises ValueError."""
+        minimal_script["speakers"][0]["speed"] = 5.0
+        with pytest.raises(ValueError, match="speed must be between 0.25 and 4.0"):
+            _validate_script(minimal_script)
+
+    def test_speaker_speed_too_low_raises(self, minimal_script):
+        """Speaker speed below 0.25 raises ValueError."""
+        minimal_script["speakers"][0]["speed"] = 0.1
+        with pytest.raises(ValueError, match="speed must be between 0.25 and 4.0"):
+            _validate_script(minimal_script)
+
+    def test_segment_speed_override_out_of_range_raises(self, minimal_script):
+        """Segment speed_override outside 0.25–4.0 raises ValueError."""
+        minimal_script["segments"][0]["speed_override"] = 0.1
+        with pytest.raises(ValueError, match="speed_override must be between 0.25 and 4.0"):
+            _validate_script(minimal_script)
+
+    def test_speed_at_boundaries_valid(self, minimal_script):
+        """Speed values at exactly 0.25 and 4.0 pass validation."""
+        minimal_script["speakers"][0]["speed"] = 0.25
+        _validate_script(minimal_script)
+        minimal_script["speakers"][0]["speed"] = 4.0
+        _validate_script(minimal_script)
+
+
+@pytest.mark.unit
+class TestMalformedScriptsStayUsageErrors:
+    """A script arrives from a raw `json.loads` with no pydantic in the way, so
+    every shape below is reachable from the CLI. Each must be a ValueError the
+    runtime maps to exit 2 — a KeyError or AttributeError escaping from deeper
+    in becomes an `internal` envelope at exit 1 and blames the tool."""
+
+    def test_blank_name_cannot_derive_an_id(self, minimal_script):
+        """`id` is only synthesized from a non-blank string name, and the
+        presence check cannot see that — the key *is* there."""
+        minimal_script["speakers"] = [{"name": "   ", "voice": "ash"}]
+
+        with pytest.raises(ValueError, match="needs a non-empty string 'id'"):
+            _validate_script(minimal_script)
+
+    def test_non_string_name_cannot_derive_an_id(self, minimal_script):
+        minimal_script["speakers"] = [{"name": 123, "voice": "ash"}]
+
+        with pytest.raises(ValueError, match="needs a non-empty string 'id'"):
+            _validate_script(minimal_script)
+
+    def test_non_object_config_is_a_usage_error(self, minimal_script):
+        minimal_script["config"] = "mp3"
+
+        with pytest.raises(ValueError, match="'config' must be an object, got str"):
+            _validate_script(minimal_script)
+
+    def test_non_object_speaker_is_a_usage_error(self, minimal_script):
+        minimal_script["speakers"] = ["Alex"]
+
+        with pytest.raises(ValueError, match="Speaker 0 must be an object, got str"):
+            _validate_script(minimal_script)
+
 
 @pytest.mark.unit
 class TestScriptDefaults:
@@ -193,7 +256,7 @@ class TestScriptDefaults:
             }
         )
 
-        assert title.startswith("podcast_")
+        assert title == "podcast"
         assert speakers[0]["id"] == "Alex"  # id mirrors name
         assert speakers[0]["speed"] == 1.0
         assert "instructions" not in speakers[0]  # absent, not ""
@@ -331,6 +394,37 @@ class TestValidationReportsEveryProblem:
         with pytest.raises(ValueError, match="known ids: host"):
             _validate_script(minimal_script)
 
+    def test_a_duplicate_id_is_reported_even_when_the_first_speaker_also_fails(self, minimal_script):
+        """Duplicate detection reads the id-shape set, not the fully-validated
+        one: a speaker that bails out early would otherwise never register its
+        id, hiding the collision until the unrelated error is fixed — the extra
+        round trip #53 exists to remove."""
+        minimal_script["speakers"] = [
+            {"name": "A", "voice": "ash", "speed": 9.0},  # fails on speed
+            {"name": "A", "voice": "nova"},  # duplicate of the above
+        ]
+        minimal_script["segments"][0]["speaker"] = "A"
+
+        with pytest.raises(ValueError) as excinfo:
+            _validate_script(minimal_script)
+
+        message = str(excinfo.value)
+        assert "speed must be between" in message
+        assert "duplicates the speaker id 'A'" in message
+
+    def test_a_duplicate_id_survives_a_bad_config_provider(self, minimal_script):
+        """`config_provider_ok` makes every speaker bail before the bottom of
+        the loop, so this is the wholesale version of the case above."""
+        minimal_script["config"]["provider"] = "azure"
+        minimal_script["speakers"] = [
+            {"name": "A", "voice": "ash"},
+            {"name": "A", "voice": "nova"},
+        ]
+        minimal_script["segments"][0]["speaker"] = "A"
+
+        with pytest.raises(ValueError, match="duplicates the speaker id 'A'"):
+            _validate_script(minimal_script)
+
     def test_a_bad_config_provider_does_not_restate_itself_per_speaker(self, minimal_script):
         """Every speaker inherits config.provider, so probing them would just
         repeat the same diagnostic once per speaker."""
@@ -345,31 +439,6 @@ class TestValidationReportsEveryProblem:
             _validate_script(minimal_script)
 
         assert str(excinfo.value).count("unknown provider") == 1
-
-    def test_speaker_speed_out_of_range_raises(self, minimal_script):
-        """Speaker speed outside 0.25–4.0 raises ValueError."""
-        minimal_script["speakers"][0]["speed"] = 5.0
-        with pytest.raises(ValueError, match="speed must be between 0.25 and 4.0"):
-            _validate_script(minimal_script)
-
-    def test_speaker_speed_too_low_raises(self, minimal_script):
-        """Speaker speed below 0.25 raises ValueError."""
-        minimal_script["speakers"][0]["speed"] = 0.1
-        with pytest.raises(ValueError, match="speed must be between 0.25 and 4.0"):
-            _validate_script(minimal_script)
-
-    def test_segment_speed_override_out_of_range_raises(self, minimal_script):
-        """Segment speed_override outside 0.25–4.0 raises ValueError."""
-        minimal_script["segments"][0]["speed_override"] = 0.1
-        with pytest.raises(ValueError, match="speed_override must be between 0.25 and 4.0"):
-            _validate_script(minimal_script)
-
-    def test_speed_at_boundaries_valid(self, minimal_script):
-        """Speed values at exactly 0.25 and 4.0 pass validation."""
-        minimal_script["speakers"][0]["speed"] = 0.25
-        _validate_script(minimal_script)
-        minimal_script["speakers"][0]["speed"] = 4.0
-        _validate_script(minimal_script)
 
 
 @pytest.mark.unit

@@ -270,17 +270,28 @@ def _validate_script(
         errors.append("PodcastScript supports at most 4 speakers")
     if not script["segments"]:
         errors.append("PodcastScript must have at least 1 segment")
+
+    # Types, before anything indexes into these. The script arrives from a raw
+    # `json.loads` with no pydantic in the way, so a non-object here would
+    # otherwise surface as an AttributeError/ValueError from deep inside — an
+    # `internal` envelope at exit 1 rather than the usage error it is.
+    raw_config = script.get("config")
+    if raw_config is not None and not isinstance(raw_config, dict):
+        errors.append(f"PodcastScript 'config' must be an object, got {type(raw_config).__name__}")
+    if isinstance(speakers_raw, list):
+        for i, entry in enumerate(speakers_raw):
+            if not isinstance(entry, dict):
+                errors.append(f"Speaker {i} must be an object, got {type(entry).__name__}")
     if errors:
         _raise_validation_errors(errors)
 
     # `title` is presentational — it names the default output file and rides in
-    # the result. A timestamp is a fine stand-in; refusing to render without one
-    # was not (#36).
-    title = script.get("title") or ""
-    if not title.strip():
-        title = f"podcast_{int(time.time())}"
+    # the result. A plain default is fine; refusing to render without one was
+    # not (#36). No timestamp: the generated filename appends its own.
+    raw_title = script.get("title")
+    title = raw_title.strip() if isinstance(raw_title, str) and raw_title.strip() else "podcast"
 
-    config: PodcastConfig = script.get("config") or cast(PodcastConfig, {})
+    config: PodcastConfig = raw_config or cast(PodcastConfig, {})
 
     # ---- phase 2: config and speakers, collected together ----
     output_format = config.get("output_format", DEFAULT_OUTPUT_FORMAT)
@@ -314,6 +325,13 @@ def _validate_script(
     speakers = [_normalize_speaker(s) for s in speakers_raw]
 
     speaker_ids: set[str] = set()
+    # Every id whose *shape* is valid, whether or not the rest of that speaker
+    # checked out. Duplicate detection reads this rather than `speaker_ids`: a
+    # speaker that bails out early never reaches the bottom of the loop, so
+    # testing against the fully-validated set would hide a collision behind an
+    # unrelated error on the first of the pair — the extra round trip #53 exists
+    # to remove.
+    seen_ids: set[str] = set()
     # Per speaker id, so the segment pass below can re-probe with the same
     # provider, model, and voice the render will use.
     speaker_providers: dict[str, TTSProviderName] = {}
@@ -327,15 +345,20 @@ def _validate_script(
             errors.append(f"{label} missing required field(s): {', '.join(repr(f) for f in missing)}")
             continue
 
-        if not isinstance(speaker["id"], str) or not speaker["id"].strip():
-            errors.append(f"{label} 'id' must be a non-empty string")
+        # Read through `.get`: `id` is only synthesized from a non-blank string
+        # name, so a name of "   " (or a non-string) leaves it absent — and the
+        # presence check above cannot see that, because the key *is* there.
+        speaker_id = speaker.get("id")
+        if not isinstance(speaker_id, str) or not speaker_id.strip():
+            errors.append(f"{label} needs a non-empty string 'id', or a non-empty 'name' to derive one from")
             continue
-        if speaker["id"] in speaker_ids:
+        if speaker_id in seen_ids:
             # Newly reachable now that `id` defaults to `name`: two speakers
             # sharing one would silently collapse in the render path's
             # speaker_map, and only one of them would ever be heard.
-            errors.append(f"{label} duplicates the speaker id {speaker['id']!r}; ids must be unique")
+            errors.append(f"{label} duplicates the speaker id {speaker_id!r}; ids must be unique")
             continue
+        seen_ids.add(speaker_id)
 
         speaker_ok = True
         if "provider" in speaker:
