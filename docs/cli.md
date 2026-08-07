@@ -26,6 +26,13 @@ human-readable hints. A TTY only switches formatting (pretty vs compact), never 
 {"v": 1, "ok": false, "command": "video.wait", "error": {"type": "timeout", "message": "..."}, "resume": "sanzaru video wait video_x --download -o ./clip.mp4", "id": "video_x", "last_status": "in_progress", "last_progress": 78}
 ```
 
+`result.file.path` is the canonical location of a written artifact and is always present. Where a
+result also carries a bare name (`output_file`, `output_filename`, `filename`), it is the basename
+of that same path — including when `-o` renamed the file or it was staged under a temporary name
+first. The two never disagree, so `jq -r .result.file.path` and `jq -r .result.output_file` always
+describe one file. `video` envelopes carry only `file.path`, no bare name; prefer `file.path` in
+scripts that handle more than one media type.
+
 Errors are **also** emitted as envelopes on stdout (`"ok": false`) so `jq` pipelines never hang,
 with a one-line summary on stderr. `error.type` is one of: `usage`, `config`, `api_error`,
 `not_found`, `job_failed`, `timeout`, `download_error`, `internal`. A `resume` field is present

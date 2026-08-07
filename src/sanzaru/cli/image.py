@@ -25,6 +25,7 @@ from ._io import (
     install_overrides,
     plan_output,
     read_content_arg,
+    reconcile_output_name,
     resolve_input,
 )
 from ._output import (
@@ -168,6 +169,13 @@ async def wait_one_image(
                 resume=resume,
                 extra={"id": response_id, "status": "completed"},
             )
+        # `payload` starts as an ImageResponse ({id, status, created_at}), which
+        # carries no name — so without setting one here `jq -r .result.filename`
+        # is null for `create --download` and `wait --download` while
+        # `image download` returns one. Set directly rather than seeding from
+        # `dl["filename"]` and reconciling: the final path is what the caller
+        # needs, and seeding first only obscures that `dl`'s value is discarded.
+        payload["filename"] = pathlib.PurePath(final_path).name
         payload["size"] = dl["size"]
         payload["format"] = dl["format"]
         payload["file"] = _file_payload(final_path)
@@ -385,6 +393,7 @@ async def image_download(ctx: click.Context, response_id: str, output: str | Non
     final_path = await finalize_output(session, plan, result["filename"])
     payload: dict[str, object] = dict(result)
     payload["file"] = _file_payload(final_path)
+    reconcile_output_name(payload, final_path)
     emit(success_envelope("image.download", payload))
     return 0
 
@@ -474,6 +483,7 @@ async def image_generate(
                 final_path = await finalize_output(session, plan, result.filename)
                 payload: dict[str, object] = result.model_dump(mode="json")
                 payload["file"] = _file_payload(final_path)
+                reconcile_output_name(payload, final_path)
                 code, envelope = 0, success_envelope("image.generate", payload, elapsed_s=time.monotonic() - started)
             except Exception as exc:  # noqa: BLE001 — batch siblings must keep going
                 error = _classify(exc)
@@ -549,6 +559,7 @@ async def image_edit(
     final_path = await finalize_output(session, plan, result.filename)
     payload: dict[str, object] = result.model_dump(mode="json")
     payload["file"] = _file_payload(final_path)
+    reconcile_output_name(payload, final_path)
     emit(success_envelope("image.edit", payload, elapsed_s=time.monotonic() - started))
     return 0
 
@@ -581,6 +592,7 @@ async def image_prepare(ctx: click.Context, input_image: str, size: str, mode: s
     final_path = await finalize_output(session, plan, result["output_filename"])
     payload: dict[str, object] = dict(result)
     payload["file"] = _file_payload(final_path)
+    reconcile_output_name(payload, final_path)
     emit(success_envelope("image.prepare", payload))
     return 0
 
