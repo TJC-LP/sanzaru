@@ -228,8 +228,10 @@ def _normalize_speaker(speaker: Speaker) -> Speaker:
     name = normalized.get("name")
     if "id" not in normalized and isinstance(name, str) and name.strip():
         # Segments may then reference the speaker by name, which is what an
-        # author writes first anyway.
-        normalized["id"] = name
+        # author writes first anyway — so store the *stripped* name, or
+        # {"name": "  Alex  "} would demand {"speaker": "  Alex  "} back.
+        # Every other id-ish comparison here strips too.
+        normalized["id"] = name.strip()
     normalized.setdefault("speed", DEFAULT_SPEAKER_SPEED)
     return cast(Speaker, normalized)
 
@@ -249,6 +251,11 @@ def _validate_script(
     need resolved speaker ids, and speaker checks need a usable provider. Within
     a phase every problem is reported at once.
 
+    Collection is across items, not within one: a speaker with both a bad
+    `speed` and bad `voice_settings` reports only the speed, because each item's
+    later checks depend on its earlier ones holding. So "one edit cycle" is a
+    promise per item, not an absolute — deliberately, not an oversight.
+
     Returns speakers with `id` and `speed` filled in, so the render path can
     index them unconditionally.
 
@@ -263,6 +270,24 @@ def _validate_script(
     if errors:
         _raise_validation_errors(errors)
 
+    # Container types first. The script arrives from a raw `json.loads` with no
+    # pydantic in the way, so anything below that is structurally used — len(),
+    # enumerate(), dict() — would otherwise raise TypeError from deep inside and
+    # land as an `internal` envelope at exit 1 rather than the usage error it is.
+    # `{"speakers": {"host": {...}}}` is the one worth naming: an object keyed by
+    # id instead of an array is a very plausible mistake, and it used to surface
+    # as "dictionary update sequence element #0 has length 4; 2 is required".
+    # Literal subscripts, not a loop variable: mypy cannot narrow the latter to
+    # a TypedDict key.
+    for key, value in (("speakers", script["speakers"]), ("segments", script["segments"])):
+        if not isinstance(value, list):
+            errors.append(f"PodcastScript '{key}' must be an array, got {type(value).__name__}")
+    raw_config = script.get("config")
+    if raw_config is not None and not isinstance(raw_config, dict):
+        errors.append(f"PodcastScript 'config' must be an object, got {type(raw_config).__name__}")
+    if errors:
+        _raise_validation_errors(errors)
+
     speakers_raw = script["speakers"]
     if not speakers_raw:
         errors.append("PodcastScript must have at least 1 speaker")
@@ -271,17 +296,9 @@ def _validate_script(
     if not script["segments"]:
         errors.append("PodcastScript must have at least 1 segment")
 
-    # Types, before anything indexes into these. The script arrives from a raw
-    # `json.loads` with no pydantic in the way, so a non-object here would
-    # otherwise surface as an AttributeError/ValueError from deep inside — an
-    # `internal` envelope at exit 1 rather than the usage error it is.
-    raw_config = script.get("config")
-    if raw_config is not None and not isinstance(raw_config, dict):
-        errors.append(f"PodcastScript 'config' must be an object, got {type(raw_config).__name__}")
-    if isinstance(speakers_raw, list):
-        for i, entry in enumerate(speakers_raw):
-            if not isinstance(entry, dict):
-                errors.append(f"Speaker {i} must be an object, got {type(entry).__name__}")
+    for i, entry in enumerate(speakers_raw):
+        if not isinstance(entry, dict):
+            errors.append(f"Speaker {i} must be an object, got {type(entry).__name__}")
     if errors:
         _raise_validation_errors(errors)
 
@@ -324,11 +341,19 @@ def _validate_script(
 
     speakers = [_normalize_speaker(s) for s in speakers_raw]
 
+    # Two sets, and they are equal by the time phase 3 runs — any speaker that
+    # bails out early also appends to `errors`, which raises before then. They
+    # are kept apart because they answer different questions at different times,
+    # and collapsing them would couple this to that reasoning staying true.
+    #
+    # `speaker_ids` is the fully-validated set, populated at the bottom of a
+    # successful iteration in lockstep with `speaker_providers`/`speaker_probes`
+    # — so phase 3 can index those safely for any id it contains.
     speaker_ids: set[str] = set()
-    # Every id whose *shape* is valid, whether or not the rest of that speaker
-    # checked out. Duplicate detection reads this rather than `speaker_ids`: a
+    # `seen_ids` is every id whose *shape* was valid, whether or not the rest of
+    # that speaker checked out. Duplicate detection has to read this one: a
     # speaker that bails out early never reaches the bottom of the loop, so
-    # testing against the fully-validated set would hide a collision behind an
+    # testing against the validated set would hide a collision behind an
     # unrelated error on the first of the pair — the extra round trip #53 exists
     # to remove.
     seen_ids: set[str] = set()

@@ -755,7 +755,8 @@ one edit cycle rather than one per field.
 
 {
   "title": string,                   // Names the default output file (optional;
-                                     // defaults to podcast_<timestamp>)
+                                     // defaults to "podcast" — the generated
+                                     // filename appends its own timestamp)
   "description": string,             // Optional show notes (optional)
   "speakers": [                      // 1-4 speaker definitions (required)
     {
@@ -889,14 +890,13 @@ A 10-minute podcast needs ~1500 words of content.
 {
   "title": "mixed_ep1",
   "speakers": [
-    {"id": "host", "name": "Alex", "voice": "ash", "speed": 1.0, "instructions": "Confident host"},
-    {"id": "guest", "name": "Sam", "voice": "21m00Tcm4TlvDq8ikWAM", "speed": 1.0,
-     "instructions": "", "provider": "elevenlabs",
+    {"id": "host", "name": "Alex", "voice": "ash", "instructions": "Confident host"},
+    {"name": "Sam", "voice": "21m00Tcm4TlvDq8ikWAM", "provider": "elevenlabs",
      "voice_settings": {"stability": 0.45, "similarity_boost": 0.85}}
   ],
   "segments": [
     {"speaker": "host", "text": "Welcome back. Today we have a special guest."},
-    {"speaker": "guest", "text": "[warmly] Thanks for having me. I have been looking forward to this."}
+    {"speaker": "Sam", "text": "[warmly] Thanks for having me. I have been looking forward to this."}
   ],
   "config": {
     "default_pause_ms": 600,

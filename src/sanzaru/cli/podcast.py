@@ -127,7 +127,8 @@ async def podcast_generate(
                      provider?, model?, voice_settings?}],
        "segments": [{speaker, text, pause_after?, speed_override?,
                      instruction_override?}],
-       "title"?: str,                          (default: podcast_<timestamp>)
+       "title"?: str,               (default "podcast"; the output filename
+                                    appends its own timestamp)
        "config"?: {"default_pause_ms"?: int,                   (default 600)
                    "normalize_loudness"?: bool,                (default true)
                    "output_format"?: "mp3"|"wav",              (default "mp3")

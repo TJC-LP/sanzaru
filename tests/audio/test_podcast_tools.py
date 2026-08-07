@@ -210,6 +210,47 @@ class TestValidateScript:
 
 
 @pytest.mark.unit
+class TestShippedExamplesValidate:
+    """The examples in GENERATE_PODCAST are what an agent copies, so they are
+    claims about the schema rather than illustrations of it. Extract and run
+    them: an example that no longer validates teaches the wrong shape, and a
+    reference like `{"speaker": "guest"}` against a speaker whose id now
+    defaults to its name is exactly the mistake a hand-edit makes."""
+
+    @staticmethod
+    def _examples() -> list[tuple[str, dict]]:
+        import json
+        import re
+
+        from sanzaru.descriptions import GENERATE_PODCAST
+
+        found = []
+        for match in re.finditer(r"\*\*Example \(([^)]+)\):\*\*\n", GENERATE_PODCAST):
+            # Brace-match rather than pattern-match the close: the last example
+            # ends at the string terminator with no trailing newline, which a
+            # `\n\}\n` pattern silently skips.
+            start = match.end()
+            depth = 0
+            for offset, char in enumerate(GENERATE_PODCAST[start:]):
+                depth += (char == "{") - (char == "}")
+                if depth == 0 and char == "}":
+                    found.append((match.group(1), json.loads(GENERATE_PODCAST[start : start + offset + 1])))
+                    break
+        return found
+
+    def test_examples_were_actually_found(self):
+        # Guards the regex: a silently-empty parametrize would pass forever.
+        assert len(self._examples()) >= 2
+
+    def test_every_example_validates(self):
+        for label, script in self._examples():
+            try:
+                _validate_script(script)
+            except ValueError as exc:  # pragma: no cover - only on a broken example
+                pytest.fail(f"GENERATE_PODCAST example {label!r} does not validate: {exc}")
+
+
+@pytest.mark.unit
 class TestMalformedScriptsStayUsageErrors:
     """A script arrives from a raw `json.loads` with no pydantic in the way, so
     every shape below is reachable from the CLI. Each must be a ValueError the
@@ -228,6 +269,24 @@ class TestMalformedScriptsStayUsageErrors:
         minimal_script["speakers"] = [{"name": 123, "voice": "ash"}]
 
         with pytest.raises(ValueError, match="needs a non-empty string 'id'"):
+            _validate_script(minimal_script)
+
+    @pytest.mark.parametrize("key", ["speakers", "segments"])
+    def test_non_array_container_is_a_usage_error(self, key, minimal_script):
+        """The element guard covered entries but not the containers themselves,
+        so `len()`/`enumerate()` raised TypeError → exit 1."""
+        minimal_script[key] = 5
+
+        with pytest.raises(ValueError, match=rf"'{key}' must be an array, got int"):
+            _validate_script(minimal_script)
+
+    def test_speakers_keyed_by_id_is_a_usage_error(self, minimal_script):
+        """A very plausible agent mistake — an object keyed by id instead of an
+        array. It used to escape as 'dictionary update sequence element #0 has
+        length 4; 2 is required', which names nothing an author can act on."""
+        minimal_script["speakers"] = {"host": {"name": "Alex", "voice": "ash"}}
+
+        with pytest.raises(ValueError, match="'speakers' must be an array, got dict"):
             _validate_script(minimal_script)
 
     def test_non_object_config_is_a_usage_error(self, minimal_script):
@@ -266,6 +325,17 @@ class TestScriptDefaults:
     def test_id_defaults_to_name_so_segments_can_reference_by_name(self, minimal_script):
         del minimal_script["speakers"][0]["id"]
         minimal_script["speakers"][0]["name"] = "Alex"
+        minimal_script["segments"][0]["speaker"] = "Alex"
+
+        _, speakers, _, _ = _validate_script(minimal_script)
+
+        assert speakers[0]["id"] == "Alex"
+
+    def test_a_derived_id_is_stripped(self, minimal_script):
+        """The decision used name.strip() but assigned the unstripped name, so
+        {"name": "  Alex  "} demanded {"speaker": "  Alex  "} back — while every
+        other id comparison here strips."""
+        minimal_script["speakers"] = [{"name": "  Alex  ", "voice": "ash"}]
         minimal_script["segments"][0]["speaker"] = "Alex"
 
         _, speakers, _, _ = _validate_script(minimal_script)
