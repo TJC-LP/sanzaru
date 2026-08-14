@@ -25,32 +25,37 @@ that failed.
 
 from __future__ import annotations
 
-import difflib
 from collections.abc import Sequence
-from io import BytesIO
 
 import anyio
 from aioresult import ResultCapture  # type: ignore[import-untyped]
 from pydantic import BaseModel, Field
 
 from ...config import logger
+from ..verification import (
+    DEFAULT_TRANSCRIBE_MODEL,
+    SIMILARITY_WARN_THRESHOLD,
+    TRANSCRIBE_MAX_BYTES,
+    similarity,
+    transcribe_bytes,
+)
 from .types import Rundown, Turn
 
-DEFAULT_TRANSCRIBE_MODEL = "gpt-transcribe"
-"""OpenAI's top-tier batch transcription model. Note that `gpt-live-transcribe`
-is *not* a substitute — it is realtime-streaming only and /v1/audio/transcriptions
-rejects it with a 404."""
+# Re-exported: this module was their only home before #35 and #39 needed them too.
+__all__ = [
+    "DEFAULT_JUDGE_MODEL",
+    "DEFAULT_TRANSCRIBE_MODEL",
+    "SIMILARITY_WARN_THRESHOLD",
+    "TRANSCRIBE_MAX_BYTES",
+    "ActVerdict",
+    "QCReport",
+    "intended_text",
+    "run_qc",
+    "similarity",
+    "transcribe_bytes",
+]
 
 DEFAULT_JUDGE_MODEL = "gpt-5.5"
-
-TRANSCRIBE_MAX_BYTES = 25 * 1024 * 1024
-"""API upload limit. An act over this is reported as unverified rather than
-failing the run."""
-
-SIMILARITY_WARN_THRESHOLD = 0.80
-"""Below this, intended and rendered text have diverged enough to be worth a
-human listen. Normal transcription disagreement (punctuation, filler words,
-numbers as digits vs words) lands around 0.85-0.95."""
 
 
 class ActVerdict(BaseModel):
@@ -150,49 +155,9 @@ class _Judgement(BaseModel):
     acts: list[_JudgedAct]
 
 
-_WORD_EDGES = ".,!?;:\"'()[]{}…—–-"
-
-
-def _words(text: str) -> list[str]:
-    """Comparable words: lowercased, stripped of the punctuation glued to them."""
-    return [word for word in (raw.strip(_WORD_EDGES) for raw in text.lower().split()) if word]
-
-
-def similarity(intended: str, rendered: str) -> float:
-    """Word-level overlap between two transcripts, 0-1.
-
-    Word-level rather than character-level so that spelling disagreements
-    between the two models don't swamp the signal we care about, which is
-    *missing speech*. Punctuation is stripped for the same reason and not just
-    tokenised around: the models disagree about it constantly, and a word-level
-    diff scores `plumbing` against `plumbing.` as a total mismatch — enough to
-    put a short, clean act under the warn threshold on commas alone.
-    """
-    intended_words = _words(intended)
-    rendered_words = _words(rendered)
-    if not intended_words and not rendered_words:
-        return 1.0
-    if not intended_words or not rendered_words:
-        return 0.0
-    return difflib.SequenceMatcher(None, intended_words, rendered_words, autojunk=False).ratio()
-
-
 def intended_text(turns: Sequence[Turn]) -> str:
     """What the models meant to say, in speaking order."""
     return " ".join(turn.text for turn in turns if turn.text)
-
-
-async def transcribe_bytes(audio: bytes, filename: str, model: str = DEFAULT_TRANSCRIBE_MODEL) -> str:
-    """Transcribe one act's rendered audio."""
-    from ...config import get_client
-
-    client = get_client()
-    result = await client.audio.transcriptions.create(
-        file=(filename, BytesIO(audio)),
-        model=model,  # type: ignore[arg-type]  # accepts any model id; AudioModel literal lags releases
-        response_format="text",
-    )
-    return result if isinstance(result, str) else getattr(result, "text", "")
 
 
 async def _judge(rundown: Rundown, rendered: dict[str, str], model: str) -> _Judgement | None:

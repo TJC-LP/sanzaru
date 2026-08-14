@@ -88,7 +88,9 @@ src/sanzaru/
 │   ├── path_resolver.py # SecurePathResolver
 │   └── text_utils.py   # split_text_for_tts and text chunking
 ├── audio/              # Audio domain logic and services
-│   ├── processor.py    # AudioProcessor (format conversion, concatenation)
+│   ├── processor.py    # AudioProcessor (format conversion, concatenation, slicing)
+│   ├── verification.py # words/similarity/transcribe_bytes — shared by qc, #35, #39
+│   ├── windowing.py    # overlapping windows for long-file transcription
 │   ├── providers/      # Pluggable TTS backends
 │   │   ├── base.py               # SpeechRequest, TTSProvider protocol, synthesize_speech
 │   │   ├── openai_provider.py    # client.audio.speech (default)
@@ -457,6 +459,7 @@ SANZARU_ELEVENLABS_MAX_CONCURRENCY=2  # Free-tier cap (4 on flash/turbo); raise 
 SANZARU_OPENAI_MAX_CONCURRENCY=0      # 0 = unbounded (default)
 
 # Simulated podcasts (needs only OPENAI_API_KEY + the [audio] extra)
+SANZARU_TRANSCRIBE_MAX_CONCURRENCY=4  # windows in flight when transcribing a long file
 SANZARU_REALTIME_MAX_SESSIONS=6       # concurrent realtime sessions across all acts
 SANZARU_REALTIME_TURN_TIMEOUT=120     # per-turn stall bound; default 6x turn_seconds, min 60s
 SANZARU_REALTIME_ACT_BUDGET=3000      # per-act wall clock; default 3000s, under the 60-min close

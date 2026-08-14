@@ -119,6 +119,17 @@ it also counts turns that were never eligible. Full rules and worked examples in
 - `chat_with_audio`: Interactive audio analysis with GPT-4o
 - `transcribe_with_enhancement`: Enhanced transcription with templates
 
+**Long files are windowed automatically.** A single request truncates long audio
+*silently* — a 13-minute file came back cut off around 10.5 minutes with no error,
+and another run dropped a stretch from the middle — while 30 minutes fails outright
+with `input_too_large`. Over 8 minutes (`CHUNK_THRESHOLD_SECONDS`), the file is cut
+into overlapping 90s windows at a 75s stride, transcribed concurrently, and stitched
+by matching the overlap. The result carries `chunked: true` and a `windows` list with
+each window's offsets and text, so coverage is inspectable rather than assumed.
+
+Concurrency is 4 windows at a time, overridable with `SANZARU_TRANSCRIBE_MAX_CONCURRENCY`.
+A window that fails leaves a gap and says which one, rather than losing the transcript.
+
 ### Text-to-Speech
 - `create_audio`: Generate TTS audio
 

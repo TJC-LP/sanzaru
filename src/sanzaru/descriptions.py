@@ -548,6 +548,13 @@ Model recommendations:
 
 Supported formats: flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav, webm
 
+LONG FILES ARE HANDLED FOR YOU. Over ~8 minutes the file is split into overlapping
+90-second windows, transcribed in parallel, and stitched — because a single request
+truncates long audio SILENTLY (a 13-minute file returned cut off at ~10.5 minutes with
+no error) and fails outright around 30 minutes. Do not pre-cut long audio yourself.
+The result sets `chunked: true` and lists each window's offsets and text, so you can
+check coverage rather than trust it.
+
 Parameters:
 - input_file_name: Name of the audio file to transcribe (required)
 - model: Transcription model. Default: "gpt-4o-mini-transcribe"
