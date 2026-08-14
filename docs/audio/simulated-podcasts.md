@@ -46,9 +46,15 @@ the mini's ~17.5s under the same 15s rule, so full-model acts landed about a thi
 their targets. An act now borrows up to **1.5x** its planned turns (bounded by `MAX_ACT_TURNS`)
 to reach `target_seconds`, and the closing turn is cued once one more *measured* average turn
 would reach the target — before the overshoot, because the closing turn still has to fit.
-Extension turns carry an anti-recap steer, since an act that outlives its talking points drifts
-into restatement. A single-turn act (`max_turns: 1`) never extends: one turn is a shape you
-asked for, not an estimate. An act that spends every extension turn and still lands short
+Talking points are scheduled across the extended range, not just the planned one: points the
+planned turns cannot hold ride the extension turns instead of every one of them getting the same
+generic anti-recap steer. Extension turns with nothing scheduled still carry that steer, since an
+act that outlives its talking points drifts into restatement. A single-turn act (`max_turns: 1`)
+never extends: one turn is a shape you asked for, not an estimate.
+
+Because the extension is what actually binds, `--dry-run` projects turn counts and the
+turn-scaled token term against it rather than against `max_turns`. The dollar difference is small
+— cost tracks `target_seconds` — but the number you budget from should not read low. An act that spends every extension turn and still lands short
 reports `stop_reason: "max_turns"` — that value is the undershoot signal, not a routine ending.
 
 Measured on the same episode family: 6:28 against a 7–9 minute target became **11:36 against an
@@ -108,6 +114,7 @@ recording. Three fields, all optional, all replacing the default rather than add
 | --- | --- |
 | `direction` | nothing — free text added to every host's instructions for this act |
 | `turn_notes` | the generated steering note, per turn index (`""` = say nothing) |
+| `closing_note` | the generated closing cue, on whichever turn lands the act |
 | `speaking_order` | round-robin; cycles if shorter than the act |
 
 Setting `turn_notes` without `speaking_order` also **pins who opens the act**. Acts otherwise
@@ -140,6 +147,19 @@ landing the act becomes your job. It follows the closing turn rather than firing
 if the act extends toward `target_seconds`, turn 4 becomes mid-act and the note waits for the
 real landing. Any other note the closing turn was carrying is superseded, and logged so you can
 see it happened.
+
+That coupling is unavoidable when the index is the only way in, which is what **`closing_note`**
+separates. Set it and the closing cue is yours *and* `max_turns - 1` goes back to being an
+ordinary turn you can steer:
+
+```json
+{
+  "turn_notes": {"4": "Press the cost argument one more time."},
+  "closing_note": "Refuse to resolve it. End mid-disagreement. One sentence."
+}
+```
+
+Without `closing_note`, that turn-4 note would land the act instead of pressing the point.
 
 The workflow this is built for:
 
@@ -233,7 +253,7 @@ sanzaru podcast simulate @rundown.json --dry-run
 
 ```
 sanzaru: dry run — 'The Hard Part Isn't the Model': 3 acts, up to 27 turns
-sanzaru:   act1: The Model Is the Easy Part to Demo — 120s, up to 9 turns
+sanzaru:   act1: The Model Is the Easy Part to Demo — 120s, 6 planned, up to 9 turns
 sanzaru: projected ~6 min audio, 16,593 input / 10,800 output tokens
 sanzaru: projected cost ~$0.20 (estimate, not a quote)
 sanzaru: nothing was recorded; drop --dry-run to record

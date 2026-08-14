@@ -285,13 +285,15 @@ def _note_for_turn(
 
     1. **The turn that lands the act** gets the closing cue, wherever timing put
        it — extension pushes it out, long turns pull it in, and the hosts are
-       told to keep going until they are cued. A caller takes the landing over
-       by writing a note on the last *planned* turn; that note rides along to
-       the real closing turn. Anything else the closing turn was carrying is
-       reported as `displaced` rather than silently lost.
-    2. **The last planned turn of an act that extended past it** is now mid-act,
-       so the takeover note has moved on and this turn is steered away from
-       recap instead.
+       told to keep going until they are cued. A caller directs the landing with
+       `closing_note`, or — failing that — by writing a note on the last
+       *planned* turn, which then rides along to the real closing turn.
+       Anything else the closing turn was carrying is reported as `displaced`
+       rather than silently lost.
+    2. **The last planned turn of an act that extended past it** is now mid-act.
+       If that index was the takeover, the note has moved on with the close and
+       this turn is steered away from recap instead; with `closing_note` set it
+       is simply an ordinary turn.
     3. **A caller note for this turn** wins over any generated note. `""` is a
        deliberate "say nothing", distinct from having no opinion — the one
        exception being the last act's closing turn, where silence would leave
@@ -302,21 +304,25 @@ def _note_for_turn(
     """
     own = brief.turn_notes.get(turn_index)
     # `max_turns - 1` is the takeover index even for a single-turn act, where it
-    # is turn 0: dropping it there discarded the caller's only note.
-    closing_override = brief.turn_notes.get(brief.max_turns - 1)
+    # is turn 0: dropping it there discarded the caller's only note. But an
+    # explicit `closing_note` says the caller has another way to direct the
+    # close, so the index goes back to meaning an ordinary turn (#50).
+    by_index = brief.turn_notes.get(brief.max_turns - 1)
+    index_is_takeover = not brief.closing_note and by_index is not None
+    closing_override = brief.closing_note or (by_index if index_is_takeover else None)
 
     if is_final_turn:
         if closing_override is not None:
             text = closing_override or (_closing_note(brief, is_last_act=is_last_act) if is_last_act else None)
         else:
             text = _closing_note(brief, is_last_act=is_last_act)
-        displaced = own if (own and turn_index != brief.max_turns - 1) else None
+        displaced = own if (own and not (index_is_takeover and turn_index == brief.max_turns - 1)) else None
         return TurnNote(text, displaced)
 
-    if closing_override is not None and turn_index == brief.max_turns - 1:
+    if index_is_takeover and turn_index == brief.max_turns - 1:
         # Extended past the planned landing: the takeover rides with the close,
         # and a blank one still means silence.
-        return TurnNote(EXTENSION_NOTE if closing_override else None)
+        return TurnNote(EXTENSION_NOTE if by_index else None)
 
     if own is not None:
         return TurnNote(own or None)
@@ -344,31 +350,31 @@ def _note_for_turn(
 def _point_schedule(brief: ActBrief) -> dict[int, int]:
     """Map turn index → talking point to introduce on that turn.
 
-    Points are spread across the turns available *before* the closing turn, so
-    the last point still gets air rather than being cut off by the sign-off. The
-    first point is not scheduled: the opening note already puts the topic on the
-    table.
+    Two ranges, because an act is *planned* for `max_turns` but actually runs to
+    `extension_cap(max_turns)`:
+
+    1. Points are spread across the planned turns before the closing turn, so
+       the last one still gets air rather than being cut off by the sign-off,
+       and an act that never extends covers everything it can hold.
+    2. Whatever the planned budget could not hold rides the extension turns.
+       Before, they all received the same generic `EXTENSION_NOTE` — thin
+       direction next to a scheduled point, and where the recap loop starts.
+
+    Leftovers are placed consecutively from the first extension turn rather than
+    spread like the planned ones. An extending act is already past its budget and
+    the close lands whenever `target_seconds` is met, so a point introduced
+    promptly is a point that actually gets aired.
+
+    The first point is never scheduled: the opening note already puts the topic
+    on the table.
     """
     points = brief.talking_points
-    if len(points) <= 1 or brief.max_turns <= 2:
+    if len(points) <= 1:
         return {}
-    usable = brief.max_turns - 1
     # Turn 0 opens the act and turn `usable` lands it, so points ride in between.
+    usable = brief.max_turns - 1
     slots = list(range(1, usable))
     to_place = min(len(points) - 1, len(slots))
-    if to_place < len(points) - 1:
-        # A short act with a long list genuinely cannot cover it. Say which
-        # points go uncovered rather than quietly overwriting one on its turn,
-        # which is what this did before and nothing downstream could detect.
-        logger.warning(
-            "act %r: %d turns leave room for %d of %d talking points, so these will not be "
-            "introduced: %s - raise max_turns or cut points",
-            brief.id,
-            brief.max_turns,
-            to_place + 1,
-            len(points),
-            "; ".join(points[to_place + 1 :]),
-        )
 
     schedule: dict[int, int] = {}
     previous = 0
@@ -380,6 +386,36 @@ def _point_schedule(brief: ActBrief) -> dict[int, int]:
         turn = min(max(round(point_index * usable / len(points)), previous + 1), latest)
         schedule[turn] = point_index
         previous = turn
+
+    leftover = list(range(to_place + 1, len(points)))
+    if not leftover:
+        return schedule
+
+    # `extension_cap` rather than `max_turns * 1.5`, for the same reason
+    # `_warn_on_turn_budget` goes through it: it is what keeps the single-turn
+    # exemption and the MAX_ACT_TURNS clamp consistent with the loop's own cap.
+    hard_cap = extension_cap(brief.max_turns)
+    extension_slots = [turn for turn in range(max(1, usable), hard_cap - 1) if turn not in schedule]
+    for point_index, turn in zip(leftover, extension_slots, strict=False):
+        schedule[turn] = point_index
+
+    dropped = leftover[len(extension_slots) :]
+    if dropped:
+        # A short act with a long list genuinely cannot cover it. Say which
+        # points go uncovered rather than quietly overwriting one on its turn,
+        # which is what this did before and nothing downstream could detect.
+        # Measured against the extended ceiling: against `max_turns` this
+        # reported points as dropped that an extended act would have reached.
+        logger.warning(
+            "act %r: %d turns (up to %d extended) leave room for %d of %d talking points, so these "
+            "will not be introduced: %s - raise max_turns or cut points",
+            brief.id,
+            brief.max_turns,
+            hard_cap,
+            len(points) - len(dropped),
+            len(points),
+            "; ".join(points[index] for index in dropped),
+        )
     return schedule
 
 
