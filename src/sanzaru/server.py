@@ -336,8 +336,11 @@ if check_audio_available():
         # carries, so a path is refused by the schema before an episode is
         # synthesized rather than by storage after it is paid for.
         output_filename: Filename | None = None,
+        verify: bool = False,
     ):
-        return await podcast.generate_podcast(script, model=model, provider=provider, filename=output_filename)
+        return await podcast.generate_podcast(
+            script, model=model, provider=provider, filename=output_filename, verify=verify
+        )
 
     @mcp.tool(description=SIMULATE_PODCAST, annotations=WRITE_OPEN)
     async def simulate_podcast(brief: simulate.SimulationBrief):

@@ -262,7 +262,7 @@ def test_podcast_generate_from_stdin_script(mocker, tmp_path):
         "config": {},
     }
 
-    async def fake_podcast(parsed_script, model, provider, filename=None):
+    async def fake_podcast(parsed_script, model, provider, filename=None, verify=False):
         # Mirrors the tool: write under the requested name, report that name.
         written = filename or "podcast_1.mp3"
         (tmp_path / written).write_bytes(b"audio")
@@ -306,7 +306,7 @@ def test_podcast_render_mode_flag_beats_config(mocker, tmp_path):
     }
     script["config"]["render_mode"] = "segments"
 
-    async def fake_podcast(parsed_script, model, provider, filename=None):
+    async def fake_podcast(parsed_script, model, provider, filename=None, verify=False):
         return PodcastResult(
             output_file=filename or "ep.mp3",
             title="Test Cast",
@@ -344,7 +344,7 @@ def test_podcast_render_mode_flag_leaves_config_alone_when_absent(mocker, tmp_pa
         },
     }
 
-    async def fake_podcast(parsed_script, model, provider, filename=None):
+    async def fake_podcast(parsed_script, model, provider, filename=None, verify=False):
         return PodcastResult(
             output_file=filename or "ep.mp3",
             title="Test Cast",
@@ -395,7 +395,7 @@ def test_podcast_render_mode_applies_to_a_script_without_a_config(mocker, tmp_pa
         "segments": [{"speaker": "Host", "text": "Hi."}],
     }
 
-    async def fake_podcast(parsed_script, model, provider, filename=None):
+    async def fake_podcast(parsed_script, model, provider, filename=None, verify=False):
         return PodcastResult(
             output_file="ep.mp3",
             title="T",
@@ -563,7 +563,7 @@ def test_podcast_generate_passes_provider(mocker, tmp_path):
         "config": {"default_pause_ms": 500, "normalize_loudness": True, "output_format": "mp3"},
     }
 
-    async def fake_podcast(parsed_script, model, provider, filename=None):
+    async def fake_podcast(parsed_script, model, provider, filename=None, verify=False):
         return PodcastResult(
             output_file=filename or "ep.mp3",
             title="Test Cast",
