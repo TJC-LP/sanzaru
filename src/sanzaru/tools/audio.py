@@ -127,7 +127,8 @@ async def compress_audio(
         output_file_name: Optional custom name for output file
 
     Returns:
-        AudioProcessingResult with name of compressed file (or original if no compression needed)
+        AudioProcessingResult with the name of the file that now exists: output_file_name
+        when one was given, the input's own name otherwise
 
     Raises:
         ValueError: If max_mb is out of valid range (1-1000)

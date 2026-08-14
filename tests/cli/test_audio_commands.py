@@ -120,6 +120,63 @@ def test_audio_convert_moves_output_across_dirs(mocker, tmp_path):
 
 
 @pytest.mark.integration
+def test_compress_across_dirs_keeps_the_input_when_nothing_needed(tmp_path):
+    """#59: `-o` into another directory used to *move the input away*.
+
+    Deliberately not mocked at `sanzaru.tools.*` like its neighbours. The bug
+    was the interaction between the service returning the input's own name and
+    the CLI's cross-directory `shutil.move` — a fake tool that returns the
+    fixed contract cannot reproduce it. An already-small file reaches neither
+    the API nor pydub, so the real path is free to run here.
+    """
+    in_dir, out_dir = tmp_path / "in", tmp_path / "out"
+    in_dir.mkdir()
+    src = in_dir / "small.mp3"
+    src.write_bytes(b"well under the budget")
+
+    result = CliRunner().invoke(cli, ["audio", "compress", str(src), "-o", str(out_dir / "small.mp3")])
+
+    assert result.exit_code == 0, result.stderr
+    assert src.exists(), "#59: the input must survive a compress that had nothing to do"
+    assert src.read_bytes() == b"well under the budget"
+    assert (out_dir / "small.mp3").read_bytes() == b"well under the budget"
+    parsed = json.loads(result.stdout)
+    assert parsed["result"]["file"]["path"] == str(out_dir / "small.mp3")
+    assert parsed["result"]["output_file"] == "small.mp3"
+
+
+@pytest.mark.integration
+def test_compress_in_place_honors_the_requested_name(tmp_path):
+    """#59's quieter symptom: same directory, so no move — and `-o` was ignored.
+
+    The envelope reported the input's name while the caller had asked for
+    another, which is the two-answers problem #54 set out to remove.
+    """
+    src = tmp_path / "small.mp3"
+    src.write_bytes(b"tiny")
+
+    result = CliRunner().invoke(cli, ["audio", "compress", str(src), "-o", str(tmp_path / "renamed.mp3")])
+
+    assert result.exit_code == 0, result.stderr
+    assert src.exists()
+    assert (tmp_path / "renamed.mp3").read_bytes() == b"tiny"
+    assert json.loads(result.stdout)["result"]["output_file"] == "renamed.mp3"
+
+
+@pytest.mark.integration
+def test_compress_without_an_output_stays_a_no_op(tmp_path):
+    """No `-o` and nothing to do: still no copy, still the input's own name."""
+    src = tmp_path / "small.mp3"
+    src.write_bytes(b"tiny")
+
+    result = CliRunner().invoke(cli, ["audio", "compress", str(src)])
+
+    assert result.exit_code == 0, result.stderr
+    assert json.loads(result.stdout)["result"]["output_file"] == "small.mp3"
+    assert [p.name for p in tmp_path.iterdir()] == ["small.mp3"]
+
+
+@pytest.mark.integration
 def test_audio_files_latest(mocker):
     from sanzaru.audio.models import FilePathSupportParams
 

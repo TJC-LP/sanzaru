@@ -129,6 +129,55 @@ class TestAudioService:
         assert result.output_file == "small.mp3"
 
     @pytest.mark.anyio
+    async def test_below_threshold_with_an_output_name_copies_rather_than_no_ops(
+        self, service: AudioService, audio_dir: Path, mock_storage: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """A small file plus `output_filename` must still produce that file (#59).
+
+        Returning the *input's* name here is what let the CLI's cross-directory
+        branch `shutil.move` the source away — the caller ran compress
+        defensively and lost the original.
+        """
+        (audio_dir / "small.mp3").write_bytes(b"already small")
+        mock_storage.stat = AsyncMock(
+            return_value=FileInfo(name="small.mp3", size_bytes=10 * 1024 * 1024, modified_timestamp=0)
+        )
+        mock_storage.local_path = lambda pt, fn: _fake_local_path(audio_dir, fn, b"already small")
+        mock_storage.local_tempfile = lambda pt, fn: _fake_local_tempfile(audio_dir, fn)
+        mocker.patch("sanzaru.audio.services.audio_service.get_storage", return_value=mock_storage)
+        compress = mocker.patch.object(AudioProcessor, "compress_mp3", new_callable=AsyncMock)
+
+        result = await service.compress_audio(
+            input_filename="small.mp3",
+            output_filename="wanted.mp3",
+            max_mb=25,
+        )
+
+        assert result.output_file == "wanted.mp3"
+        assert (audio_dir / "wanted.mp3").read_bytes() == b"already small"
+        assert (audio_dir / "small.mp3").exists(), "the input must survive"
+        compress.assert_not_called()  # copied, not re-encoded
+
+    @pytest.mark.anyio
+    async def test_below_threshold_with_the_same_output_name_stays_a_no_op(
+        self, service: AudioService, mock_storage: MagicMock, mocker: MockerFixture
+    ) -> None:
+        """Asking for the name it already has must not copy a file onto itself."""
+        mock_storage.stat = AsyncMock(
+            return_value=FileInfo(name="small.mp3", size_bytes=10 * 1024 * 1024, modified_timestamp=0)
+        )
+        mock_storage.local_path = MagicMock(side_effect=AssertionError("should not open the file"))
+        mocker.patch("sanzaru.audio.services.audio_service.get_storage", return_value=mock_storage)
+
+        result = await service.compress_audio(
+            input_filename="small.mp3",
+            output_filename="small.mp3",
+            max_mb=25,
+        )
+
+        assert result.output_file == "small.mp3"
+
+    @pytest.mark.anyio
     async def test_compress_audio_above_threshold(
         self, service: AudioService, audio_dir: Path, mock_storage: MagicMock, mocker: MockerFixture
     ) -> None:

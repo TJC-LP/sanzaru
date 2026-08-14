@@ -518,8 +518,9 @@ ONLY USE THIS IF:
 - Other tools fail with "file too large" errors
 - File size exceeds 25MB (26,214,400 bytes)
 
-The tool intelligently compresses only if necessary - if file is already under
-the limit, it returns the original unchanged.
+The tool compresses only if necessary. A file already under the limit is left
+as-is — but if you named an output_filename, you still get that file: it is
+copied rather than re-encoded, so the input is never consumed.
 
 Parameters:
 - input_file_name: Name of the input audio file to compress (required)
@@ -527,7 +528,8 @@ Parameters:
 - output_filename: Optional custom name for compressed file (defaults to input name with _compressed suffix)
 
 Returns AudioProcessingResult with:
-- output_file: Name of compressed file (or original if no compression needed)
+- output_file: Name of the file that now exists — output_filename when you gave one,
+  the input's own name otherwise
 
 Example workflow:
 1. list_audio_files(min_size_bytes=26214400) -> find large files
