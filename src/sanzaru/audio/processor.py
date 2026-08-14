@@ -4,6 +4,7 @@
 Migrated from mcp-server-whisper v1.1.0 by Richie Caputo (MIT license).
 """
 
+from io import BytesIO
 from pathlib import Path
 
 import aiofiles
@@ -126,6 +127,30 @@ class AudioProcessor:
             return await anyio.to_thread.run_sync(lambda: AudioSegment.from_file(str(file_path), format=format_str))
         except Exception as e:
             raise AudioConversionError(f"Failed to load audio file {file_path}: {e}") from e
+
+    @staticmethod
+    async def export_slice(audio: AudioSegment, start_s: float, end_s: float, format: str = "mp3") -> bytes:  # noqa: A002
+        """Encode `audio[start_s:end_s]` to bytes, off the event loop.
+
+        pydub slices by millisecond and clamps out-of-range bounds itself, so a
+        window running past the end of the file yields whatever is left rather
+        than raising. Both the slice and the encode are CPU-bound.
+
+        Raises:
+        ------
+            AudioConversionError: If slicing or encoding fails.
+
+        """
+
+        def _slice() -> bytes:
+            buffer = BytesIO()
+            audio[int(start_s * 1000) : int(end_s * 1000)].export(buffer, format=format)
+            return buffer.getvalue()
+
+        try:
+            return await anyio.to_thread.run_sync(_slice)
+        except Exception as e:
+            raise AudioConversionError(f"Failed to slice audio at {start_s:.1f}-{end_s:.1f}s: {e}") from e
 
     @staticmethod
     def calculate_compression_needed(

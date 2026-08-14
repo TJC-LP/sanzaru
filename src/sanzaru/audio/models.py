@@ -237,6 +237,16 @@ class TranscriptionResult(BaseModel):
     words: list[dict[str, Any]] | None = Field(default=None, description="Word-level timestamps")
     usage: dict[str, Any] | None = Field(default=None, description="Token usage information")
     logprobs: Any | None = Field(default=None, description="Log probabilities if requested")
+    chunked: bool = Field(
+        default=False,
+        description="True when the file was transcribed as overlapping windows and stitched, "
+        "rather than in a single request",
+    )
+    windows: list[dict[str, Any]] | None = Field(
+        default=None,
+        description="Per-window coverage when chunked: index, start_s, end_s, and text. "
+        "Present so a caller can see what was actually covered rather than trusting the join",
+    )
 
     model_config = {"arbitrary_types_allowed": True}
 

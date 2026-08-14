@@ -167,7 +167,7 @@ usage error pointing to gpt-image-1.5.
 ### `sanzaru audio` — synchronous audio ops (requires `sanzaru[audio]`)
 | Command | Purpose |
 |---------|---------|
-| `transcribe FILE...` | Whisper/GPT-4o transcription; `--enhance detailed\|storytelling\|professional\|analytical`, `--format`, `--timestamps`; multi-file fan-out |
+| `transcribe FILE...` | Whisper/GPT-4o transcription; `--enhance detailed\|storytelling\|professional\|analytical`, `--format`, `--timestamps`; multi-file fan-out; files over 8 min are auto-windowed (`result.chunked`) |
 | `chat FILE` | Ask questions about audio content (`--prompt`, `--system`) |
 | `speak TEXT` | TTS (`--provider`, `--model`, `--voice`, `--instructions`, `--speed`, `--voice-settings`); long text auto-chunks |
 | `convert FILE` | To mp3/wav (`--to`) |
