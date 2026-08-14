@@ -37,6 +37,7 @@ A **stateless**, lightweight **MCP** server **and agent CLI** that wraps **OpenA
 - Parallel segment generation with configurable pacing
 - MP3/WAV output with loudness normalization
 - ElevenLabs `dialogue` render mode: consecutive turns go out together so the model paces them
+- `--verify` transcribes the rendered audio and re-renders segments the TTS silently dropped
 
 ### Simulated Podcasts
 - **The conversation is generated, not read** — N `gpt-realtime` agents actually talk to each other
@@ -261,7 +262,7 @@ video = create_video(
 # List available audio files
 files = list_audio_files(format="mp3")
 
-# Transcribe
+# Transcribe — long files are auto-windowed, so nothing truncates silently
 result = transcribe_audio("interview.mp3")
 
 # Or analyze with GPT-4o

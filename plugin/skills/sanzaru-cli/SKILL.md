@@ -72,6 +72,11 @@ Podcast speakers choose independently (`speaker.provider` > `config.provider` > 
 one episode can mix both. HTTP 429 means you exceeded your tier's concurrency — lower
 `SANZARU_ELEVENLABS_MAX_CONCURRENCY` (defaults are Free-tier: 2, or 4 on flash/turbo).
 
+ElevenLabs bills **characters submitted**, audio tags included, against a monthly allowance that
+can be small. Do not count them by hand: every render reports `characters` (and `usage[]` per
+provider on a podcast), and `sanzaru capabilities --quota` reads the remaining allowance without
+spending any of it.
+
 `podcast generate --render-mode dialogue` sends consecutive `eleven_v3` turns as **one** request
 so the model paces the exchange itself — distinctly more natural than fixed silence gaps. Turns
 that cannot join a run (OpenAI speakers, other models, a lone turn, a stretch in one voice, a turn
@@ -89,6 +94,13 @@ Three verbs, and picking the wrong one wastes either quality or money.
 | a **topic** and want a real conversation | `podcast rundown` then `podcast simulate` |
 | a **script** you want performed naturally | `podcast generate --render-mode dialogue` |
 | a **script** needing exact gaps / per-segment retry | `podcast generate` (default) |
+
+**Use `podcast generate --verify` on anything you care about.** TTS drops segment tails, and
+occasionally whole short segments, at random and with no error — the `transcript` in the result is
+only an echo of your script, so it proves nothing. `--verify` transcribes each rendered unit,
+checks it against the script, and re-renders what is missing once. A segment that fails *twice*
+will not be fixed by a third render: rewrite its tail to be grammatically part of a longer
+sentence. This replaces the hand-rolled QC loop that used to cost a median of three renders.
 
 `simulate` is not TTS: each host is a `gpt-realtime` session with a persona, and one host's audio
 is played into the others' ears, so they react to delivery and disagree for real. The transcript
@@ -155,7 +167,7 @@ the token cap, so raise `--turn-tokens` and resume instead of paying for the sam
 
 `video` create/remix/status/wait/download/list/delete/files · `image`
 generate/edit/create/status/wait/download/prepare/files · `audio`
-transcribe(--enhance)/chat/speak(--provider)/convert/compress/files(--latest) ·
+transcribe(--enhance; auto-windows files over 8 min)/chat/speak(--provider)/convert/compress/files(--latest) ·
 `podcast` rundown/simulate/generate(--provider, --render-mode) ·
 `wait` (mixed ids) · `capabilities` · `serve` (MCP server; bare `sanzaru` does the same).
 Every command supports `-h`; details in docs/cli.md.
