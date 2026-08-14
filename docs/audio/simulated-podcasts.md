@@ -55,7 +55,16 @@ never extends: one turn is a shape you asked for, not an estimate.
 Because the extension is what actually binds, `--dry-run` projects turn counts and the
 turn-scaled token term against it rather than against `max_turns`. The dollar difference is small
 — cost tracks `target_seconds` — but the number you budget from should not read low. An act that spends every extension turn and still lands short
-reports `stop_reason: "max_turns"` — that value is the undershoot signal, not a routine ending.
+reports `stop_reason: "max_turns"` — that value is the undershoot signal, not a routine ending,
+and QC flags it as `capped_short`.
+
+**An act is also bounded in wall clock.** `turn_timeout_seconds` bounds one turn; nothing bounded
+the act, which was academic while acts undershot their targets and is not now that they run to
+`target_seconds`. An act approaching the Realtime session's 60-minute close is landed early with
+`stop_reason: "wall_clock"` rather than risking the connection dropping mid-act — nothing is
+checkpointed until the act finishes, so a dropped connection loses every turn already paid for.
+The budget is `MAX_ACT_WALL_SECONDS` (50 min), overridable with `SANZARU_REALTIME_ACT_BUDGET`.
+The fix for a `wall_clock` act is to split it, not to give it more turns.
 
 Measured on the same episode family: 6:28 against a 7–9 minute target became **11:36 against an
 11:15 plan, with all five acts on their marks**.
@@ -377,9 +386,17 @@ sanzaru: qc warn: act2 — see result.qc for why (--qc-retry re-records just tho
 `--qc-retry` re-records only the flagged acts, once. That is cheap precisely because acts are
 independent — the same property that makes checkpointing work.
 
-One flag is worth handling by hand: a `tail_truncated` act was cut off by
-`max_output_tokens`, so re-recording at the same cap is likely to reproduce it and bill you
-twice. Raise `--turn-tokens` before retrying that one.
+Two flags are **mechanical** rather than content judgements, and re-recording them at the same
+settings buys the same defect twice. Both stay flagged so you see them, and both are skipped by
+`--qc-retry`:
+
+| flag | cause | fix before retrying |
+| --- | --- | --- |
+| `tail_truncated` | the final turn hit `max_output_tokens` | raise `--turn-tokens` |
+| `capped_short` | the act spent every extension turn still short of target (`stop_reason: "max_turns"`) | raise `max_turns`, or lower `target_seconds` |
+
+Everything else — missed points, repetition, off-brief — is a judgement where a fresh take is a
+real second chance, so those are what `--qc-retry` actually re-records.
 
 **A retry is not automatically the better take.** QC verdicts disagree run-to-run on the same
 material, and a live retry has lost a mandated figure the first take had. So the take being

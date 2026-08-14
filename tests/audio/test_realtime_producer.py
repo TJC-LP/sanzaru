@@ -12,12 +12,21 @@ from sanzaru.audio.realtime.budget import CostBudget
 from sanzaru.audio.realtime.producer import (
     SimulationSettings,
     _point_schedule,
+    act_wall_budget_seconds,
     build_instructions,
     run_act,
     turn_timeout_seconds,
     turn_token_cap,
 )
-from sanzaru.audio.realtime.types import MAX_ACT_TURNS, ActBrief, HostSpec, RealtimeUsage, extension_cap
+from sanzaru.audio.realtime.types import (
+    MAX_ACT_TURNS,
+    MAX_ACT_WALL_SECONDS,
+    REALTIME_SESSION_LIMIT_SECONDS,
+    ActBrief,
+    HostSpec,
+    RealtimeUsage,
+    extension_cap,
+)
 from sanzaru.exceptions import CostCeilingError, RealtimeAPIError
 
 pytestmark = pytest.mark.audio
@@ -746,6 +755,76 @@ class TestTurnTimeout:
     def test_junk_falls_back_to_the_derived_bound(self, monkeypatch, value):
         monkeypatch.setenv("SANZARU_REALTIME_TURN_TIMEOUT", value)
         assert turn_timeout_seconds(30.0) == pytest.approx(180.0)
+
+
+@pytest.mark.unit
+class TestActWallBudget:
+    def test_defaults_to_the_session_limit_less_headroom(self):
+        assert act_wall_budget_seconds() == MAX_ACT_WALL_SECONDS
+        assert MAX_ACT_WALL_SECONDS < REALTIME_SESSION_LIMIT_SECONDS
+
+    def test_an_explicit_setting_wins(self, monkeypatch):
+        monkeypatch.setenv("SANZARU_REALTIME_ACT_BUDGET", "900")
+        assert act_wall_budget_seconds(explicit=60.0) == 60.0
+
+    def test_the_env_var_overrides_the_default(self, monkeypatch):
+        monkeypatch.setenv("SANZARU_REALTIME_ACT_BUDGET", "900")
+        assert act_wall_budget_seconds() == 900.0
+
+    @pytest.mark.parametrize("value", ["", "  ", "nope", "0", "-5"])
+    def test_junk_falls_back_to_the_default(self, monkeypatch, value):
+        monkeypatch.setenv("SANZARU_REALTIME_ACT_BUDGET", value)
+        assert act_wall_budget_seconds() == MAX_ACT_WALL_SECONDS
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+class TestActWallClock:
+    """#51: nothing bounded an act against the Realtime 60-minute close.
+
+    `turn_timeout_seconds` bounds one turn. An act at MAX_ACT_SECONDS plus
+    per-turn overhead could approach the session limit — and a connection that
+    closes mid-act loses every turn already paid for, because nothing is
+    checkpointed until `run_act` returns.
+    """
+
+    async def test_the_act_lands_early_rather_than_racing_the_session_limit(
+        self, fake_realtime, connect_factory, brief, hosts
+    ):
+        # A budget so small the second turn's projection already crosses it.
+        settings = SimulationSettings(turn_seconds=15.0, act_budget_s=0.001)
+        factory, handed = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
+
+        result = await run_act(brief, hosts, settings, connect=factory)
+
+        assert result.stop_reason == "wall_clock"
+        # It must actually stop EARLY. Asserting only the stop reason passes
+        # even when the act runs to the turn cap and merely reports "wall_clock"
+        # on the way out — which is exactly what a mutation of `is_final_turn`
+        # produced.
+        assert len(result.turns) < extension_cap(brief.max_turns)
+        # The whole point of closing gracefully: the act survives to be
+        # checkpointed. A timeout around `run_act` would have discarded it.
+        assert result.audio, "turns already recorded must be kept"
+        assert any("Final turn" in note for conn in handed for note in conn.steers), "it was landed, not cut off"
+
+    async def test_a_generous_budget_does_not_interfere(self, fake_realtime, connect_factory, brief, hosts):
+        settings = SimulationSettings(turn_seconds=15.0, act_budget_s=3000.0)
+        factory, _ = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
+
+        result = await run_act(brief, hosts, settings, connect=factory)
+
+        assert result.stop_reason != "wall_clock"
+
+    async def test_reaching_the_target_still_reports_target_seconds(self, fake_realtime, connect_factory, hosts):
+        """Precedence: an act that got what it came for is not an undershoot."""
+        act = ActBrief(id="a", title="t", topic="x", target_seconds=2.0, max_turns=8)
+        settings = SimulationSettings(turn_seconds=15.0, act_budget_s=0.001)
+        factory, _ = connect_factory(fake_realtime.Connection(seconds=5.0), fake_realtime.Connection(seconds=5.0))
+
+        result = await run_act(act, hosts, settings, connect=factory)
+
+        assert result.stop_reason == "target_seconds"
 
 
 # ---------- budget ----------

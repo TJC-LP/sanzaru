@@ -20,6 +20,7 @@ from sanzaru.audio.realtime.qc import (
     SIMILARITY_WARN_THRESHOLD,
     TRANSCRIBE_MAX_BYTES,
     ActVerdict,
+    QCReport,
     _JudgedAct,
     _Judgement,
     intended_text,
@@ -502,3 +503,49 @@ class TestTruncationCoupling:
         assert content.flagged and content.retry_may_help
         # Both want a human's attention; only one is worth re-recording.
         assert report.retryable_acts == ["a2"]
+
+
+@pytest.mark.unit
+class TestCappedShort:
+    """#48: `stop_reason="max_turns"` reached the result and stopped there.
+
+    #46 restored the stop reason so an act that spent every extension turn and
+    still landed short was distinguishable — but nothing consumed it, so such an
+    act was exactly as unflagged as before.
+    """
+
+    def test_a_capped_short_act_is_flagged(self):
+        assert ActVerdict(act_id="a1", similarity=0.95, capped_short=True).flagged
+
+    def test_capped_short_is_flagged_but_not_auto_retried(self):
+        """Mechanical, like a truncation: the same `max_turns` caps again."""
+        capped = ActVerdict(act_id="a1", similarity=0.95, capped_short=True)
+        content = ActVerdict(act_id="a2", similarity=0.95, off_brief=True)
+        report = QCReport(acts=[capped, content], flagged_acts=["a1", "a2"])
+
+        assert capped.flagged and not capped.retry_may_help
+        assert report.retryable_acts == ["a2"]
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("stop_reason", "expected"),
+        [("max_turns", True), ("target_seconds", False), ("complete", False), ("wall_clock", False)],
+    )
+    async def test_run_qc_derives_it_from_the_stop_reason(self, qc_client, stop_reason, expected):
+        """It comes from the recording, like `tail_truncated` — not the judge."""
+        qc_client(transcripts={"act1.mp3": "a point, at some length, said out loud"})
+        turns = [_turn("act1", 0, "a point, at some length, said out loud")]
+
+        report = await run_qc(_rundown(("act1",)), {"act1": b"AUDIO"}, {"act1": turns}, {"act1": stop_reason})
+
+        assert report.acts[0].capped_short is expected
+
+    @pytest.mark.anyio
+    async def test_omitting_stop_reasons_is_safe(self, qc_client):
+        """The parameter is optional; absent it, nothing is claimed."""
+        qc_client(transcripts={"act1.mp3": "a point, at some length, said out loud"})
+        turns = [_turn("act1", 0, "a point, at some length, said out loud")]
+
+        report = await run_qc(_rundown(("act1",)), {"act1": b"AUDIO"}, {"act1": turns})
+
+        assert report.acts[0].capped_short is False
