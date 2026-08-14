@@ -3,7 +3,10 @@
 Migrated from mcp-server-whisper v1.1.0 by Richie Caputo (MIT license).
 """
 
+import shutil
 from pathlib import Path
+
+import anyio.to_thread
 
 from ...config import logger
 from ...storage import get_storage
@@ -58,6 +61,20 @@ class AudioService:
 
         return AudioProcessingResult(output_file=output_name)
 
+    async def _copy(self, input_filename: str, output_filename: str) -> None:
+        """Copy one audio file to another name within the audio path type.
+
+        Goes through `local_path`/`local_tempfile` rather than `read`+`write`
+        so the local backend does a plain filesystem copy instead of holding
+        the whole file in memory; the Databricks backend still round-trips.
+        """
+        storage = get_storage()
+        async with (
+            storage.local_path("audio", input_filename) as source,
+            storage.local_tempfile("audio", output_filename) as destination,
+        ):
+            await anyio.to_thread.run_sync(shutil.copyfile, source, destination)
+
     async def compress_audio(
         self,
         input_filename: str,
@@ -74,7 +91,9 @@ class AudioService:
 
         Returns:
         -------
-            AudioProcessingResult: Result with name of the compressed audio file (or original if no compression needed).
+            AudioProcessingResult: Result with name of the compressed audio file. When no
+            compression was needed, that is `output_filename` if one was asked for, and the
+            input's own name otherwise.
 
         """
         storage = get_storage()
@@ -84,7 +103,15 @@ class AudioService:
         needs_compression = self.processor.calculate_compression_needed(info.size_bytes, max_mb)
 
         if not needs_compression:
-            return AudioProcessingResult(output_file=input_filename)  # No compression needed
+            # The contract is "a file exists at output_filename", not "a file was
+            # compressed" (#59). Returning the *input's* name here let the CLI's
+            # cross-directory branch shutil.move the source away, destroying it —
+            # and the caller who ran compress defensively before transcribing lost
+            # exactly the originals that were already small enough.
+            if output_filename is None or output_filename == input_filename:
+                return AudioProcessingResult(output_file=input_filename)
+            await self._copy(input_filename, output_filename)
+            return AudioProcessingResult(output_file=output_filename)
 
         logger.info(f"File '{input_filename}' size > {max_mb}MB. Attempting compression...")
 

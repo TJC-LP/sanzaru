@@ -273,8 +273,8 @@ if check_audio_available():
         return await audio.convert_audio(input_path, output_format)
 
     @mcp.tool(description=COMPRESS_AUDIO, annotations=WRITE_CLOSED)
-    async def compress_audio(input_path: str, max_mb: int = 25):
-        return await audio.compress_audio(input_path, max_mb)
+    async def compress_audio(input_path: str, max_mb: int = 25, output_filename: str | None = None):
+        return await audio.compress_audio(input_path, max_mb, output_filename)
 
     @mcp.tool(description=TRANSCRIBE_AUDIO, annotations=READ_ONLY_OPEN)
     async def transcribe_audio(
