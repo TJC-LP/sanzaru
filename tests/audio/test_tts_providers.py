@@ -315,10 +315,13 @@ class TestSynthesizeSpeech:
         concat = mocker.patch("sanzaru.audio.processor.AudioProcessor.concatenate_audio_segments")
         provider = StubProvider(chunk_chars=100)
 
-        audio = await synthesize_speech(provider, SpeechRequest(text="short text", voice="v", model="m"))
+        rendered = await synthesize_speech(provider, SpeechRequest(text="short text", voice="v", model="m"))
 
-        assert audio == b"short text"
+        assert rendered.audio == b"short text"
         concat.assert_not_called()
+        assert rendered.usage.characters == len("short text")
+        assert rendered.usage.requests == 1
+        assert (rendered.usage.provider, rendered.usage.model) == (provider.name, "m")
 
     async def test_multi_chunk_preserves_order(self, mocker):
         # Concatenate by joining so the assertion reflects chunk order, not
@@ -333,7 +336,8 @@ class TestSynthesizeSpeech:
         provider = StubProvider(chunk_chars=12)
         text = "Alpha one. Beta two. Gamma three. Delta four."
 
-        audio = await synthesize_speech(provider, SpeechRequest(text=text, voice="v", model="m"))
+        rendered = await synthesize_speech(provider, SpeechRequest(text=text, voice="v", model="m"))
+        audio = rendered.audio
 
         parts = audio.decode().split("|")
         assert len(parts) > 1

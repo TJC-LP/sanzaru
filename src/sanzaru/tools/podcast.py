@@ -42,6 +42,7 @@ from ..audio.constants import (
 from ..audio.providers import (
     DialogueTurn,
     SpeechRequest,
+    SpeechUsage,
     TTSProvider,
     VoiceSettingsDict,
     as_dialogue_provider,
@@ -128,6 +129,15 @@ class PodcastScript(TypedDict):
     config: NotRequired[PodcastConfig]
 
 
+class ProviderUsage(BaseModel):
+    """What one provider/model pairing cost across the whole episode (#52)."""
+
+    provider: str
+    model: str
+    characters: int
+    requests: int
+
+
 class SegmentVerdict(BaseModel):
     """What verification found for one segment of the script (#35)."""
 
@@ -152,6 +162,10 @@ class PodcastResult(BaseModel):
     estimated_duration_seconds: float
     speakers: list[str]
     transcript: str
+    usage: list[ProviderUsage] = Field(default_factory=list)
+    """Characters submitted per provider and model. A list, not a single total:
+    one episode can mix providers, and only the ElevenLabs rows draw on a
+    character quota."""
     verified: bool | None = None
     """None when `verify` was not requested. True when every segment was
     confirmed present in the rendered audio, False when some were not — the
@@ -1052,6 +1066,12 @@ async def generate_podcast(
         f"Podcast '{title}': {len(segments)} segments, {len(speakers)} speakers, ~{estimated_duration:.0f}s estimated"
     )
 
+    # Appended from inside concurrent tasks. Order is nondeterministic and does
+    # not matter: the totals are folded per provider and model below. A `verify`
+    # retry re-enters `_gen_unit`, so a re-rendered unit's characters are counted
+    # again — which is correct, they were spent again.
+    usage_log: list[SpeechUsage] = []
+
     async def _gen_segment(i: int, segment: Segment) -> bytes:
         """Render one segment. Independent of the others, so #35's verify pass
         can re-invoke this for just the segments that failed QC."""
@@ -1078,7 +1098,9 @@ async def generate_podcast(
             instructions=instructions if speaker_provider.name == "openai" else None,
             voice_settings=voice_settings,
         )
-        return await synthesize_speech(speaker_provider, request, limiter=limiters[speaker_provider.name])
+        rendered = await synthesize_speech(speaker_provider, request, limiter=limiters[speaker_provider.name])
+        usage_log.append(rendered.usage)
+        return rendered.audio
 
     async def _gen_dialogue(unit: RenderUnit) -> bytes:
         """Render a run of consecutive turns as one conversation."""
@@ -1099,11 +1121,23 @@ async def generate_podcast(
             f"Queued dialogue segments {unit.indices[0] + 1}-{unit.indices[-1] + 1}/{len(segments)} "
             f"[{names} / {speaker_provider.name}]"
         )
+        model_id = models[unit.speaker_id]
+        # One request for the whole run, so it is one entry — and every turn's
+        # characters are spent even when only one line needed re-rendering,
+        # which is the trade #55 documents.
+        usage_log.append(
+            SpeechUsage(
+                provider=speaker_provider.name,
+                model=model_id,
+                characters=sum(len(turn.text) for turn in turns),
+                requests=1,
+            )
+        )
         limiter = limiters[speaker_provider.name]
         if limiter is None:
-            return await dialogue.synthesize_dialogue(turns, models[unit.speaker_id], config.get("dialogue_stability"))
+            return await dialogue.synthesize_dialogue(turns, model_id, config.get("dialogue_stability"))
         async with limiter:
-            return await dialogue.synthesize_dialogue(turns, models[unit.speaker_id], config.get("dialogue_stability"))
+            return await dialogue.synthesize_dialogue(turns, model_id, config.get("dialogue_stability"))
 
     async def _gen_unit(unit: RenderUnit) -> bytes:
         if unit.is_dialogue:
@@ -1206,6 +1240,17 @@ async def generate_podcast(
 
     transcript = "\n\n".join(f"**{speaker_map[s['speaker']]['name']}:** {s['text']}" for s in segments)
 
+    totals: dict[tuple[str, str], SpeechUsage] = {}
+    for entry in usage_log:
+        key = (entry.provider, entry.model)
+        totals[key] = totals[key] + entry if key in totals else entry
+    usage = [
+        ProviderUsage(provider=u.provider, model=u.model, characters=u.characters, requests=u.requests)
+        for u in sorted(totals.values(), key=lambda u: (u.provider, u.model))
+    ]
+    for row in usage:
+        logger.info("%s/%s: %d characters over %d request(s)", row.provider, row.model, row.characters, row.requests)
+
     verdicts = sorted(
         (v for unit_verdicts in verdicts_by_unit.values() for v in unit_verdicts),
         key=lambda v: v.index,
@@ -1230,6 +1275,7 @@ async def generate_podcast(
         estimated_duration_seconds=round(estimated_duration, 1),
         speakers=[s["name"] for s in speakers],
         transcript=transcript,
+        usage=usage,
         verified=None if not verify else all(v.ok for v in verdicts),
         verify_retries=retried_count,
         segment_verdicts=verdicts,

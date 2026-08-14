@@ -261,6 +261,15 @@ class TTSResult(BaseModel):
     """Result from text-to-speech operations."""
 
     output_file: str = Field(description="Name of the generated audio file")
+    provider: str | None = Field(default=None, description="TTS backend that rendered this")
+    model: str | None = Field(default=None, description="Model the backend used")
+    characters: int = Field(
+        default=0,
+        description="Characters submitted, inline audio tags included. ElevenLabs bills per "
+        "character against a monthly quota, so this is the number that matters there; OpenAI "
+        "is not metered this way and reports it for information",
+    )
+    requests: int = Field(default=1, description="API requests this took — more than one if the text was chunked")
 
 
 # ========== Exports ==========

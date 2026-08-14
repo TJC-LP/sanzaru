@@ -243,3 +243,24 @@ class TestVerifyPass:
         assert result.verified is True, "an unverifiable segment is not a failed one"
         assert result.segment_verdicts[0].reason == "not_transcribed"
         assert result.verify_retries == 0
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_a_retry_is_counted_against_the_character_budget(podcast_env):
+    """#35 meets #52: a re-render is spent characters, and must show up as such.
+
+    On a metered provider the retry is the expensive half of verification, so a
+    usage total that ignored it would understate exactly the case a caller
+    turned verification on to handle.
+    """
+    audio_dir, install = podcast_env
+    install({SPOKEN: ["the model is the easy part to demo and the hard", SPOKEN]})
+
+    result = await generate_podcast(_script(SPOKEN), verify=True)
+
+    assert result.verify_retries == 1
+    assert len(result.usage) == 1
+    # Rendered twice, so the characters were spent twice.
+    assert result.usage[0].requests == 2
+    assert result.usage[0].characters == 2 * len(SPOKEN)

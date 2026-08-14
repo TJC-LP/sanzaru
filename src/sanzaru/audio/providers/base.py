@@ -99,6 +99,45 @@ class DialogueTurn:
     voice: str
 
 
+@dataclass(frozen=True, slots=True)
+class SpeechUsage:
+    """What a synthesis actually submitted (#52).
+
+    Counted here rather than reported by the provider: the text is already in
+    hand at this layer, and ElevenLabs bills *characters submitted* — which is
+    exactly what we send, inline audio tags included. Nothing has to come back
+    from the API for this to be right, so the number is available even on a
+    request that later fails.
+
+    OpenAI is not quota-metered this way, so its count is informational. On
+    ElevenLabs, where a firm-wide free tier is 10,000 characters a month, it is
+    the number a caller most needs — and had to count by hand before.
+    """
+
+    provider: TTSProviderName
+    model: str
+    characters: int = 0
+    requests: int = 0
+
+    def __add__(self, other: "SpeechUsage") -> "SpeechUsage":
+        if (self.provider, self.model) != (other.provider, other.model):
+            raise ValueError(f"cannot add usage across {self.provider}/{self.model} and {other.provider}/{other.model}")
+        return SpeechUsage(
+            provider=self.provider,
+            model=self.model,
+            characters=self.characters + other.characters,
+            requests=self.requests + other.requests,
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class SpeechResult:
+    """Audio plus what producing it cost."""
+
+    audio: bytes
+    usage: SpeechUsage
+
+
 class TTSProvider(Protocol):
     """A text-to-speech backend. Implementations must return mp3 bytes."""
 
@@ -193,7 +232,7 @@ async def synthesize_speech(
     request: SpeechRequest,
     *,
     limiter: anyio.CapacityLimiter | None = None,
-) -> bytes:
+) -> SpeechResult:
     """Synthesize `request` into mp3 bytes, splitting text the provider can't take at once.
 
     Args:
@@ -204,7 +243,10 @@ async def synthesize_speech(
             created inside the running event loop — CapacityLimiter is loop-bound.
 
     Returns:
-        mp3 bytes.
+        mp3 bytes and the characters they cost. Characters are summed over the
+        *chunks actually sent*, not over `request.text`: splitting drops the
+        whitespace at each boundary, so the two differ by a few characters on a
+        long segment and the submitted count is the billable one.
     """
     provider.validate(request)
 
@@ -213,9 +255,16 @@ async def synthesize_speech(
     from ...infrastructure import split_text_for_tts
 
     chunks = split_text_for_tts(request.text, provider.max_chunk_chars(request.model))
+    usage = SpeechUsage(
+        provider=provider.name,
+        model=request.model,
+        characters=sum(len(chunk) for chunk in chunks),
+        requests=len(chunks),
+    )
 
     if len(chunks) == 1:
-        return await _synthesize_one(provider, replace(request, text=chunks[0]), limiter)
+        audio = await _synthesize_one(provider, replace(request, text=chunks[0]), limiter)
+        return SpeechResult(audio=audio, usage=usage)
 
     logger.debug("Text split into %d %s TTS chunks", len(chunks), provider.name)
 
@@ -240,7 +289,8 @@ async def synthesize_speech(
 
     from ..processor import AudioProcessor
 
-    return await AudioProcessor().concatenate_audio_segments(audio_chunks, format="mp3")
+    joined = await AudioProcessor().concatenate_audio_segments(audio_chunks, format="mp3")
+    return SpeechResult(audio=joined, usage=usage)
 
 
 async def _synthesize_one(

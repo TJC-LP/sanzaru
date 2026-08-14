@@ -191,6 +191,36 @@ a config error (exit 3). Set `SANZARU_ELEVENLABS_MAX_CONCURRENCY` if you hit HTT
 is per subscription tier. `ELEVENLABS_BASE_URL` overrides the API endpoint (the ElevenLabs
 counterpart to `OPENAI_BASE_URL`), for sandboxes that reach the API through a credential proxy.
 
+#### Character usage and quota
+
+ElevenLabs bills **characters submitted**, inline audio tags included, against a monthly
+allowance that can be small (the free tier was 10,000 characters/month as of 2026-08). Every
+render now reports what it spent, so you no longer have to count the script by hand first:
+
+```jsonc
+// audio speak
+"result": {"output_file": "...", "provider": "elevenlabs", "model": "eleven_v3",
+           "characters": 1730, "requests": 1}
+// podcast generate — a list, since one episode can mix providers
+"result": {"usage": [{"provider": "elevenlabs", "model": "eleven_v3",
+                      "characters": 1730, "requests": 1}]}
+```
+
+The count is computed from the text actually submitted, so it is right even when a request
+later fails, and it reflects chunking (long text is split into several requests).
+
+To check the allowance *before* spending any of it:
+
+```bash
+sanzaru capabilities --quota | jq .result.elevenlabs_quota
+# {"available": true, "tier": "free", "characters_used": 1754,
+#  "character_limit": 10000, "characters_remaining": 8246, "resets_at_unix": ...}
+```
+
+`--quota` is the one part of `capabilities` that makes a network call and needs a key — the rest
+stays safe as an agent's first command. A failed lookup is reported as
+`{"available": false, "reason": "..."}` rather than failing the report.
+
 ```bash
 sanzaru audio speak "[excited] You will not believe this." \
   --provider elevenlabs --voice 21m00Tcm4TlvDq8ikWAM \
