@@ -14,7 +14,15 @@ from typing import Literal, cast
 import anyio
 import click
 
-from ._io import PathSession, finalize_output, install_overrides, plan_output, read_content_arg, resolve_input
+from ._io import (
+    PathSession,
+    finalize_output,
+    install_overrides,
+    plan_output,
+    read_content_arg,
+    reconcile_output_name,
+    resolve_input,
+)
 from ._output import EXIT_CONFIG, EXIT_USAGE, aggregate_exit_code, emit, emit_line, error_envelope, success_envelope
 from ._runtime import CLIError, _classify, get_state, run_async
 
@@ -303,6 +311,7 @@ async def audio_speak(
     final_path = await finalize_output(session, plan, result.output_file)
     payload: dict[str, object] = result.model_dump(mode="json")
     payload["file"] = {"path": final_path}
+    reconcile_output_name(payload, final_path)
     emit(success_envelope("audio.speak", payload, elapsed_s=time.monotonic() - started))
     return 0
 
@@ -334,6 +343,7 @@ async def audio_convert(ctx: click.Context, file: str, target_format: str, outpu
     final_path = await finalize_output(session, plan, result.output_file)
     payload: dict[str, object] = result.model_dump(mode="json")
     payload["file"] = {"path": final_path}
+    reconcile_output_name(payload, final_path)
     emit(success_envelope("audio.convert", payload))
     return 0
 
@@ -361,6 +371,7 @@ async def audio_compress(ctx: click.Context, file: str, max_mb: int, output: str
     final_path = await finalize_output(session, plan, result.output_file)
     payload: dict[str, object] = result.model_dump(mode="json")
     payload["file"] = {"path": final_path}
+    reconcile_output_name(payload, final_path)
     emit(success_envelope("audio.compress", payload))
     return 0
 

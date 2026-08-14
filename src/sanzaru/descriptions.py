@@ -744,19 +744,33 @@ to the audio storage path.
 
 script must be a JSON object matching this structure:
 
+Only "speakers" and "segments" are required; every other field below defaults.
+The smallest script that renders is:
+
+  {"speakers": [{"name": "Alex", "voice": "ash"}],
+   "segments": [{"speaker": "Alex", "text": "Hello."}]}
+
+A script that fails validation reports EVERY problem at once, so fixing it takes
+one edit cycle rather than one per field.
+
 {
-  "title": string,                   // Used for output filename (required)
+  "title": string,                   // Names the default output file (optional;
+                                     // defaults to "podcast" — the generated
+                                     // filename appends its own timestamp)
   "description": string,             // Optional show notes (optional)
   "speakers": [                      // 1-4 speaker definitions (required)
     {
-      "id": string,                  // Unique identifier, referenced in segments (e.g. "host")
-      "name": string,                // Display name (e.g. "Alex")
+      "name": string,                // Display name, e.g. "Alex" (required)
       "voice": string,               // openai: alloy|ash|ballad|coral|echo|fable|nova|onyx|sage|shimmer
                                      // elevenlabs: a voice id from your library (required, no default)
-      "speed": number,               // openai 0.25-4.0; elevenlabs 0.7-1.2; eleven_v3 must be 1.0
+      "id": string,                  // Referenced in segments (optional; defaults to "name", so
+                                     // segments may just say the name). Must be unique.
+      "speed": number,               // Optional, default 1.0. openai 0.25-4.0; elevenlabs 0.7-1.2;
+                                     // eleven_v3 rejects any value but 1.0 — omit it there
       "instructions": string,        // Style directives (e.g. "Speak confidently and clearly").
-                                     // OPENAI ONLY — ignored by elevenlabs speakers; use inline
-                                     // audio tags like [whispers] in segment text with eleven_v3
+                                     // Optional, and OPENAI ONLY — ignored by elevenlabs speakers;
+                                     // use inline audio tags like [whispers] in segment text with
+                                     // eleven_v3, and omit this field entirely
       "role": string,                // Optional: "host"|"cohost"|"narrator"|"interviewer"|"guest"
       "provider": string,            // Optional: "openai" (default) | "elevenlabs"
       "model": string,               // Optional per-speaker model override; must belong to the
@@ -780,12 +794,12 @@ script must be a JSON object matching this structure:
       "instruction_override": string // Override speaker instructions for this segment (optional)
     }
   ],
-  "config": {                        // Global podcast settings (required)
-    "default_pause_ms": number,      // Default silence between segments (required; 400-800ms recommended)
+  "config": {                        // Global podcast settings (optional — omit for all defaults)
+    "default_pause_ms": number,      // Default silence between segments (optional, default 600)
     "intro_silence_ms": number,      // Silence before first segment (optional; 500ms recommended)
     "outro_silence_ms": number,      // Silence after last segment (optional; 1000ms recommended)
-    "normalize_loudness": boolean,   // Peak-normalize each segment for consistent volume (required)
-    "output_format": "mp3"|"wav",    // Output format (required)
+    "normalize_loudness": boolean,   // Peak-normalize each segment for volume (optional, default true)
+    "output_format": "mp3"|"wav",    // Output format (optional, default "mp3")
     "output_bitrate": string,        // MP3 bitrate (optional; default "192k")
     "provider": string,              // Optional episode default: "openai" | "elevenlabs"
     "max_concurrency": number,       // Optional cap on parallel TTS requests (positive int).
@@ -857,9 +871,12 @@ A 10-minute podcast needs ~1500 words of content.
   fall back to "eleven_v3" unless they set their own "model".
 - provider: Episode-wide default provider, overridden by config.provider and speaker.provider.
   Default: "openai"
+- output_filename: Optional name to write the episode under (defaults to a title-and-timestamp
+  slug). Confined to the audio directory: anything resolving outside it is rejected.
 
 **Returns** PodcastResult with:
-- output_file: Filename of the generated audio (use with view_media or list_audio_files)
+- output_file: The name actually written — always the file that exists, whether it came from
+  output_filename or the default (use with view_media or list_audio_files)
 - title: Podcast title
 - segment_count: Number of segments generated
 - estimated_duration_seconds: Estimated total duration
@@ -892,14 +909,13 @@ A 10-minute podcast needs ~1500 words of content.
 {
   "title": "mixed_ep1",
   "speakers": [
-    {"id": "host", "name": "Alex", "voice": "ash", "speed": 1.0, "instructions": "Confident host"},
-    {"id": "guest", "name": "Sam", "voice": "21m00Tcm4TlvDq8ikWAM", "speed": 1.0,
-     "instructions": "", "provider": "elevenlabs",
+    {"id": "host", "name": "Alex", "voice": "ash", "instructions": "Confident host"},
+    {"name": "Sam", "voice": "21m00Tcm4TlvDq8ikWAM", "provider": "elevenlabs",
      "voice_settings": {"stability": 0.45, "similarity_boost": 0.85}}
   ],
   "segments": [
     {"speaker": "host", "text": "Welcome back. Today we have a special guest."},
-    {"speaker": "guest", "text": "[warmly] Thanks for having me. I have been looking forward to this."}
+    {"speaker": "Sam", "text": "[warmly] Thanks for having me. I have been looking forward to this."}
   ],
   "config": {
     "default_pause_ms": 600,

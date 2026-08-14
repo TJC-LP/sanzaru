@@ -20,7 +20,14 @@ from typing import TYPE_CHECKING, cast
 
 import click
 
-from ._io import PathSession, finalize_output, install_overrides, plan_output, read_content_arg
+from ._io import (
+    PathSession,
+    finalize_output,
+    install_overrides,
+    plan_output,
+    read_content_arg,
+    reconcile_output_name,
+)
 from ._output import EXIT_CONFIG, EXIT_PARTIAL, EXIT_USAGE, emit, note, success_envelope
 from ._runtime import CLIError, _classify, find_in_group, get_state, run_async
 from .audio import _ELEVENLABS_MODELS, _PROVIDERS, _TTS_MODELS, resolve_tts_model
@@ -121,17 +128,26 @@ async def podcast_generate(
     """Render a podcast from a PodcastScript JSON. SCRIPT is inline JSON, @file, or - (stdin).
 
     \b
-    Script shape:
-      {"title": str,
-       "speakers": [{id, name, voice, speed, instructions,     (1-4 speakers)
+    Script shape — only "speakers" and "segments" are required:
+      {"speakers": [{name, voice,                              (1-4 speakers)
+                     id?, speed?, instructions?,
                      provider?, model?, voice_settings?}],
        "segments": [{speaker, text, pause_after?, speed_override?,
                      instruction_override?}],
-       "config": {"default_pause_ms": int, "normalize_loudness": bool,
-                  "output_format": "mp3"|"wav",                 (all three REQUIRED)
-                  "intro_silence_ms"?, "outro_silence_ms"?, "output_bitrate"?,
-                  "provider"?, "max_concurrency"?,
-                  "render_mode"?: "segments"|"dialogue", "dialogue_stability"?}}
+       "title"?: str,               (default "podcast"; the output filename
+                                    appends its own timestamp)
+       "config"?: {"default_pause_ms"?: int,                   (default 600)
+                   "normalize_loudness"?: bool,                (default true)
+                   "output_format"?: "mp3"|"wav",              (default "mp3")
+                   "intro_silence_ms"?, "outro_silence_ms"?, "output_bitrate"?,
+                   "provider"?, "max_concurrency"?,
+                   "render_mode"?: "segments"|"dialogue", "dialogue_stability"?}}
+    \b
+    Smallest script that renders:
+      {"speakers": [{"name": "Alex", "voice": "ash"}],
+       "segments": [{"speaker": "Alex", "text": "Hello."}]}
+    A speaker's id defaults to its name, so segments can reference it by name.
+    An invalid script reports every problem at once, not one per run.
     \b
     render_mode="dialogue" batches consecutive eleven_v3 turns into one request so
     the model paces the exchange itself — noticeably more natural than fixed gaps.
@@ -180,14 +196,19 @@ async def podcast_generate(
     if not isinstance(parsed, dict):
         raise CLIError("usage", "SCRIPT must be a JSON object (PodcastScript)", exit_code=EXIT_USAGE)
 
-    # The flag is an override, so it wins over config.render_mode. Only merged
-    # into a config that is already there: fabricating one would mask
-    # _validate_script's "missing required field: 'config'" with whatever
-    # unrelated error it hits next.
-    if render_mode is not None and "config" in parsed:
-        if not isinstance(parsed["config"], dict):
+    # The flag is an override, so it wins over config.render_mode. It used to be
+    # merged only into a config that was already there, because fabricating one
+    # would have masked _validate_script's "missing required field: 'config'".
+    # `config` is optional now (#36), so that error is gone — and withholding the
+    # merge would instead drop the flag silently on a script that omits config.
+    if render_mode is not None:
+        existing = parsed.get("config")
+        if existing is None:
+            parsed["config"] = {"render_mode": render_mode}
+        elif not isinstance(existing, dict):
             raise CLIError("usage", "SCRIPT 'config' must be a JSON object", exit_code=EXIT_USAGE)
-        parsed["config"]["render_mode"] = render_mode
+        else:
+            existing["render_mode"] = render_mode
 
     session = PathSession()
     plan = plan_output(session, output, "audio", quiet=state.quiet)
@@ -198,21 +219,15 @@ async def podcast_generate(
         cast(PodcastScript, parsed),
         model=cast(SpeechModel, resolved_model),
         provider=cast(TTSProviderName, provider),
+        # Write under the requested name from the start, the way `simulate`
+        # does. Renaming afterwards left `result.output_file` reporting the
+        # auto-generated name that no longer existed on disk (#54).
+        filename=plan.filename,
     )
-    # generate_podcast has no output-filename parameter — it auto-names inside
-    # the (possibly overridden) audio dir. Honor `-o file.mp3` by renaming after.
     final_path = await finalize_output(session, plan, result.output_file)
-    if plan.filename is not None and plan.filename != result.output_file:
-        import pathlib
-        import shutil
-
-        import anyio
-
-        target = pathlib.Path(final_path).with_name(plan.filename)
-        await anyio.to_thread.run_sync(shutil.move, final_path, str(target))
-        final_path = str(target)
     payload: dict[str, object] = result.model_dump(mode="json")
     payload["file"] = {"path": final_path}
+    reconcile_output_name(payload, final_path)
     emit(success_envelope("podcast.generate", payload, elapsed_s=time.monotonic() - started))
     return 0
 
@@ -625,6 +640,7 @@ async def podcast_simulate(
     final_path = await finalize_output(session, plan, result.output_file)
     envelope_payload: dict[str, object] = result.model_dump(mode="json")
     envelope_payload["file"] = {"path": final_path}
+    reconcile_output_name(envelope_payload, final_path)
     _note_result(result, state.quiet)
     emit(success_envelope("podcast.simulate", envelope_payload, elapsed_s=time.monotonic() - started))
     return 0
