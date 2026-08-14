@@ -13,6 +13,7 @@ Speakers choose their provider independently, so a single episode can mix
 OpenAI and ElevenLabs voices — the stitch path is mp3-in, mp3-out.
 """
 
+import pathlib
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
@@ -244,6 +245,48 @@ def _normalize_speaker(speaker: Speaker) -> Speaker:
         normalized["id"] = name.strip()
     normalized.setdefault("speed", DEFAULT_SPEAKER_SPEED)
     return cast(Speaker, normalized)
+
+
+#: Same shape `SimulationBrief.filename` enforces via pydantic: a bare name, no
+#: separators of either flavour. Kept in sync deliberately — the two podcast
+#: tools should not disagree about what a filename is.
+_FILENAME_MAX_LEN = 200
+
+
+def _check_output_filename(filename: str | None, output_format: str) -> str | None:
+    """Validate a caller-supplied episode name, cheaply and early.
+
+    Returns the name to use, or None to fall back to the generated slug. Empty
+    and whitespace-only are treated as absent rather than rejected, so the
+    caller and the naming below agree on what "no name given" means.
+
+    Separators are refused rather than sanitized. The local backend would let
+    `sub/ep.mp3` through `validate_safe_path` and then fail on a missing
+    directory, and the Databricks backend silently *strips* the directory —
+    writing `ep.mp3` while `PodcastResult.output_file` still said `sub/ep.mp3`,
+    which is precisely the two-answers problem this parameter exists to remove.
+    """
+    if filename is None or not filename.strip():
+        return None
+    if "/" in filename or "\\" in filename:
+        raise ValueError(
+            f"output filename {filename!r} must be a bare filename, not a path — it names a file in the audio directory"
+        )
+    if filename in (".", "..") or len(filename) > _FILENAME_MAX_LEN:
+        raise ValueError(f"output filename {filename!r} is not a usable filename")
+    if pathlib.PurePath(filename).suffix.lstrip(".").lower() != output_format:
+        # Warn, don't raise: the caller may well want a different extension on
+        # purpose. Here rather than at write time so it is not learned after
+        # several minutes of synthesis.
+        logger.warning(
+            "Podcast filename %r does not end in .%s but the file will contain %s audio — "
+            "rename it to .%s, or set config.output_format to match",
+            filename,
+            output_format,
+            output_format,
+            output_format,
+        )
+    return filename
 
 
 def _validate_script(
@@ -828,6 +871,7 @@ async def generate_podcast(
     script: PodcastScript,
     model: SpeechModel | ElevenLabsModel = "gpt-4o-mini-tts",
     provider: TTSProviderName = "openai",
+    filename: str | None = None,
 ) -> PodcastResult:
     """Generate a multi-voice podcast from a structured PodcastScript.
 
@@ -839,10 +883,18 @@ async def generate_podcast(
             unless they set their own `model`.
         provider: Episode-wide default provider, itself overridden by
             `config.provider` and then by each speaker's `provider`.
+        filename: Name to write the episode under, mirroring
+            `SimulationBrief.filename`. Defaults to a title-and-timestamp slug.
+            `PodcastResult.output_file` always reports the name actually
+            written, so a caller never has to guess which of two names is real.
 
     Raises ValueError if the script fails validation.
     """
     title, speakers, segments, config = _validate_script(script, default_provider=provider, default_model=model)
+    # Before a single TTS request goes out. The storage layer would catch a
+    # traversal attempt too, but only at the final write — after the whole
+    # episode has been synthesized and billed, and with the audio then dropped.
+    filename = _check_output_filename(filename, config.get("output_format", DEFAULT_OUTPUT_FORMAT))
     speaker_map: dict[str, Speaker] = {s["id"]: s for s in speakers}
 
     # Resolve each speaker's provider and model once, up front.
@@ -974,16 +1026,16 @@ async def generate_podcast(
         )
     )
 
-    timestamp = int(time.time())
-    output_filename = f"{_safe_title(title)}_{timestamp}.{output_format}"
+    # Already validated up front, before any synthesis was paid for.
+    written_name = filename or f"{_safe_title(title)}_{int(time.time())}.{output_format}"
     file_repo = FileSystemRepository()
-    await file_repo.write_audio_file(output_filename, final_audio)
-    logger.info(f"Podcast written: {output_filename} ({len(final_audio):,} bytes)")
+    await file_repo.write_audio_file(written_name, final_audio)
+    logger.info(f"Podcast written: {written_name} ({len(final_audio):,} bytes)")
 
     transcript = "\n\n".join(f"**{speaker_map[s['speaker']]['name']}:** {s['text']}" for s in segments)
 
     return PodcastResult(
-        output_file=output_filename,
+        output_file=written_name,
         title=title,
         segment_count=len(segments),
         estimated_duration_seconds=round(estimated_duration, 1),

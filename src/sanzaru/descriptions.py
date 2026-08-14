@@ -855,9 +855,12 @@ A 10-minute podcast needs ~1500 words of content.
   fall back to "eleven_v3" unless they set their own "model".
 - provider: Episode-wide default provider, overridden by config.provider and speaker.provider.
   Default: "openai"
+- output_filename: Optional name to write the episode under (defaults to a title-and-timestamp
+  slug). Confined to the audio directory: anything resolving outside it is rejected.
 
 **Returns** PodcastResult with:
-- output_file: Filename of the generated audio (use with view_media or list_audio_files)
+- output_file: The name actually written — always the file that exists, whether it came from
+  output_filename or the default (use with view_media or list_audio_files)
 - title: Podcast title
 - segment_count: Number of segments generated
 - estimated_duration_seconds: Estimated total duration

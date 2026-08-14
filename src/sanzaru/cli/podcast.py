@@ -20,7 +20,14 @@ from typing import TYPE_CHECKING, cast
 
 import click
 
-from ._io import PathSession, finalize_output, install_overrides, plan_output, read_content_arg
+from ._io import (
+    PathSession,
+    finalize_output,
+    install_overrides,
+    plan_output,
+    read_content_arg,
+    reconcile_output_name,
+)
 from ._output import EXIT_CONFIG, EXIT_PARTIAL, EXIT_USAGE, emit, note, success_envelope
 from ._runtime import CLIError, _classify, find_in_group, get_state, run_async
 from .audio import _ELEVENLABS_MODELS, _PROVIDERS, _TTS_MODELS, resolve_tts_model
@@ -201,21 +208,15 @@ async def podcast_generate(
         cast(PodcastScript, parsed),
         model=cast(SpeechModel, resolved_model),
         provider=cast(TTSProviderName, provider),
+        # Write under the requested name from the start, the way `simulate`
+        # does. Renaming afterwards left `result.output_file` reporting the
+        # auto-generated name that no longer existed on disk (#54).
+        filename=plan.filename,
     )
-    # generate_podcast has no output-filename parameter — it auto-names inside
-    # the (possibly overridden) audio dir. Honor `-o file.mp3` by renaming after.
     final_path = await finalize_output(session, plan, result.output_file)
-    if plan.filename is not None and plan.filename != result.output_file:
-        import pathlib
-        import shutil
-
-        import anyio
-
-        target = pathlib.Path(final_path).with_name(plan.filename)
-        await anyio.to_thread.run_sync(shutil.move, final_path, str(target))
-        final_path = str(target)
     payload: dict[str, object] = result.model_dump(mode="json")
     payload["file"] = {"path": final_path}
+    reconcile_output_name(payload, final_path)
     emit(success_envelope("podcast.generate", payload, elapsed_s=time.monotonic() - started))
     return 0
 
@@ -628,6 +629,7 @@ async def podcast_simulate(
     final_path = await finalize_output(session, plan, result.output_file)
     envelope_payload: dict[str, object] = result.model_dump(mode="json")
     envelope_payload["file"] = {"path": final_path}
+    reconcile_output_name(envelope_payload, final_path)
     _note_result(result, state.quiet)
     emit(success_envelope("podcast.simulate", envelope_payload, elapsed_s=time.monotonic() - started))
     return 0
