@@ -203,3 +203,28 @@ async def finalize_output(session: PathSession, plan: OutputPlan, written_filena
         return str(final)
 
     return storage.resolve_display_path(plan.path_type, written_filename)
+
+
+#: Every spelling the tool layer uses for "the file I wrote". Each one is the
+#: name as of the *write*, which `finalize_output` may since have changed.
+_OUTPUT_NAME_KEYS = ("output_file", "output_filename", "filename")
+
+
+def reconcile_output_name(payload: dict[str, object], final_path: str) -> None:
+    """Point the envelope's name fields at the file that actually exists.
+
+    Two ways the tool layer's name goes stale between the write and the
+    envelope, both ending in a caller that cannot find the artifact (#54):
+
+    - the tool auto-named the file because it takes no filename parameter, and
+      `finalize_output` renamed it to what `-o` asked for;
+    - `plan_output` handed down a `__sanzaru_tmp` name, because the output
+      directory differs from the one the inputs pinned, and `finalize_output`
+      moved it to the real name afterwards.
+
+    `file.path` was always right; this makes the obvious field agree with it
+    rather than leaving the caller to pick between two answers.
+    """
+    for key in _OUTPUT_NAME_KEYS:
+        if key in payload:
+            payload[key] = pathlib.PurePath(final_path).name

@@ -222,6 +222,7 @@ if check_audio_available():
         TTSVoice,
     )
     from .audio.providers import VoiceSettingsDict
+    from .audio.realtime.types import Filename
     from .descriptions import (
         CHAT_WITH_AUDIO,
         COMPRESS_AUDIO,
@@ -331,8 +332,12 @@ if check_audio_available():
         script: podcast.PodcastScript,
         model: SpeechModel | ElevenLabsModel = "gpt-4o-mini-tts",
         provider: TTSProviderName = "openai",
+        # `Filename`, not `str`: the same constraint SimulationBrief.filename
+        # carries, so a path is refused by the schema before an episode is
+        # synthesized rather than by storage after it is paid for.
+        output_filename: Filename | None = None,
     ):
-        return await podcast.generate_podcast(script, model=model, provider=provider)
+        return await podcast.generate_podcast(script, model=model, provider=provider, filename=output_filename)
 
     @mcp.tool(description=SIMULATE_PODCAST, annotations=WRITE_OPEN)
     async def simulate_podcast(brief: simulate.SimulationBrief):
