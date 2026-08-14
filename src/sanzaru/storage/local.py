@@ -28,22 +28,38 @@ class LocalStorageBackend:
     Args:
         path_overrides: Optional mapping of path_type → Path used in tests to
             redirect I/O into ``tmp_path`` fixtures without touching env vars.
+        file_overrides: Optional mapping of (path_type, basename) → the directory
+            that one file lives in, overriding ``path_overrides`` for it alone.
+            One CLI invocation installs a single backend and then reads its
+            inputs concurrently, so a batch spanning several directories cannot
+            swap backends per file — the per-file knowledge has to live inside
+            one instance (#38). Directory-wide operations (``list_files``) still
+            use the path-type override; only named-file lookups consult this.
     """
 
-    def __init__(self, path_overrides: dict[str, pathlib.Path] | None = None) -> None:
+    def __init__(
+        self,
+        path_overrides: dict[str, pathlib.Path] | None = None,
+        file_overrides: dict[tuple[str, str], pathlib.Path] | None = None,
+    ) -> None:
         self._overrides = path_overrides or {}
+        self._file_overrides = file_overrides or {}
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _base(self, path_type: PathType) -> pathlib.Path:
+    def _base(self, path_type: PathType, filename: str | None = None) -> pathlib.Path:
+        if filename is not None:
+            per_file = self._file_overrides.get((path_type, filename))
+            if per_file is not None:
+                return per_file
         if path_type in self._overrides:
             return self._overrides[path_type]
         return get_path(path_type)
 
     def _safe(self, path_type: PathType, filename: str, *, allow_create: bool = False) -> pathlib.Path:
-        return validate_safe_path(self._base(path_type), filename, allow_create=allow_create)
+        return validate_safe_path(self._base(path_type, filename), filename, allow_create=allow_create)
 
     # ------------------------------------------------------------------
     # Byte-level I/O
@@ -51,7 +67,7 @@ class LocalStorageBackend:
 
     def _check_symlink(self, path_type: PathType, filename: str) -> None:
         """Check for symlinks on the unresolved path (before validate_safe_path resolves it)."""
-        check_not_symlink(self._base(path_type) / filename, f"{path_type} file")
+        check_not_symlink(self._base(path_type, filename) / filename, f"{path_type} file")
 
     async def read(self, path_type: PathType, filename: str) -> bytes:
         self._check_symlink(path_type, filename)
@@ -119,7 +135,7 @@ class LocalStorageBackend:
     async def exists(self, path_type: PathType, filename: str) -> bool:
         try:
             self._check_symlink(path_type, filename)
-            base = self._base(path_type)
+            base = self._base(path_type, filename)
             file_path = (base / filename).resolve()
             file_path.relative_to(base)
             return file_path.exists()

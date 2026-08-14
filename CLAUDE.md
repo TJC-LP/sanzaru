@@ -139,7 +139,13 @@ back-compat for every existing config is guarded by tests. Key design points:
 - **Override seams** (CLI-only; the MCP server never touches them, reset in `finally`):
   `config.set_client()` shares one `AsyncOpenAI` per invocation across poll loops;
   `storage.set_storage_backend()` maps `-o`/path inputs onto
-  `LocalStorageBackend(path_overrides=...)` while `validate_safe_path` still sanitizes basenames.
+  `LocalStorageBackend(path_overrides=..., file_overrides=...)` while `validate_safe_path` still
+  sanitizes basenames. `path_overrides` is one directory per path type and anchors the *output*
+  side; `file_overrides` keys `(path_type, basename)` so an input batch can span directories,
+  each file validated under its own parent. Per-file has to live inside one backend instance:
+  the backend is a process global installed once per invocation, and the fan-out reads
+  concurrently, so there is no point at which it could be swapped. Two inputs of one type
+  sharing a basename stay a usage error — the tool layer only ever sees bare names.
 - **Lazy imports**: command bodies import `sanzaru.tools.*` at call time so `sanzaru --help`
   never pays the openai/FastMCP import cost (enforced by a startup-weight test); missing
   optional extras surface as `config` envelopes (exit 3) with the install command.
