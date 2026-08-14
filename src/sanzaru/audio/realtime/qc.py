@@ -72,6 +72,11 @@ class ActVerdict(BaseModel):
     """True when the act's *final* turn was cut off. A mid-act truncation can
     pass as a barge-in; an act that ends mid-sentence is an audible defect and
     was the one truncation QC consistently failed to flag."""
+    capped_short: bool = False
+    """True when the act spent every extension turn and still landed short of
+    `target_seconds` (`stop_reason == "max_turns"`). Derived from the recording,
+    like `tail_truncated`: #46 restored the stop reason, but nothing consumed
+    it, so such an act was exactly as unflagged as before."""
     notes: str = ""
     transcription_error: str = ""
 
@@ -82,6 +87,7 @@ class ActVerdict(BaseModel):
             or self.repeats_earlier
             or self.off_brief
             or self.tail_truncated
+            or self.capped_short
             or self.similarity < SIMILARITY_WARN_THRESHOLD
         )
 
@@ -89,11 +95,17 @@ class ActVerdict(BaseModel):
     def retry_may_help(self) -> bool:
         """Whether re-recording this act at the SAME settings could fix it.
 
-        Every other flag is a content judgement, where a fresh take is a real
-        second chance. A tail truncation is mechanical — the final turn hit
-        `max_output_tokens` — so re-recording against that same cap mostly buys
-        the defect twice. An act flagged *only* for truncation wants a human
-        raising `turn_tokens`, not an automatic retry.
+        Every content judgement is a real second chance for a fresh take. The
+        two recording-derived flags are not:
+
+        - a tail truncation is mechanical — the final turn hit
+          `max_output_tokens`, and re-recording against that same cap mostly
+          buys the defect twice. It wants a human raising `turn_tokens`.
+        - a capped-short act already spent every turn `max_turns` allows, so a
+          fresh take at the same budget caps again. It wants `max_turns` raised
+          or `target_seconds` lowered.
+
+        Both stay in `flagged`, so a person still sees them.
         """
         return bool(
             self.missed_points or self.repeats_earlier or self.off_brief or self.similarity < SIMILARITY_WARN_THRESHOLD
@@ -248,6 +260,7 @@ async def run_qc(
     rundown: Rundown,
     act_audio: dict[str, bytes],
     act_turns: dict[str, list[Turn]],
+    act_stop_reasons: dict[str, str] | None = None,
     *,
     transcribe_model: str = DEFAULT_TRANSCRIBE_MODEL,
     judge_model: str = DEFAULT_JUDGE_MODEL,
@@ -259,6 +272,9 @@ async def run_qc(
         rundown: The plan the episode was recorded from.
         act_audio: act_id → rendered audio bytes (mp3).
         act_turns: act_id → the turns the models reported speaking.
+        act_stop_reasons: act_id → why recording stopped. Only `ActResult` knows
+            this and `run_qc` never saw one, which is why an act capped short of
+            its target was visible in the result and invisible to QC (#48).
         transcribe_model: Batch transcription model for the rendered audio.
         judge_model: Text model that reads transcripts against the briefs.
         limiter: Bounds concurrent transcription requests.
@@ -313,6 +329,7 @@ async def run_qc(
                 intended_words=len(intended.split()),
                 truncated_turns=sum(1 for t in turns if t.truncated),
                 tail_truncated=bool(turns) and turns[-1].truncated,
+                capped_short=(act_stop_reasons or {}).get(act_id) == "max_turns",
                 transcription_error=error,
             )
         )

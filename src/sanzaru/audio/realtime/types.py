@@ -30,6 +30,17 @@ logger = logging.getLogger("sanzaru")
 MAX_ACTS = 24
 """Each act opens one session per host, so this bounds concurrent sessions."""
 
+REALTIME_SESSION_LIMIT_SECONDS = 3600.0
+"""A Realtime WebSocket closes at 60 minutes. The whole act-chunking design
+exists to stay under this; `agent.py` turns a graceful close into an error
+rather than a silent empty turn, but by then the act's audio is already lost."""
+
+MAX_ACT_WALL_SECONDS = 3000.0
+"""Wall-clock budget for one act, the session limit less headroom for the
+closing turn and teardown. Distinct from MAX_ACT_SECONDS, which bounds the
+*audio* an act contains: generation overhead means wall clock always exceeds
+it, and only wall clock races the connection close."""
+
 MAX_ACT_SECONDS = 2400.0
 """A Realtime WebSocket closes at 60 minutes. Well under that, because an act
 overruns its target before the producer's closing turn lands."""
@@ -268,6 +279,29 @@ class ActBrief(BaseModel):
             )
         return self
 
+    @model_validator(mode="after")
+    def _warn_on_wall_clock(self) -> ActBrief:
+        """Flag an act whose audio alone eats most of its wall-clock budget.
+
+        Wall clock always exceeds `target_seconds` — the audio has to be
+        generated before it can be played into the other hosts — so an act
+        targeting more than half the budget is one where per-turn overhead
+        decides whether the producer lands it on time or has to cut it short
+        against the session limit. Splitting the act is the fix; a warning
+        rather than a rejection, because the runtime bound handles it safely
+        either way.
+        """
+        if self.target_seconds >= MAX_ACT_WALL_SECONDS / 2:
+            logger.warning(
+                "act %r: a %.0fs target leaves little of the %.0fs act budget for generation "
+                "overhead, and the Realtime session closes at %.0fs - consider splitting it",
+                self.id,
+                self.target_seconds,
+                MAX_ACT_WALL_SECONDS,
+                REALTIME_SESSION_LIMIT_SECONDS,
+            )
+        return self
+
 
 class Rundown(BaseModel):
     """A full episode plan: who is talking, and about what, act by act."""
@@ -395,6 +429,10 @@ class ActResult:
       because one more turn would have overshot it.
     - `max_turns` — it hit the extension ceiling still short of the target. This
       is the undershoot signal: the act is shorter than it was planned to be.
+    - `wall_clock` — it came close enough to the Realtime session's 60-minute
+      close that another turn risked losing the connection mid-act, so the
+      producer landed it early. Also an undershoot, with a different fix: split
+      the act, rather than giving it more turns.
 
     A cost abort is not one of these — `CostCeilingError` cancels the act rather
     than ending it, so no result is ever built for it."""

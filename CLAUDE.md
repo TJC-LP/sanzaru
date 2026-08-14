@@ -280,6 +280,12 @@ Non-obvious things that are easy to break:
   post-recording failure envelope, not just the ceiling. Relatedly, `speak()` requires a
   `response.done`: the SDK's `__aiter__` *returns* on `ConnectionClosedOK`, so a graceful mid-act
   close would otherwise look like a successful silent turn.
+- **The act clock ends the act; it does not abort it.** A turn breach raises, but the act-level
+  bound (`act_wall_budget_seconds`, default 3000s under the 60-minute session close) instead
+  forces the closing turn and reports `stop_reason="wall_clock"`. It has to: `run_act` writes no
+  checkpoints — `_record_act` encodes the mp3 and writes the sidecar *after* it returns — so
+  anything that unwinds mid-act discards every turn already paid for. There is no partial-act
+  persistence path. Same reason `close_is_due` exists, against the other clock.
 - **`_stitch_audio` takes a `decode` callable.** Realtime is PCM16/24k end to end with no mp3
   round-trip; the scripted path still passes mp3. Everything downstream is shared.
 - **QC inverts the usual check.** No script means no ground truth, so verification compares the
@@ -453,6 +459,7 @@ SANZARU_OPENAI_MAX_CONCURRENCY=0      # 0 = unbounded (default)
 # Simulated podcasts (needs only OPENAI_API_KEY + the [audio] extra)
 SANZARU_REALTIME_MAX_SESSIONS=6       # concurrent realtime sessions across all acts
 SANZARU_REALTIME_TURN_TIMEOUT=120     # per-turn stall bound; default 6x turn_seconds, min 60s
+SANZARU_REALTIME_ACT_BUDGET=3000      # per-act wall clock; default 3000s, under the 60-min close
 # Override stale list pricing: text_in,cached_text_in,audio_in,cached_audio_in,audio_out,text_out
 SANZARU_REALTIME_PRICE_GPT_REALTIME_2_1=4,0.4,32,0.4,64,24
 ```

@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import contextlib
 import os
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -45,7 +46,9 @@ from .budget import CostBudget
 from .pricing import OUTPUT_TOKENS_PER_SECOND
 from .types import (
     DEFAULT_TURN_SECONDS,
+    MAX_ACT_WALL_SECONDS,
     REALTIME_SAMPLE_RATE,
+    REALTIME_SESSION_LIMIT_SECONDS,
     REALTIME_VOICES,
     ActBrief,
     ActResult,
@@ -138,6 +141,36 @@ def turn_timeout_seconds(turn_seconds: float, explicit: float = 0.0) -> float:
     return max(TURN_TIMEOUT_FLOOR, turn_seconds * TURN_TIMEOUT_FACTOR)
 
 
+ACT_WALL_BUDGET_ENV = "SANZARU_REALTIME_ACT_BUDGET"
+
+
+def act_wall_budget_seconds(explicit: float = 0.0) -> float:
+    """Wall-clock budget for one whole act.
+
+    `turn_timeout_seconds` bounds a single turn; nothing bounded the act. That
+    was academic while acts undershot their targets by about a third, but #46
+    made them run to `target_seconds`, so the ceiling the act-chunking design
+    exists to stay under — the Realtime API's 60-minute connection close — is
+    now reachable (#51).
+
+    The budget is the session limit less headroom for the closing turn and
+    teardown. Precedence mirrors the turn timeout: explicit, then the env var,
+    then the derived default.
+    """
+    if explicit > 0:
+        return explicit
+    raw = os.getenv(ACT_WALL_BUDGET_ENV, "").strip()
+    if raw:
+        try:
+            value = float(raw)
+        except ValueError:
+            logger.warning("%s=%r is not a number - using the derived act budget", ACT_WALL_BUDGET_ENV, raw)
+        else:
+            if value > 0:
+                return value
+    return MAX_ACT_WALL_SECONDS
+
+
 @dataclass(frozen=True, slots=True)
 class SimulationSettings:
     """Episode-wide knobs the producer needs for every act."""
@@ -151,6 +184,8 @@ class SimulationSettings:
     sample_rate: int = REALTIME_SAMPLE_RATE
     turn_timeout_s: float = 0.0
     """0 → SANZARU_REALTIME_TURN_TIMEOUT, else derived; see `turn_timeout_seconds`."""
+    act_budget_s: float = 0.0
+    """0 → SANZARU_REALTIME_ACT_BUDGET, else derived; see `act_wall_budget_seconds`."""
 
 
 # ---------- prompts ----------
@@ -532,6 +567,14 @@ async def run_act(
         turn_index = 0
         closing_delivered = False
         ran_out_of_turns = False
+        out_of_wall_clock = False
+        # Bounded gracefully rather than with a timeout around the act: nothing
+        # is persisted until `run_act` returns — `_record_act` encodes the mp3
+        # and writes both checkpoint files afterwards — so an abort mid-act
+        # throws away every turn already paid for. Forcing the closing turn
+        # instead ends the act properly, and it checkpoints like any other.
+        act_started = time.monotonic()
+        wall_budget = act_wall_budget_seconds(settings.act_budget_s)
         # The planned budget is a scheduling assumption, not a stop: an act ends
         # on its closing turn near target_seconds, and may borrow extra turns to
         # get there when the model's turns run shorter than assumed. A
@@ -545,9 +588,24 @@ async def run_act(
                 # An act that spent every extension turn and still landed short
                 # was capped, not completed — the undershoot this extension
                 # exists to prevent has to stay visible in the result.
-                result.stop_reason = (
-                    "target_seconds" if over_time else ("max_turns" if ran_out_of_turns else "complete")
-                )
+                if over_time:
+                    result.stop_reason = "target_seconds"
+                elif out_of_wall_clock:
+                    # More specific than the turn cap, and a different fix: the
+                    # act ran out of *time*, not turns.
+                    result.stop_reason = "wall_clock"
+                    logger.warning(
+                        "act %r: landed early at %.0fs of a %.0fs target - %.0fs of wall clock is close "
+                        "enough to the Realtime session limit (%.0fs) that another turn risked the "
+                        "connection closing mid-act - split this act or lower target_seconds",
+                        brief.id,
+                        result.seconds,
+                        brief.target_seconds,
+                        time.monotonic() - act_started,
+                        REALTIME_SESSION_LIMIT_SECONDS,
+                    )
+                else:
+                    result.stop_reason = "max_turns" if ran_out_of_turns else "complete"
                 if result.stop_reason == "max_turns":
                     # The two failures either side of this one — a displaced note
                     # and skipped talking points — both warn. An act that spent
@@ -586,7 +644,12 @@ async def run_act(
             # two — and burning 200 turns short of target is the loudest
             # undershoot there is.
             ran_out_of_turns = turn_index == hard_cap - 1 and brief.max_turns > 1 and not over_time and not close_is_due
-            is_final_turn = over_time or close_is_due or turn_index == hard_cap - 1
+            # Same shape as `close_is_due`, against the other clock: cue the
+            # close while one more turn still fits inside the session, measured
+            # from turns already taken rather than from an assumed rate.
+            elapsed_wall = time.monotonic() - act_started
+            out_of_wall_clock = turn_index >= 1 and elapsed_wall + (elapsed_wall / turn_index) >= wall_budget
+            is_final_turn = over_time or close_is_due or out_of_wall_clock or turn_index == hard_cap - 1
             agent = agents[order[turn_index % len(order)]]
 
             decision = _note_for_turn(

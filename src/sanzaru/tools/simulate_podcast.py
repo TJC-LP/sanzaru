@@ -1055,20 +1055,24 @@ async def simulate_podcast(
             rundown,
             {a.result.act_id: a.mp3 for a in recorded},
             {a.result.act_id: a.result.turns for a in recorded},
+            {a.result.act_id: a.result.stop_reason for a in recorded},
             transcribe_model=effective.transcribe_model,
             judge_model=effective.judge_model,
             limiter=anyio.CapacityLimiter(4),
         )
-        # NOT every flagged act: a tail truncation is mechanical (the last turn
-        # hit the token cap), so re-recording it against the same cap mostly buys
-        # the same defect a second time. Those want `turn_tokens` raised by hand,
-        # which the flag itself still tells a human to do.
+        # NOT every flagged act. Two flags are mechanical rather than content
+        # judgements, and re-recording at the same settings buys the same defect
+        # a second time: a tail truncation (the last turn hit the token cap,
+        # wants `turn_tokens` raised) and a capped-short act (it already spent
+        # every turn `max_turns` allows, wants `max_turns` raised or
+        # `target_seconds` lowered). Both stay flagged, so a human still sees them.
         retryable = qc_report.retryable_acts if effective.qc_retry else []
         skipped_retry = [a for a in qc_report.flagged_acts if a not in retryable]
         if effective.qc_retry and skipped_retry and on_progress is not None:
             on_progress(
-                f"qc flagged {', '.join(skipped_retry)} for truncation only - NOT re-recording "
-                "(raise turn_tokens and resume instead; the same cap would truncate again)"
+                f"qc flagged {', '.join(skipped_retry)} mechanically only - NOT re-recording "
+                "(raise turn_tokens for a truncation, or max_turns for an act capped short, and "
+                "resume instead; the same settings would reproduce it)"
             )
         if retryable:
             if on_progress is not None:
@@ -1129,6 +1133,7 @@ async def simulate_podcast(
                 rundown,
                 {a.result.act_id: a.mp3 for a in recorded},
                 {a.result.act_id: a.result.turns for a in recorded},
+                {a.result.act_id: a.result.stop_reason for a in recorded},
                 transcribe_model=effective.transcribe_model,
                 judge_model=effective.judge_model,
                 limiter=anyio.CapacityLimiter(4),
