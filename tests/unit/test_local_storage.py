@@ -340,3 +340,76 @@ def test_resolve_display_path(tmp_path):
 
     assert display.endswith("img.png")
     assert str(ref) in display
+
+
+# ------------------------------------------------------------------
+# file_overrides (#38)
+# ------------------------------------------------------------------
+
+
+@pytest.mark.unit
+async def test_file_override_reads_from_that_files_own_directory(tmp_path):
+    """A batch spanning directories, resolved inside one backend instance.
+
+    One CLI invocation installs a single backend and then reads its inputs
+    concurrently, so per-file knowledge cannot live in a swappable override.
+    """
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    (a / "episode.mp3").write_bytes(b"EPISODE")
+    (b / "window.mp3").write_bytes(b"WINDOW")
+
+    backend = LocalStorageBackend(
+        path_overrides={"audio": a},
+        file_overrides={("audio", "episode.mp3"): a, ("audio", "window.mp3"): b},
+    )
+
+    assert await backend.read("audio", "episode.mp3") == b"EPISODE"
+    assert await backend.read("audio", "window.mp3") == b"WINDOW"
+    assert await backend.exists("audio", "window.mp3")
+    assert (await backend.stat("audio", "window.mp3")).size_bytes == len(b"WINDOW")
+
+
+@pytest.mark.unit
+async def test_a_file_without_an_override_still_uses_the_path_type_base(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    (a / "other.mp3").write_bytes(b"FROM_A")
+
+    backend = LocalStorageBackend(path_overrides={"audio": a}, file_overrides={("audio", "far.mp3"): b})
+
+    assert await backend.read("audio", "other.mp3") == b"FROM_A"
+
+
+@pytest.mark.unit
+async def test_file_override_still_refuses_traversal(tmp_path):
+    """Per-file anchoring narrows the base; it does not relax validation.
+
+    `validate_safe_path` runs against the file's own parent, so a name that
+    climbs out of it is rejected exactly as it would be against the shared base.
+    """
+    a, secret = tmp_path / "a", tmp_path / "secret"
+    a.mkdir()
+    secret.mkdir()
+    (secret / "key.txt").write_bytes(b"TOP_SECRET")
+
+    backend = LocalStorageBackend(path_overrides={"audio": a}, file_overrides={("audio", "key.txt"): a})
+
+    with pytest.raises(ValueError):
+        await backend.read("audio", "../secret/key.txt")
+
+
+@pytest.mark.unit
+async def test_list_files_stays_directory_wide(tmp_path):
+    """`list_files` has no filename to anchor to and must not follow overrides."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    (a / "here.mp3").write_bytes(b"x")
+    (b / "elsewhere.mp3").write_bytes(b"x")
+
+    backend = LocalStorageBackend(path_overrides={"audio": a}, file_overrides={("audio", "elsewhere.mp3"): b})
+
+    assert [f.name for f in await backend.list_files("audio")] == ["here.mp3"]

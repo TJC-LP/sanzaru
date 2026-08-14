@@ -73,6 +73,52 @@ def test_audio_transcribe_multi_file_partial_failure(mocker):
 
 
 @pytest.mark.integration
+def test_audio_transcribe_accepts_inputs_from_two_directories(mocker, tmp_path):
+    """#38: the episode in one directory, its QC windows in another.
+
+    This exact call used to exit 2 with "all audio inputs must share one
+    directory", forcing a copy first. Reads go through the real storage
+    backend, so the per-file anchoring is what makes each file resolvable.
+    """
+    from sanzaru.storage import get_storage
+
+    episodes, windows = tmp_path / "episodes", tmp_path / "windows"
+    episodes.mkdir()
+    windows.mkdir()
+    (episodes / "ep.mp3").write_bytes(b"EPISODE")
+    (windows / "w1.mp3").write_bytes(b"WINDOW")
+
+    seen: dict[str, bytes] = {}
+
+    async def fake_transcribe(input_file_name, **kwargs):
+        seen[input_file_name] = await get_storage().read("audio", input_file_name)
+        return TranscriptionResult(text=f"text of {input_file_name}")
+
+    mocker.patch("sanzaru.tools.audio.transcribe_audio", fake_transcribe)
+
+    result = CliRunner().invoke(cli, ["audio", "transcribe", str(episodes / "ep.mp3"), str(windows / "w1.mp3")])
+
+    assert result.exit_code == 0, result.stderr
+    assert seen == {"ep.mp3": b"EPISODE", "w1.mp3": b"WINDOW"}
+    assert len(result.stdout.strip().splitlines()) == 2
+
+
+@pytest.mark.integration
+def test_audio_transcribe_refuses_two_inputs_with_one_basename(tmp_path):
+    """All that survives of the old restriction: a genuinely ambiguous batch."""
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    (a / "ep.mp3").write_bytes(b"x")
+    (b / "ep.mp3").write_bytes(b"y")
+
+    result = CliRunner().invoke(cli, ["audio", "transcribe", str(a / "ep.mp3"), str(b / "ep.mp3")])
+
+    assert result.exit_code == 2
+    assert "both named" in result.stderr
+
+
+@pytest.mark.integration
 def test_audio_speak_writes_to_output(mocker, tmp_path):
     async def fake_tts(text_prompt, model, voice, instructions, speed, output_file_name, provider, voice_settings):
         (tmp_path / output_file_name).write_bytes(b"mp3")

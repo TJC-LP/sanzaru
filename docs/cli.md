@@ -104,9 +104,18 @@ Precedence for where artifacts land: `-o PATH` → `--media-dir` → individual 
 
 Inputs (`--input-ref`, `--input-image`, `--mask`, audio `FILE`s) accept either a **path** (used
 as-is) or a **bare filename** resolved from the configured media dir, matching MCP behavior.
-v1 constraints: same-type path inputs must share one directory; bare filenames and paths can't
-be mixed for the same media type; with `STORAGE_BACKEND=databricks`, `-o` always produces a
-local file (bytes are copied out of the volume when needed).
+Paths in one batch may span directories — each is validated individually under its own parent —
+so an episode and its QC windows can be transcribed in one call:
+
+```bash
+sanzaru audio transcribe ./episodes/ep.mp3 ./windows/w1.mp3 ./windows/w2.mp3
+```
+
+Constraints: two inputs of the same media type cannot share a **basename** (tools are handed
+bare names and the envelope reports bare names, so one would be unaddressable); bare filenames
+and paths can't be mixed for the same media type; `-o` still resolves against a single directory
+per type, the first input's; with `STORAGE_BACKEND=databricks`, `-o` always produces a local
+file (bytes are copied out of the volume when needed).
 
 ## Long content
 

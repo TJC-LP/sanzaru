@@ -88,17 +88,56 @@ def test_missing_path_input_is_usage_error(tmp_path):
 
 
 @pytest.mark.unit
-def test_inputs_in_different_dirs_conflict(tmp_path):
+def test_inputs_may_span_directories(tmp_path):
+    """#38: the batch is anchored per file, not per directory.
+
+    The QC workflow this exists for is an episode in one directory and its
+    ffmpeg-cut windows in another; before, you had to copy one next to the
+    other first.
+    """
     a, b = tmp_path / "a", tmp_path / "b"
     a.mkdir()
     b.mkdir()
     (a / "one.png").write_bytes(b"x")
     (b / "two.png").write_bytes(b"x")
     session = PathSession()
-    resolve_input(session, str(a / "one.png"), "reference", "--input-image")
 
-    with pytest.raises(CLIError, match="share one directory"):
-        resolve_input(session, str(b / "two.png"), "reference", "--input-image")
+    assert resolve_input(session, str(a / "one.png"), "reference", "--input-image") == "one.png"
+    assert resolve_input(session, str(b / "two.png"), "reference", "--input-image") == "two.png"
+
+    assert session.file_overrides == {("reference", "one.png"): a, ("reference", "two.png"): b}
+    # The output side still anchors to one directory: the first input's.
+    assert session.overrides["reference"] == a
+
+
+@pytest.mark.unit
+def test_same_basename_in_two_dirs_is_still_a_usage_error(tmp_path):
+    """The one genuinely unresolvable case, and all that is left of the old rule.
+
+    Tools are handed bare names and the envelope reports bare names, so two
+    files called `ep.mp3` would leave one of them unaddressable.
+    """
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir()
+    b.mkdir()
+    (a / "ep.mp3").write_bytes(b"x")
+    (b / "ep.mp3").write_bytes(b"x")
+    session = PathSession()
+    resolve_input(session, str(a / "ep.mp3"), "audio", "FILES")
+
+    with pytest.raises(CLIError, match="both named") as excinfo:
+        resolve_input(session, str(b / "ep.mp3"), "audio", "FILES")
+    assert excinfo.value.exit_code == 2
+
+
+@pytest.mark.unit
+def test_the_same_file_named_twice_is_not_a_collision(tmp_path):
+    f = tmp_path / "ep.mp3"
+    f.write_bytes(b"x")
+    session = PathSession()
+
+    assert resolve_input(session, str(f), "audio", "FILES") == "ep.mp3"
+    assert resolve_input(session, str(f), "audio", "FILES") == "ep.mp3"
 
 
 @pytest.mark.unit

@@ -66,6 +66,11 @@ class PathSession:
     overrides: dict[str, pathlib.Path] = field(default_factory=dict)
     # Path types that must keep default-backend resolution (bare-filename inputs).
     default_locked: set[str] = field(default_factory=set)
+    # (path_type, basename) → the directory that one input actually lives in.
+    # Lets a batch span directories while every file is still validated
+    # individually under its own parent (#38). `overrides` keeps the *first*
+    # input's directory, which is what the output side anchors to.
+    file_overrides: dict[tuple[str, str], pathlib.Path] = field(default_factory=dict)
 
 
 @dataclass
@@ -105,14 +110,22 @@ def resolve_input(session: PathSession, value: str, path_type: PathType, arg_nam
             f"{arg_name}: cannot mix bare media-dir filenames and explicit paths for the same media type",
             exit_code=EXIT_USAGE,
         )
-    existing = session.overrides.get(path_type)
-    if existing is not None and existing != path.parent:
+    # Inputs may span directories: each is anchored to its own parent and
+    # validated there (#38). What cannot be resolved is two *different* files
+    # with the same basename — the tool layer is handed bare names and the
+    # envelope reports bare names, so one of them would be unaddressable.
+    claimed = session.file_overrides.get((path_type, path.name))
+    if claimed is not None and claimed != path.parent:
         raise CLIError(
             "usage",
-            f"{arg_name}: all {path_type} inputs must share one directory (got {existing} and {path.parent})",
+            f"{arg_name}: two different {path_type} inputs are both named {path.name!r} "
+            f"({claimed} and {path.parent}) — rename one, they are reported by basename",
             exit_code=EXIT_USAGE,
         )
-    session.overrides[path_type] = path.parent
+    session.file_overrides[(path_type, path.name)] = path.parent
+    # The first input's directory anchors the output side, which still works in
+    # one directory per type.
+    session.overrides.setdefault(path_type, path.parent)
     return path.name
 
 
@@ -174,7 +187,12 @@ def install_overrides(session: PathSession) -> None:
         from ..storage import set_storage_backend
         from ..storage.local import LocalStorageBackend
 
-        set_storage_backend(LocalStorageBackend(path_overrides=dict(session.overrides)))
+        set_storage_backend(
+            LocalStorageBackend(
+                path_overrides=dict(session.overrides),
+                file_overrides=dict(session.file_overrides),
+            )
+        )
 
 
 async def finalize_output(session: PathSession, plan: OutputPlan, written_filename: str) -> str:
