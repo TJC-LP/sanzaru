@@ -555,3 +555,26 @@ class TestDialogueProviderGuards:
         assert provider is not None
         with pytest.raises(ValueError, match="stability must be between"):
             await provider.synthesize_dialogue([DialogueTurn("hi", "v1")], "eleven_v3", stability=2.0)
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_a_dialogue_run_reports_every_turns_characters(mocker, podcast_env):
+    """#52 meets #55: a batched run spends all its turns, retry or not.
+
+    The whole run is one request, so its characters are one usage entry — and
+    that entire count is what re-rendering a single bad line would cost again.
+    """
+    from sanzaru.tools.podcast import generate_podcast
+
+    client = FakeDialogueClient()
+    mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=client)
+
+    result = await generate_podcast(dialogue_script())
+
+    assert len(client.dialogue_calls) == 1
+    assert len(result.usage) == 1
+    row = result.usage[0]
+    assert row.provider == "elevenlabs"
+    assert row.requests == 1
+    assert row.characters == len("First turn.") + len("Second turn.") + len("Third turn.")

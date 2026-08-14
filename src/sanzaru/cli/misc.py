@@ -126,12 +126,48 @@ async def wait_command(
     return aggregate_exit_code(codes)
 
 
+async def _elevenlabs_quota() -> dict[str, object]:
+    """Remaining ElevenLabs character allowance, read from the subscription.
+
+    Reported rather than raised on failure: `capabilities` exists to say what
+    works here, and "the quota lookup did not work" is one of those answers.
+    """
+    try:
+        from ..config import get_elevenlabs_client
+    except ImportError as exc:  # pragma: no cover - the extra gates the import
+        return {"available": False, "reason": str(exc)}
+
+    try:
+        subscription = await get_elevenlabs_client().user.subscription.get()
+    except Exception as exc:  # noqa: BLE001 - a probe must not fail the report
+        return {"available": False, "reason": f"{type(exc).__name__}: {exc}"}
+
+    used = getattr(subscription, "character_count", None)
+    allowed = getattr(subscription, "character_limit", None)
+    return {
+        "available": True,
+        "tier": getattr(subscription, "tier", None),
+        "characters_used": used,
+        "character_limit": allowed,
+        "characters_remaining": None if used is None or allowed is None else max(0, allowed - used),
+        "resets_at_unix": getattr(subscription, "next_character_count_reset_unix", None),
+    }
+
+
 @click.command("capabilities")
+@click.option(
+    "--quota",
+    is_flag=True,
+    default=False,
+    help="Also read the ElevenLabs character allowance. Makes a network call and needs "
+    "ELEVENLABS_API_KEY, unlike the rest of this command.",
+)
 @run_async("capabilities")
-async def capabilities() -> int:
+async def capabilities(quota: bool) -> int:
     """Machine-readable environment report: version, features, paths, commands.
 
     Needs no API key — safe as an agent's first call to discover what works here.
+    The one exception is `--quota`, which is opt-in for exactly that reason.
     """
     import os
     from importlib.metadata import PackageNotFoundError, version
@@ -177,5 +213,7 @@ async def capabilities() -> int:
         "api_key_present": bool(os.getenv("OPENAI_API_KEY")),
         "commands": commands,
     }
+    if quota:
+        result["elevenlabs_quota"] = await _elevenlabs_quota()
     emit(success_envelope("capabilities", result))
     return 0

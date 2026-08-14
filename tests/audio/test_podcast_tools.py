@@ -1755,3 +1755,90 @@ def test_unbounded_never_wins_a_min_against_a_real_cap():
     )
 
     assert limits == {"elevenlabs": 2, "openai": 0}
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_generate_podcast_reports_characters_submitted(mocker, tmp_audio_path):
+    """#52: the envelope reported nothing about what an episode cost.
+
+    On ElevenLabs' shared free tier of 10,000 characters a month this is the
+    single most important number, and it had to be counted by hand from the
+    script before rendering — a number the tool already knows.
+    """
+    from sanzaru.storage.local import LocalStorageBackend
+
+    mock_response = mocker.MagicMock()
+    mock_response.content = b"FAKE"
+    mock_client = mocker.MagicMock()
+    mock_client.audio.speech.create = mocker.AsyncMock(return_value=mock_response)
+    mocker.patch("sanzaru.audio.providers.openai_provider.get_client", return_value=mock_client)
+    mocker.patch("sanzaru.tools.podcast._stitch_audio", return_value=b"STITCHED")
+    mocker.patch(
+        "sanzaru.infrastructure.file_system.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"audio": tmp_audio_path}),
+    )
+
+    from sanzaru.tools.podcast import generate_podcast
+
+    first, second = "Welcome to the show.", "Great to be here."
+    result = await generate_podcast(
+        {
+            "speakers": [{"id": "a", "name": "Alex", "voice": "ash"}],
+            "segments": [{"speaker": "a", "text": first}, {"speaker": "a", "text": second}],
+        }
+    )
+
+    assert len(result.usage) == 1
+    row = result.usage[0]
+    assert row.provider == "openai"
+    assert row.characters == len(first) + len(second)
+    assert row.requests == 2
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_usage_is_reported_per_provider(mocker, tmp_audio_path):
+    """One episode can mix providers, and only ElevenLabs draws on a quota."""
+    pytest.importorskip("elevenlabs")
+    from sanzaru.storage.local import LocalStorageBackend
+
+    openai_response = mocker.MagicMock()
+    openai_response.content = b"FAKE"
+    openai_client = mocker.MagicMock()
+    openai_client.audio.speech.create = mocker.AsyncMock(return_value=openai_response)
+    mocker.patch("sanzaru.audio.providers.openai_provider.get_client", return_value=openai_client)
+
+    async def fake_stream(**kwargs):
+        yield b"ELEVEN"
+
+    eleven_client = mocker.MagicMock()
+    eleven_client.text_to_speech.convert = mocker.MagicMock(side_effect=lambda **kw: fake_stream(**kw))
+    mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=eleven_client)
+
+    mocker.patch("sanzaru.tools.podcast._stitch_audio", return_value=b"STITCHED")
+    mocker.patch(
+        "sanzaru.infrastructure.file_system.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"audio": tmp_audio_path}),
+    )
+
+    from sanzaru.tools.podcast import generate_podcast
+
+    openai_line, eleven_line = "A line from OpenAI.", "A line from ElevenLabs."
+    result = await generate_podcast(
+        {
+            "speakers": [
+                {"id": "a", "name": "Alex", "voice": "ash", "provider": "openai"},
+                {"id": "b", "name": "Sam", "voice": "voice_id_here", "provider": "elevenlabs"},
+            ],
+            "segments": [
+                {"speaker": "a", "text": openai_line},
+                {"speaker": "b", "text": eleven_line},
+            ],
+        }
+    )
+
+    by_provider = {row.provider: row for row in result.usage}
+    assert set(by_provider) == {"openai", "elevenlabs"}
+    assert by_provider["openai"].characters == len(openai_line)
+    assert by_provider["elevenlabs"].characters == len(eleven_line)

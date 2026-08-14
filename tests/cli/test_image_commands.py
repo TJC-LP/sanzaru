@@ -300,3 +300,59 @@ def test_capabilities_reports_structure():
     assert "create" in payload["commands"]["video"]
     assert "generate" in payload["commands"]["image"]
     assert payload["commands"]["capabilities"] == []
+
+
+@pytest.mark.integration
+def test_capabilities_makes_no_network_call_without_quota(mocker):
+    """The command's whole promise: safe as an agent's first call (#52).
+
+    `--quota` is the only path that touches the network, which is why it is
+    opt-in rather than always-on.
+    """
+    from sanzaru.cli import misc
+
+    probe = mocker.patch.object(misc, "_elevenlabs_quota")
+
+    result = CliRunner().invoke(cli, ["capabilities"])
+
+    assert result.exit_code == 0
+    probe.assert_not_called()
+    assert "elevenlabs_quota" not in json.loads(result.stdout)["result"]
+
+
+@pytest.mark.integration
+def test_capabilities_quota_reports_the_allowance(mocker):
+    from types import SimpleNamespace
+
+    subscription = SimpleNamespace(
+        tier="free",
+        character_count=1754,
+        character_limit=10000,
+        next_character_count_reset_unix=1790000000,
+    )
+    client = SimpleNamespace(
+        user=SimpleNamespace(subscription=SimpleNamespace(get=mocker.AsyncMock(return_value=subscription)))
+    )
+    mocker.patch("sanzaru.config.get_elevenlabs_client", return_value=client)
+
+    result = CliRunner().invoke(cli, ["capabilities", "--quota"])
+
+    assert result.exit_code == 0
+    quota = json.loads(result.stdout)["result"]["elevenlabs_quota"]
+    assert quota["available"] is True
+    assert quota["characters_used"] == 1754
+    assert quota["character_limit"] == 10000
+    assert quota["characters_remaining"] == 8246
+
+
+@pytest.mark.integration
+def test_capabilities_quota_failure_is_reported_not_raised(mocker):
+    """A missing key must not turn the environment report into an error."""
+    mocker.patch("sanzaru.config.get_elevenlabs_client", side_effect=RuntimeError("ELEVENLABS_API_KEY is not set"))
+
+    result = CliRunner().invoke(cli, ["capabilities", "--quota"])
+
+    assert result.exit_code == 0
+    quota = json.loads(result.stdout)["result"]["elevenlabs_quota"]
+    assert quota["available"] is False
+    assert "ELEVENLABS_API_KEY" in quota["reason"]

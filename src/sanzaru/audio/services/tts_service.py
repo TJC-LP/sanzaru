@@ -60,9 +60,15 @@ class TTSService:
 
         limit = tts.max_concurrency(request.model)
         limiter = anyio.CapacityLimiter(limit) if limit else None
-        audio_bytes = await synthesize_speech(tts, request, limiter=limiter)
+        rendered = await synthesize_speech(tts, request, limiter=limiter)
 
         filename = output_filename or f"speech_{int(time.time() * 1000)}.mp3"
-        await self.file_repo.write_audio_file(filename, audio_bytes)
+        await self.file_repo.write_audio_file(filename, rendered.audio)
 
-        return TTSResult(output_file=filename)
+        return TTSResult(
+            output_file=filename,
+            provider=rendered.usage.provider,
+            model=rendered.usage.model,
+            characters=rendered.usage.characters,
+            requests=rendered.usage.requests,
+        )
