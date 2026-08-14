@@ -341,11 +341,59 @@ guests, 8 segments batched into 3 dialogue requests while the 3 host turns rende
 
 Inside a dialogue run, `pause_after` is ignored (the model owns pacing) and per-speaker
 `voice_settings`/`speed` don't apply — the endpoint takes a single `config.dialogue_stability`
-(0–1) for the whole request. Runs split at turn boundaries to stay under 2000 chars, the ceiling
-ElevenLabs documents for a reliable dialogue request.
+(0–1) for the whole request.
 
-Prefer `segments` for exact gap control, per-speaker tuning, or cheap per-segment retry; prefer
-`dialogue` for natural conversation.
+**The trade: dialogue buys pacing and sells partial retry.** A run is one request, so it is
+all-or-nothing. If a single line comes out wrong there is no way to re-render just that line —
+fixing it re-spends every character in the batch. `segments` renders each turn independently, so a
+bad one costs only itself.
+
+That bites hardest on ElevenLabs, where quota is drawn down by the characters you submit and tiers
+can be small (the free tier was 10,000 characters/month as of 2026-08; check your account rather
+than trusting this number). Compounding it: inside a batched run all your direction has to live in
+**inline audio tags** (`[whispers]`), since `pause_after` and per-speaker `voice_settings` are inert
+there — and tags count too. So the expressive mode is also the one where a retry costs the most. The
+production run behind this note was a single 11-turn dialogue request totalling 1,730 characters;
+one bad line would have cost all 1,730 again. (Per-run, not per-episode — an episode split across
+three requests only re-spends the one containing the bad line.)
+
+**Watch total run length, not just turn length.** The 2000-character budget is per *request* —
+the sum of consecutive turns — so where a run splits decides what actually gets batched. The
+planner never emits an over-budget request, so nothing fails; the consequence is quieter than a
+failure. A turn left alone in its own voice after a split renders as an ordinary segment: exactly as
+`segments` mode would, so it *regains* its `pause_after` and per-speaker `voice_settings`/`speed`,
+but without the model-paced turn-taking you chose `dialogue` for. It costs no extra characters —
+what you lose is pacing, not quota.
+
+Two ways to land there, and the first is both likelier and quieter:
+
+- **A split strands the tail.** Three 900-character turns (`a, b, a`) batch as one request of turns
+  1–2, leaving turn 3 alone as a segment — with no turn anywhere near the ceiling.
+- **One over-long turn takes its neighbours with it.** `a, b, a` with a 2500-character middle
+  renders *all three* as segments, because the flush leaves each short turn single-voice too. This
+  one at least announces itself: with no run left to batch, the render logs a warning.
+
+So "keep every turn short" is not sufficient advice on its own — plan the running total, and expect
+the tail of a split run to fall back when it lands single-voice.
+
+**You don't have to work it out in your head.** Every dialogue render logs
+
+```
+Dialogue mode: N/M segments batched into K conversation request(s)
+```
+
+on stderr, where `M - N` is how many turns did *not* batch. In an all-ElevenLabs episode those are
+exactly your stranded turns: the first example above reports `2/3 segments batched into 1
+conversation request(s)`, and the 1 is turn 3. In a **mixed** episode the gap also counts turns that
+were never eligible — OpenAI speakers, non-`eleven_v3` models — so treat it as an upper bound there
+and read the shortfall against the turns you expected to batch.
+
+(The ceiling exists because an over-budget request can terminate the stream mid-conversation,
+indistinguishable from a complete take, so the provider layer refuses one outright rather than
+return a short one.)
+
+Rules of thumb: `segments` for exact gap control, per-speaker tuning, cheap retry, or a tight
+character budget; `dialogue` for natural conversation on a script you're confident in.
 
 ```bash
 sanzaru podcast generate @episode.json --render-mode dialogue -o ep.mp3

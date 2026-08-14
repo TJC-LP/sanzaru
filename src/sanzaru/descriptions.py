@@ -829,8 +829,24 @@ one edit cycle rather than one per field.
   `config.dialogue_stability` for the whole request. Runs are split at turn
   boundaries to stay under 2000 characters per request.
 
-  Prefer "segments" when you need exact gap control or per-speaker tuning;
-  prefer "dialogue" for natural back-and-forth conversation.
+**Choosing a mode — dialogue buys pacing and sells partial retry:**
+A run is ONE request, so it is all-or-nothing: one bad line cannot be re-rendered
+alone, and fixing it re-spends every character in the batch. That bites on
+ElevenLabs, where quota is drawn down per character submitted and inline audio
+tags — the only *per-turn* direction inside a run — count too.
+
+The budget is per request, summed across consecutive turns, so where a run splits
+decides what gets batched: a turn left single-voice after a split renders as an
+ordinary segment instead (regaining pause_after and per-speaker tuning, losing
+the model-paced turn-taking). Nothing fails and nothing costs extra — you simply
+do not get dialogue for that turn, and it can happen with every turn well under
+the ceiling, so plan the running total rather than each turn in isolation.
+(A CLI caller can read the shortfall off the render log; over MCP there is no
+stderr channel, so the batching counts are not observable from here.)
+
+Choose "segments" for exact gaps, per-speaker tuning, cheap retry, or a tight
+character budget; "dialogue" for natural conversation on a script you are
+confident in.
 
 **Voice guide (OpenAI):**
 - ash: Authoritative, confident — good for hosts and anchors

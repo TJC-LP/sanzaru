@@ -130,6 +130,22 @@ class TestPlanRenderUnits:
         units = plan(speakers, ["a", "b", "a"], texts=["short", "x" * 2500, "short"])
         assert shape(units) == [("S", (0,)), ("S", (1,)), ("S", (2,))]
 
+    def test_odd_run_strands_its_tail_as_a_segment(self):
+        """Three 900-char turns split 2+1, and the lone tail turn is
+        single-voice, so it renders as an ordinary segment — with no turn
+        anywhere near the 2000-char ceiling.
+
+        This is the headline example in docs/cli.md (Render modes) and the
+        likelier way to lose dialogue than an over-long turn: the budget is per
+        *request*, so the split position decides, not turn length. The
+        neighbouring `test_run_splits_at_the_character_budget` covers the even
+        4-turn case, which splits 2+2 and strands nothing — i.e. the case that
+        does *not* exhibit this.
+        """
+        speakers = [speaker("a", "elevenlabs"), speaker("b", "elevenlabs")]
+        units = plan(speakers, ["a", "b", "a"], texts=["x" * 900] * 3)
+        assert shape(units) == [("D", (0, 1)), ("S", (2,))]
+
     def test_run_splits_at_the_character_budget(self):
         # 2000-char dialogue budget; 4 turns of 900 chars must split 2+2, always
         # at a turn boundary.
@@ -436,6 +452,32 @@ class TestDialogueRendering:
 
         assert "no run of 2+ consecutive turns" in caplog.text
         assert openai_client.audio.speech.create.await_count == 2
+
+    async def test_batching_log_reports_the_shortfall_docs_tell_callers_to_read(self, mocker, podcast_env, caplog):
+        """docs/cli.md, docs/audio/README.md, descriptions.py and `--help` all
+        quote this line verbatim and tell callers `M - N` is what did not batch.
+        Nothing pinned the format or the numbers, so a reworded f-string would
+        silently make four documents wrong — the same gap the planner example
+        closed. The 3x900 script is the one the docs use.
+        """
+        from sanzaru.tools.podcast import generate_podcast
+
+        # The fake exposes both endpoints, so the stranded turn renders through
+        # text_to_speech while the pair goes through text_to_dialogue.
+        client = FakeDialogueClient()
+        mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=client)
+
+        script = dialogue_script()
+        script["segments"] = [
+            {"speaker": "a", "text": "y" * 900},
+            {"speaker": "b", "text": "y" * 900},
+            {"speaker": "a", "text": "y" * 900},
+        ]
+
+        with caplog.at_level("INFO"):
+            await generate_podcast(script)
+
+        assert "Dialogue mode: 2/3 segments batched into 1 conversation request(s)" in caplog.text
 
     async def test_unbounded_concurrency_still_renders_dialogue(self, mocker, podcast_env, monkeypatch):
         """SANZARU_ELEVENLABS_MAX_CONCURRENCY=0 is the documented unbounded mode,

@@ -197,6 +197,13 @@ take, so `synthesize_dialogue` refuses over-budget requests outright). That budg
 length rule, and it sits below every `max_chunk_chars`: a turn too long to share a dialogue request
 opens a run of its own, which closes as a single-voice run — a segment unit, chunked normally.
 
+The same mechanism strands ordinary turns, which is the less obvious half: the budget is per
+*request*, so where a run splits decides what batches. Three 900-char turns (`a, b, a`) close a run
+after turn 2 and leave turn 3 single-voice — a segment unit, with nothing near the ceiling. Callers
+see it in the `Dialogue mode: N/M segments batched` line (`N < M`), and
+[`docs/cli.md`](docs/cli.md#render-modes) documents it as the likelier way to lose dialogue than an
+over-long turn.
+
 Dialogue is a **separate** `DialogueProvider` Protocol (`runtime_checkable`, narrowed by
 `as_dialogue_provider`) rather than a method on `TTSProvider`, so OpenAI isn't forced to stub a
 capability it lacks.
