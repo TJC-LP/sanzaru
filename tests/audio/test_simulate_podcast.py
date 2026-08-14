@@ -25,6 +25,7 @@ from sanzaru.audio.realtime.types import (
     Rundown,
     Turn,
     TurnAudio,
+    extension_cap,
     pcm_seconds,
     pcm_silence,
 )
@@ -389,6 +390,29 @@ class TestDryRun:
     async def test_offers_a_resume_command(self, rundown):
         result = await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, dry_run=True))
         assert result.run_id in result.resume_command
+
+    async def test_projects_turns_against_the_extended_ceiling(self, rundown):
+        """#50: an act runs to `extension_cap`, so the projection must say so.
+
+        Quoting `max_turns` handed callers a number the tool's own description
+        tells them to budget past — and the same projection drives the resume
+        refusal, where reading low is the dangerous direction.
+        """
+        result = await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, dry_run=True))
+
+        assert result.turn_count == sum(extension_cap(act.max_turns) for act in rundown.acts)
+        assert result.turn_count > rundown.total_max_turns(), "the fixture must actually extend"
+        assert [a.turns for a in result.acts] == [extension_cap(act.max_turns) for act in rundown.acts]
+
+    async def test_the_extended_projection_costs_more_than_the_planned_one(self, rundown):
+        """Small but real: `text_in` is the one turn-scaled term."""
+        planned = sim.project_run(
+            rundown.model_copy(update={"acts": [a.model_copy(update={"max_turns": 1}) for a in rundown.acts]}),
+            sim.SimulationBrief(rundown=rundown, dry_run=True),
+        )
+        extended = await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, dry_run=True))
+
+        assert extended.cost.usage.input_text_tokens > planned.usage.input_text_tokens
 
 
 # ---------- recording, checkpointing, resume ----------

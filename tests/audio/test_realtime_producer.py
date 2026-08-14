@@ -17,7 +17,7 @@ from sanzaru.audio.realtime.producer import (
     turn_timeout_seconds,
     turn_token_cap,
 )
-from sanzaru.audio.realtime.types import MAX_ACT_TURNS, ActBrief, HostSpec, RealtimeUsage
+from sanzaru.audio.realtime.types import MAX_ACT_TURNS, ActBrief, HostSpec, RealtimeUsage, extension_cap
 from sanzaru.exceptions import CostCeilingError, RealtimeAPIError
 
 pytestmark = pytest.mark.audio
@@ -124,7 +124,7 @@ class TestPointSchedule:
         schedule = _point_schedule(brief)
         assert len(schedule) == len(set(schedule.values()))
 
-    @pytest.mark.parametrize("max_turns", range(3, 13))
+    @pytest.mark.parametrize("max_turns", range(1, 13))
     @pytest.mark.parametrize("point_count", range(2, 9))
     def test_every_point_is_either_scheduled_or_reported(self, caplog, max_turns, point_count):
         """The one guarantee: no point disappears without anyone being told.
@@ -162,8 +162,15 @@ class TestPointSchedule:
         by_turn = [point for _, point in sorted(schedule.items())]
         assert by_turn == sorted(by_turn)
 
-    def test_an_act_too_short_for_its_points_names_what_it_will_drop(self, caplog):
-        # max_turns=3 leaves exactly one steerable turn: turn 0 opens, turn 2 lands.
+    def test_points_the_planned_budget_cannot_hold_ride_the_extension_turns(self, caplog):
+        """#47: the act runs to `extension_cap`, so the schedule reaches there too.
+
+        max_turns=3 leaves exactly one steerable planned turn (turn 0 opens,
+        turn 2 lands), but the act may run to 5 turns. Before, point 2 was
+        reported as dropped and every extension turn got the generic
+        EXTENSION_NOTE instead — a warning that was wrong and steering that was
+        thin.
+        """
         brief = ActBrief(
             id="crowded",
             title="t",
@@ -174,9 +181,41 @@ class TestPointSchedule:
         )
         with caplog.at_level("WARNING", logger="sanzaru"):
             schedule = _point_schedule(brief)
-        assert schedule == {1: 1}
-        assert "the third thing" in caplog.text
+
+        assert set(schedule.values()) == {1, 2}
+        assert schedule[1] == 1, "the planned turn still carries the point it always did"
+        assert max(schedule) >= brief.max_turns - 1, "point 2 lands on an extension turn"
+        assert max(schedule) < extension_cap(brief.max_turns) - 1, "and never on the closing turn"
+        assert caplog.text == ""
+
+    def test_an_act_too_short_even_extended_names_what_it_will_drop(self, caplog):
+        """The warning survives — it just measures against the real ceiling now."""
+        points = [f"thing {i}" for i in range(8)]
+        brief = ActBrief(id="crowded", title="t", topic="x", talking_points=points, max_turns=3, target_seconds=30.0)
+
+        with caplog.at_level("WARNING", logger="sanzaru"):
+            schedule = _point_schedule(brief)
+
+        # extension_cap(3) == 5, leaving turns 1..3 steerable: three points, not seven.
+        assert len(schedule) == extension_cap(brief.max_turns) - 2
+        assert "thing 7" in caplog.text
         assert "crowded" in caplog.text
+        for placed in schedule.values():
+            assert points[placed] not in caplog.text
+
+    def test_a_single_turn_act_reports_points_it_can_never_reach(self, caplog):
+        """max_turns=1 has no steerable turn at all and cannot extend.
+
+        This used to return an empty schedule *silently*, so every point past
+        the first vanished with nobody told — the one guarantee this function
+        makes, broken in the one case the parametrized test never reached.
+        """
+        brief = ActBrief(
+            id="solo", title="t", topic="x", talking_points=["opener", "unreachable"], max_turns=1, target_seconds=10.0
+        )
+        with caplog.at_level("WARNING", logger="sanzaru"):
+            assert _point_schedule(brief) == {}
+        assert "unreachable" in caplog.text
 
 
 @pytest.mark.unit
@@ -479,6 +518,52 @@ class TestRunAct:
         assert len(result.turns) == 9
         last_speaker_conn = handed[0]  # avery speaks turn 8
         assert last_speaker_conn.steers[-1] == "Land it on the open question."
+
+    async def test_closing_note_lands_the_act_wherever_the_close_falls(
+        self, fake_realtime, connect_factory, brief, hosts, settings
+    ):
+        """#50: direct the close without spending the `max_turns - 1` index."""
+        brief.closing_note = "Land it on the open question."
+        factory, handed = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
+
+        result = await run_act(brief, hosts, settings, connect=factory)
+
+        assert len(result.turns) == 9  # extended, so the close moved off max_turns - 1
+        assert handed[0].steers[-1] == "Land it on the open question."
+
+    async def test_closing_note_frees_the_last_planned_turn_to_be_steered(
+        self, fake_realtime, connect_factory, brief, hosts, settings
+    ):
+        """The whole point of #50: both intents at once.
+
+        Without `closing_note`, a note on `max_turns - 1` is unavoidably a
+        takeover — there was no way to steer that turn *and* let the producer
+        land the act. With it set, the index means an ordinary turn again.
+        """
+        brief.closing_note = "Land it on the open question."
+        brief.turn_notes = {brief.max_turns - 1: "Push back on the cost claim."}
+        factory, handed = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
+
+        await run_act(brief, hosts, settings, connect=factory)
+
+        every_note = [note for conn in handed for note in conn.steers]
+        assert "Push back on the cost claim." in every_note, "the index fired as an ordinary turn"
+        # avery speaks the closing turn 8; the caller's note did NOT ride to it.
+        assert handed[0].steers[-1] == "Land it on the open question."
+        assert every_note.count("Push back on the cost claim.") == 1
+
+    async def test_without_closing_note_the_index_is_still_a_takeover(
+        self, fake_realtime, connect_factory, brief, hosts, settings
+    ):
+        """The old contract is unchanged for callers who never set the new field."""
+        brief.turn_notes = {brief.max_turns - 1: "Land it on the open question."}
+        factory, handed = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
+
+        await run_act(brief, hosts, settings, connect=factory)
+
+        every_note = [note for conn in handed for note in conn.steers]
+        assert handed[0].steers[-1] == "Land it on the open question."
+        assert every_note.count("Land it on the open question.") == 1, "it rode to the close, not fired twice"
 
     async def test_turn_notes_pin_the_rotation_without_speaking_order(
         self, fake_realtime, connect_factory, brief, hosts, settings

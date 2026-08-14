@@ -82,6 +82,7 @@ from ..audio.realtime.types import (
     Bitrate,
     Filename,
     RunId,
+    extension_cap,
 )
 from ..config import logger
 from ..exceptions import CostCeilingError
@@ -487,12 +488,20 @@ def annotate_upcoming(rundown: Rundown) -> Rundown:
 
 
 def _projected_usage(rundown: Rundown, acts: Sequence[ActBrief]) -> RealtimeUsage:
-    """Expected usage for some of a rundown's acts, at its host count."""
+    """Expected usage for some of a rundown's acts, at its host count.
+
+    Turns are the *extended* ceiling, not `max_turns` (#50): an act runs to
+    `extension_cap`, and the only turn-scaled term is `text_in`, so projecting
+    against the planned count quoted a number the run could legitimately
+    exceed. Audio terms scale with `target_seconds` and are unaffected, which
+    is why the difference is small — but a projection that reads low is worse
+    than one that reads high, since the resume refusal projects from this too.
+    """
     total = RealtimeUsage()
     for act in acts:
         total = total + project_usage(
             seconds=act.target_seconds,
-            turns=act.max_turns,
+            turns=extension_cap(act.max_turns),
             hosts=len(rundown.hosts),
         )
     return total
@@ -946,13 +955,13 @@ async def simulate_podcast(
             run_id=run_id,
             title=rundown.title,
             duration_seconds=round(rundown.total_target_seconds(), 1),
-            turn_count=rundown.total_max_turns(),
+            turn_count=rundown.total_turn_ceiling(),
             hosts=[h.name for h in rundown.hosts],
             acts=[
                 ActSummary(
                     act_id=act.id,
                     title=act.title,
-                    turns=act.max_turns,
+                    turns=extension_cap(act.max_turns),
                     seconds=act.target_seconds,
                     stop_reason="projected",
                 )

@@ -984,9 +984,13 @@ later acts own, filled in automatically), and `handoff` (where to leave off).
        "max_turns": number,        // Planned turn budget; roughly target_seconds/turn_seconds + 1.
                                    // NOT a hard cap: an act extends up to 1.5x this to reach
                                    // target_seconds when turns run short (max_turns=1 never
-                                   // extends). Cost tracks target_seconds, not this, so do not
-                                   // inflate max_cost_usd by 1.5x — but DO expect acts to now
-                                   // reach target_seconds, where they used to fall short.
+                                   // extends). Cost tracks target_seconds, so the extension
+                                   // barely moves it — and dry_run already projects against
+                                   // the extended ceiling, so budget from its number as-is.
+                                   // DO expect acts to reach target_seconds, where they used
+                                   // to fall short. Talking points are scheduled across the
+                                   // extended range too, so a list slightly longer than the
+                                   // planned turns still gets covered.
        "prior_context": string,    // What earlier acts covered. Empty for act 1.
        "upcoming": string,         // What later acts own. Derived when empty.
        "handoff": string,          // Where to leave the conversation. Empty for the last act.
@@ -997,6 +1001,8 @@ later acts own, filled in automatically), and `handoff` (where to leave off).
                                    // "" suppresses the note for that turn entirely.
                                    // Setting this without speaking_order pins the act to open
                                    // on the FIRST listed host, so the indexes stay meaningful.
+       "closing_note": string,     // The note for whichever turn lands the act. Use this to
+                                   // direct the close AND keep max_turns-1 an ordinary turn.
        "speaking_order": [string]} // Host ids per turn, cycled. Default: round-robin, rotated
                                    // per act (unless turn_notes pins it, above).
     ]
@@ -1043,13 +1049,18 @@ usually write better direction than they do, and three fields on each act hand y
   the last act's closing turn, where the hosts wait for a cue and silence would end the episode
   mid-conversation. On the LAST act, a closing note you write has to cue the sign-off itself —
   the hosts are told not to wrap up until cued, so "Land it on the open question." leaves them
-  waiting. A note on the last planned turn (`max_turns - 1`) takes over the closing, so it becomes your job to land
-  the act — and it follows the closing turn if the act extends, rather than firing mid-act.
+  waiting. Unless you set `closing_note`, a note on the last planned turn (`max_turns - 1`) takes
+  over the closing, so it becomes your job to land the act — and it follows the closing turn if
+  the act extends, rather than firing mid-act.
   Setting `turn_notes` at all pins the act to open on the first host in `hosts` (acts otherwise
   rotate who opens), because an index-keyed note is written against an assumed rotation. Notes on
-  extension turns (indices at or past `max_turns`) are allowed and fire normally — but only
-  `max_turns - 1` takes over the closing, so a note on whichever turn the close lands on is
-  superseded by it (and logged), as is any note aimed past the close.
+  extension turns (indices at or past `max_turns`) are allowed and fire normally. A note on
+  whichever turn the close lands on is superseded by the closing note (and logged), as is any
+  note aimed past the close.
+- `closing_note` — the note for whichever turn lands the act, wherever timing puts it. Set this
+  when you want to direct the close *and* still steer `max_turns - 1` like any other turn: with
+  it set, that index stops being a takeover. Without it, the index is the only way in, and the
+  two intents cannot be separated.
 - `speaking_order` — `["avery", "rory", "rory", "avery"]`, cycled. Lets a host follow their own
   point before handing back, instead of strict alternation.
 

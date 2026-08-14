@@ -650,17 +650,17 @@ def _note_dry_run(result: SimulatedPodcastResult, quiet: bool) -> None:
     """Human-readable projection on stderr; the envelope carries the numbers."""
     if quiet:
         return
-    # "up to N turns" was true when max_turns was a hard stop; an act now
-    # extends past it to reach its target, and the dry run is where a caller
-    # calibrates --max-cost.
-    from ..audio.realtime.types import extension_cap
+    # "planned turns" was true when max_turns was a hard stop; an act now extends
+    # past it to reach its target, and the dry run is where a caller calibrates
+    # --max-cost. Both counts are the extended ceiling (#50) — the planned number
+    # is still in `result.rundown`, which the dry run returns in full.
+    planned = {act.id: act.max_turns for act in result.rundown.acts} if result.rundown else {}
 
-    note(f"dry run — {result.title!r}: {len(result.acts)} acts, ~{result.turn_count} planned turns")
+    note(f"dry run — {result.title!r}: {len(result.acts)} acts, up to {result.turn_count} turns")
     for act in result.acts:
-        note(
-            f"  {act.act_id}: {act.title} — {act.seconds:.0f}s, "
-            f"~{act.turns} planned turns (up to {extension_cap(act.turns)})"
-        )
+        budget = planned.get(act.act_id)
+        shape = f"{budget} planned, up to {act.turns}" if budget is not None else f"up to {act.turns}"
+        note(f"  {act.act_id}: {act.title} — {act.seconds:.0f}s, {shape} turns")
     usage = result.cost.usage
     note(
         f"projected ~{result.duration_seconds / 60:.0f} min audio, "

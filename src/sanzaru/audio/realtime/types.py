@@ -204,11 +204,22 @@ class ActBrief(BaseModel):
     act's closing turn, where the hosts are told to wait for a cue and silence
     would end the episode mid-conversation.
 
-    A note on the last *planned* turn (`max_turns - 1`) takes over the closing,
-    so it is on you to land the act — and it follows the closing turn if the act
-    extends, rather than firing mid-act. Indices up to `extension_cap(max_turns)`
-    are accepted, since extension turns are real turns. Setting any note pins the
-    act's rotation to the first listed host, so the indices mean what they say."""
+    Unless `closing_note` is set, a note on the last *planned* turn
+    (`max_turns - 1`) takes over the closing, so it is on you to land the act —
+    and it follows the closing turn if the act extends, rather than firing
+    mid-act. Set `closing_note` to steer that turn like any other. Indices up to
+    `extension_cap(max_turns)` are accepted, since extension turns are real
+    turns. Setting any note pins the act's rotation to the first listed host, so
+    the indices mean what they say."""
+
+    closing_note: str = ""
+    """The note for whichever turn lands the act, wherever timing puts it.
+
+    Without this, the only way to direct the close is a `turn_notes` entry on
+    `max_turns - 1`, which is unavoidably a takeover: there is no way to say
+    "steer the last planned turn, but let the producer land the act". Setting
+    this separates the two — the index goes back to meaning an ordinary turn,
+    and this replaces the generated closing cue."""
 
     speaking_order: list[str] = Field(default_factory=list, max_length=MAX_ACT_TURNS)
     """Explicit host id per turn, cycled if shorter than the act. Empty means
@@ -300,6 +311,14 @@ class Rundown(BaseModel):
 
     def total_max_turns(self) -> int:
         return sum(act.max_turns for act in self.acts)
+
+    def total_turn_ceiling(self) -> int:
+        """Turns this rundown can actually reach, extension included.
+
+        What a projection has to quote: `max_turns` is a scheduling assumption,
+        but every act may run to `extension_cap` of it, and the tool's own
+        description tells callers to budget past the planned number."""
+        return sum(extension_cap(act.max_turns) for act in self.acts)
 
 
 # ---------- results ----------
