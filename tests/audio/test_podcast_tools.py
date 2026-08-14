@@ -1,5 +1,8 @@
 """Tests for the multi-voice podcast generation tool."""
 
+import copy
+import re
+
 import pytest
 
 from sanzaru.tools.podcast import (
@@ -69,11 +72,15 @@ class TestValidateScript:
         assert len(speakers) == 2
         assert len(segments) == 3
 
-    def test_missing_required_top_level_key(self, minimal_script):
-        """Missing top-level key raises ValueError."""
+    def test_missing_title_defaults_instead_of_raising(self, minimal_script):
+        """#36: title is presentational, so it gets a plain default.
+
+        No timestamp in it: the generated filename appends its own, and
+        `podcast_<epoch>_<stamp>.mp3` reads as a bug.
+        """
         del minimal_script["title"]
-        with pytest.raises(ValueError, match="missing required field: 'title'"):
-            _validate_script(minimal_script)
+        title, _, _, _ = _validate_script(minimal_script)
+        assert title == "podcast"
 
     def test_missing_speakers_key(self, minimal_script):
         """Missing speakers raises ValueError."""
@@ -87,17 +94,17 @@ class TestValidateScript:
         with pytest.raises(ValueError, match="missing required field: 'segments'"):
             _validate_script(minimal_script)
 
-    def test_missing_config_key(self, minimal_script):
-        """Missing config raises ValueError."""
+    def test_missing_config_defaults_instead_of_raising(self, minimal_script):
+        """#36: the render path already defaulted every config field."""
         del minimal_script["config"]
-        with pytest.raises(ValueError, match="missing required field: 'config'"):
-            _validate_script(minimal_script)
+        _, _, _, config = _validate_script(minimal_script)
+        assert config == {}
 
-    def test_empty_title_raises(self, minimal_script):
-        """Empty title string raises ValueError."""
+    def test_blank_title_falls_back_to_the_default(self, minimal_script):
+        """A whitespace-only title is as absent as no title at all."""
         minimal_script["title"] = "   "
-        with pytest.raises(ValueError, match="'title' must not be empty"):
-            _validate_script(minimal_script)
+        title, _, _, _ = _validate_script(minimal_script)
+        assert title == "podcast"
 
     def test_no_speakers_raises(self, minimal_script):
         """Empty speakers list raises ValueError."""
@@ -116,7 +123,7 @@ class TestValidateScript:
     def test_speaker_missing_field_raises(self, minimal_script):
         """Speaker missing required field raises ValueError."""
         del minimal_script["speakers"][0]["voice"]
-        with pytest.raises(ValueError, match="missing required field: 'voice'"):
+        with pytest.raises(ValueError, match=r"missing required field\(s\): 'voice'"):
             _validate_script(minimal_script)
 
     def test_empty_segments_raises(self, minimal_script):
@@ -134,7 +141,7 @@ class TestValidateScript:
     def test_segment_missing_text_raises(self, minimal_script):
         """Segment missing text field raises ValueError."""
         del minimal_script["segments"][0]["text"]
-        with pytest.raises(ValueError, match="missing required field: 'text'"):
+        with pytest.raises(ValueError, match=r"missing required field\(s\): 'text'"):
             _validate_script(minimal_script)
 
     def test_segment_text_too_long_raises(self, minimal_script):
@@ -149,11 +156,11 @@ class TestValidateScript:
         with pytest.raises(ValueError, match="output_format"):
             _validate_script(minimal_script)
 
-    def test_config_missing_required_field_raises(self, minimal_script):
-        """Config missing required field raises ValueError."""
+    def test_config_field_may_be_omitted(self, minimal_script):
+        """#36: normalize_loudness already defaulted to True at render time."""
         del minimal_script["config"]["normalize_loudness"]
-        with pytest.raises(ValueError, match="PodcastConfig missing required field"):
-            _validate_script(minimal_script)
+        _, _, _, config = _validate_script(minimal_script)
+        assert "normalize_loudness" not in config
 
     def test_wav_output_format_is_valid(self, minimal_script):
         """WAV output format passes validation."""
@@ -201,6 +208,394 @@ class TestValidateScript:
         _validate_script(minimal_script)
         minimal_script["speakers"][0]["speed"] = 4.0
         _validate_script(minimal_script)
+
+
+@pytest.mark.unit
+class TestShippedExamplesValidate:
+    """The examples in GENERATE_PODCAST are what an agent copies, so they are
+    claims about the schema rather than illustrations of it. Extract and run
+    them: an example that no longer validates teaches the wrong shape, and a
+    reference like `{"speaker": "guest"}` against a speaker whose id now
+    defaults to its name is exactly the mistake a hand-edit makes."""
+
+    @staticmethod
+    def _examples() -> list[tuple[str, dict]]:
+        import json
+        import re
+
+        from sanzaru.descriptions import GENERATE_PODCAST
+
+        found = []
+        for match in re.finditer(r"\*\*Example \(([^)]+)\):\*\*\n", GENERATE_PODCAST):
+            # Brace-match rather than pattern-match the close: the last example
+            # ends at the string terminator with no trailing newline, which a
+            # `\n\}\n` pattern silently skips.
+            start = match.end()
+            depth = 0
+            for offset, char in enumerate(GENERATE_PODCAST[start:]):
+                depth += (char == "{") - (char == "}")
+                if depth == 0 and char == "}":
+                    found.append((match.group(1), json.loads(GENERATE_PODCAST[start : start + offset + 1])))
+                    break
+        return found
+
+    def test_examples_were_actually_found(self):
+        # Guards the regex: a silently-empty parametrize would pass forever.
+        assert len(self._examples()) >= 2
+
+    def test_every_example_validates(self):
+        for label, script in self._examples():
+            try:
+                _validate_script(script)
+            except ValueError as exc:  # pragma: no cover - only on a broken example
+                pytest.fail(f"GENERATE_PODCAST example {label!r} does not validate: {exc}")
+
+
+@pytest.mark.unit
+class TestMalformedScriptsStayUsageErrors:
+    """A script arrives from a raw `json.loads` with no pydantic in the way, so
+    every shape below is reachable from the CLI. Each must be a ValueError the
+    runtime maps to exit 2 — a KeyError or AttributeError escaping from deeper
+    in becomes an `internal` envelope at exit 1 and blames the tool."""
+
+    def test_blank_name_cannot_derive_an_id(self, minimal_script):
+        """`id` is only synthesized from a non-blank string name, and the
+        presence check cannot see that — the key *is* there."""
+        minimal_script["speakers"] = [{"name": "   ", "voice": "ash"}]
+
+        with pytest.raises(ValueError, match="needs a non-empty string 'id'"):
+            _validate_script(minimal_script)
+
+    def test_non_string_name_cannot_derive_an_id(self, minimal_script):
+        minimal_script["speakers"] = [{"name": 123, "voice": "ash"}]
+
+        with pytest.raises(ValueError, match="needs a non-empty string 'id'"):
+            _validate_script(minimal_script)
+
+    @pytest.mark.parametrize("key", ["speakers", "segments"])
+    def test_non_array_container_is_a_usage_error(self, key, minimal_script):
+        """The element guard covered entries but not the containers themselves,
+        so `len()`/`enumerate()` raised TypeError → exit 1."""
+        minimal_script[key] = 5
+
+        with pytest.raises(ValueError, match=rf"'{key}' must be an array, got int"):
+            _validate_script(minimal_script)
+
+    def test_speakers_keyed_by_id_is_a_usage_error(self, minimal_script):
+        """A very plausible agent mistake — an object keyed by id instead of an
+        array. It used to escape as 'dictionary update sequence element #0 has
+        length 4; 2 is required', which names nothing an author can act on."""
+        minimal_script["speakers"] = {"host": {"name": "Alex", "voice": "ash"}}
+
+        with pytest.raises(ValueError, match="'speakers' must be an array, got dict"):
+            _validate_script(minimal_script)
+
+    @pytest.mark.parametrize(
+        ("entry", "kind"),
+        [(None, "NoneType"), (5, "int"), ("Alex: hello", "str")],
+    )
+    def test_non_object_segment_is_a_usage_error(self, entry, kind, minimal_script):
+        """`["Alex: hello"]` is the one worth naming: `"speaker" in "Alex: ..."`
+        is a *substring* test, so it did not crash — it reported missing fields
+        on something that is not an object at all."""
+        minimal_script["segments"] = [entry]
+
+        with pytest.raises(ValueError, match=rf"Segment 0 must be an object, got {kind}"):
+            _validate_script(minimal_script)
+
+    @pytest.mark.parametrize(
+        ("field", "value", "expected"),
+        [
+            ("text", 5, "'text' must be a string, got int"),
+            ("speaker", ["A"], "'speaker' must be a string, got list"),
+            ("pause_after", "500", "'pause_after' must be an integer, got str"),
+            ("speed_override", "1.0", "'speed_override' must be a number, got str"),
+        ],
+    )
+    def test_segment_leaf_types_are_usage_errors(self, field, value, expected, minimal_script):
+        """Non-string speaker is unhashable against the id set, non-string text
+        has no .strip() — TypeError/AttributeError, i.e. exit 1."""
+        minimal_script["segments"] = [{"speaker": "host", "text": "hi", field: value}]
+
+        with pytest.raises(ValueError, match=re.escape(expected)):
+            _validate_script(minimal_script)
+
+    @pytest.mark.parametrize("field", ["name", "voice"])
+    def test_non_string_name_or_voice_is_a_usage_error(self, field, minimal_script):
+        """The sharpest case in the family. With an explicit `id`, a non-string
+        `name` passed every other check: the episode rendered, the mp3 was
+        *written*, and only then did PodcastResult fail pydantic — exit 1, with
+        paid-for audio orphaned under a name the caller never learns."""
+        minimal_script["speakers"] = [{"id": "a", "name": "A", "voice": "ash", field: 123}]
+        minimal_script["segments"][0]["speaker"] = "a"
+
+        with pytest.raises(ValueError, match=rf"field\(s\) must be strings: '{field}' is int"):
+            _validate_script(minimal_script)
+
+    @pytest.mark.parametrize("key", ["default_pause_ms", "intro_silence_ms", "outro_silence_ms"])
+    def test_non_integer_silence_is_a_usage_error(self, key, minimal_script):
+        """A string builds a pause list of strings, and `sum()` in the duration
+        estimate raises TypeError — the segment-level `pause_after` was already
+        checked, these were not."""
+        minimal_script["config"][key] = "600"
+
+        with pytest.raises(ValueError, match=rf"{key}' must be an integer, got str"):
+            _validate_script(minimal_script)
+
+    def test_string_speed_is_a_usage_error(self, minimal_script):
+        """A classic hand-authored-JSON slip, and #36 making `speed` optional
+        means the authors most likely to type it are writing it by hand."""
+        minimal_script["speakers"][0]["speed"] = "1.0"
+
+        with pytest.raises(ValueError, match="'speed' must be a number, got str"):
+            _validate_script(minimal_script)
+
+    def test_non_object_config_is_a_usage_error(self, minimal_script):
+        minimal_script["config"] = "mp3"
+
+        with pytest.raises(ValueError, match="'config' must be an object, got str"):
+            _validate_script(minimal_script)
+
+    def test_non_object_speaker_is_a_usage_error(self, minimal_script):
+        minimal_script["speakers"] = ["Alex"]
+
+        with pytest.raises(ValueError, match="Speaker 0 must be an object, got str"):
+            _validate_script(minimal_script)
+
+
+@pytest.mark.unit
+class TestScriptDefaults:
+    """#36 / #53: the fields that used to be exit-2 usage errors."""
+
+    def test_the_minimum_renderable_script_is_speakers_plus_segments(self):
+        """Everything else defaults. This is the whole point of #36."""
+        title, speakers, segments, config = _validate_script(
+            {
+                "speakers": [{"name": "Alex", "voice": "ash"}],
+                "segments": [{"speaker": "Alex", "text": "Hello."}],
+            }
+        )
+
+        assert title == "podcast"
+        assert speakers[0]["id"] == "Alex"  # id mirrors name
+        assert speakers[0]["speed"] == 1.0
+        assert "instructions" not in speakers[0]  # absent, not ""
+        assert len(segments) == 1
+        assert config == {}
+
+    def test_id_defaults_to_name_so_segments_can_reference_by_name(self, minimal_script):
+        del minimal_script["speakers"][0]["id"]
+        minimal_script["speakers"][0]["name"] = "Alex"
+        minimal_script["segments"][0]["speaker"] = "Alex"
+
+        _, speakers, _, _ = _validate_script(minimal_script)
+
+        assert speakers[0]["id"] == "Alex"
+
+    def test_a_derived_id_is_stripped(self, minimal_script):
+        """The decision used name.strip() but assigned the unstripped name, so
+        {"name": "  Alex  "} demanded {"speaker": "  Alex  "} back — while every
+        other id comparison here strips."""
+        minimal_script["speakers"] = [{"name": "  Alex  ", "voice": "ash"}]
+        minimal_script["segments"][0]["speaker"] = "Alex"
+
+        _, speakers, _, _ = _validate_script(minimal_script)
+
+        assert speakers[0]["id"] == "Alex"
+
+    def test_an_explicit_id_still_wins_over_the_name(self, minimal_script):
+        minimal_script["speakers"][0]["id"] = "host"
+        minimal_script["speakers"][0]["name"] = "Alex"
+        minimal_script["segments"][0]["speaker"] = "host"
+
+        _, speakers, _, _ = _validate_script(minimal_script)
+
+        assert speakers[0]["id"] == "host"
+
+    def test_speed_defaults_to_neutral(self, minimal_script):
+        del minimal_script["speakers"][0]["speed"]
+
+        _, speakers, _, _ = _validate_script(minimal_script)
+
+        assert speakers[0]["speed"] == 1.0
+
+    def test_normalization_does_not_mutate_the_callers_script(self, minimal_script):
+        del minimal_script["speakers"][0]["speed"]
+        del minimal_script["speakers"][0]["id"]
+        minimal_script["segments"][0]["speaker"] = minimal_script["speakers"][0]["name"]
+        original = copy.deepcopy(minimal_script)
+
+        _validate_script(minimal_script)
+
+        assert minimal_script == original
+
+    def test_duplicate_ids_are_rejected(self, minimal_script):
+        """Newly reachable now that `id` defaults to `name`: two speakers with
+        one id silently collapse in the render path's speaker_map."""
+        minimal_script["speakers"] = [
+            {"name": "Alex", "voice": "ash"},
+            {"name": "Alex", "voice": "nova"},
+        ]
+        minimal_script["segments"][0]["speaker"] = "Alex"
+
+        with pytest.raises(ValueError, match="duplicates the speaker id 'Alex'"):
+            _validate_script(minimal_script)
+
+    def test_elevenlabs_speaker_needs_neither_speed_nor_instructions(self, minimal_script):
+        """#53: eleven_v3 rejects any speed change and ignores instructions, so
+        demanding both cost the author two edit cycles for nothing."""
+        minimal_script["speakers"] = [
+            {"name": "Alex", "voice": "voice_abc", "provider": "elevenlabs", "model": "eleven_v3"}
+        ]
+        minimal_script["segments"][0]["speaker"] = "Alex"
+
+        _, speakers, _, _ = _validate_script(minimal_script)
+
+        assert speakers[0]["speed"] == 1.0  # the only value eleven_v3 accepts
+        assert "instructions" not in speakers[0]
+
+
+@pytest.mark.unit
+class TestValidationReportsEveryProblem:
+    """#53: one-error-at-a-time on a schema this wide is N round trips for an
+    agent caller that has to re-read the whole spec each round."""
+
+    def test_all_speaker_problems_are_reported_at_once(self, minimal_script):
+        minimal_script["speakers"] = [
+            {"name": "A"},  # no voice
+            {"voice": "nova"},  # no name
+            {"name": "C", "voice": "onyx", "speed": 9.0},  # out of range
+        ]
+        minimal_script["segments"][0]["speaker"] = "C"
+
+        with pytest.raises(ValueError) as excinfo:
+            _validate_script(minimal_script)
+
+        message = str(excinfo.value)
+        assert "3 problems" in message
+        assert "'voice'" in message
+        assert "'name'" in message
+        assert "speed must be between" in message
+
+    def test_config_and_speaker_problems_arrive_together(self, minimal_script):
+        minimal_script["config"]["output_format"] = "ogg"
+        minimal_script["config"]["max_concurrency"] = 0
+        del minimal_script["speakers"][0]["voice"]
+
+        with pytest.raises(ValueError) as excinfo:
+            _validate_script(minimal_script)
+
+        message = str(excinfo.value)
+        assert "3 problems" in message
+        assert "output_format" in message
+        assert "max_concurrency" in message
+        assert "'voice'" in message
+
+    def test_every_bad_segment_is_reported_at_once(self, minimal_script):
+        minimal_script["segments"] = [
+            {"speaker": "host", "text": "fine"},
+            {"speaker": "ghost", "text": "who?"},
+            {"speaker": "host", "text": "   "},
+            {"speaker": "host"},
+        ]
+
+        with pytest.raises(ValueError) as excinfo:
+            _validate_script(minimal_script)
+
+        message = str(excinfo.value)
+        assert "3 problems" in message
+        assert "unknown speaker id" in message
+        assert "must not be empty" in message
+        assert "'text'" in message
+
+    def test_a_lone_problem_keeps_the_single_line_message(self, minimal_script):
+        """One error must not grow a '1 problems:' preamble."""
+        del minimal_script["speakers"][0]["voice"]
+
+        with pytest.raises(ValueError) as excinfo:
+            _validate_script(minimal_script)
+
+        message = str(excinfo.value)
+        assert "problems" not in message
+        assert message.startswith("Speaker 0")
+
+    def test_unknown_speaker_error_lists_the_ids_that_do_exist(self, minimal_script):
+        minimal_script["segments"][0]["speaker"] = "nonexistent"
+
+        with pytest.raises(ValueError, match="known ids: host"):
+            _validate_script(minimal_script)
+
+    def test_a_duplicate_id_is_reported_even_when_the_first_speaker_also_fails(self, minimal_script):
+        """Duplicate detection reads the id-shape set, not the fully-validated
+        one: a speaker that bails out early would otherwise never register its
+        id, hiding the collision until the unrelated error is fixed — the extra
+        round trip #53 exists to remove."""
+        minimal_script["speakers"] = [
+            {"name": "A", "voice": "ash", "speed": 9.0},  # fails on speed
+            {"name": "A", "voice": "nova"},  # duplicate of the above
+        ]
+        minimal_script["segments"][0]["speaker"] = "A"
+
+        with pytest.raises(ValueError) as excinfo:
+            _validate_script(minimal_script)
+
+        message = str(excinfo.value)
+        assert "speed must be between" in message
+        assert "duplicates the speaker id 'A'" in message
+
+    def test_a_duplicate_id_is_reported_even_when_the_first_speaker_lacks_a_voice(self, minimal_script):
+        """The missing-field guard used to `continue` before the id was
+        registered, so this reported only the missing 'voice' and the duplicate
+        arrived on the next run."""
+        minimal_script["speakers"] = [{"name": "A"}, {"name": "A", "voice": "nova"}]
+        minimal_script["segments"][0]["speaker"] = "A"
+
+        with pytest.raises(ValueError) as excinfo:
+            _validate_script(minimal_script)
+
+        message = str(excinfo.value)
+        assert "'voice'" in message
+        assert "duplicates the speaker id 'A'" in message
+
+    def test_a_nameless_speaker_is_not_also_blamed_for_its_id(self, minimal_script):
+        """The missing name *causes* the id failure, so reporting both would
+        describe one defect twice."""
+        minimal_script["speakers"] = [{"voice": "nova"}]
+
+        with pytest.raises(ValueError) as excinfo:
+            _validate_script(minimal_script)
+
+        message = str(excinfo.value)
+        assert "'name'" in message
+        assert "needs a non-empty string 'id'" not in message
+
+    def test_a_duplicate_id_survives_a_bad_config_provider(self, minimal_script):
+        """`config_provider_ok` makes every speaker bail before the bottom of
+        the loop, so this is the wholesale version of the case above."""
+        minimal_script["config"]["provider"] = "azure"
+        minimal_script["speakers"] = [
+            {"name": "A", "voice": "ash"},
+            {"name": "A", "voice": "nova"},
+        ]
+        minimal_script["segments"][0]["speaker"] = "A"
+
+        with pytest.raises(ValueError, match="duplicates the speaker id 'A'"):
+            _validate_script(minimal_script)
+
+    def test_a_bad_config_provider_does_not_restate_itself_per_speaker(self, minimal_script):
+        """Every speaker inherits config.provider, so probing them would just
+        repeat the same diagnostic once per speaker."""
+        minimal_script["config"]["provider"] = "azure"
+        minimal_script["speakers"] = [
+            {"name": "A", "voice": "ash"},
+            {"name": "B", "voice": "nova"},
+        ]
+        minimal_script["segments"][0]["speaker"] = "A"
+
+        with pytest.raises(ValueError) as excinfo:
+            _validate_script(minimal_script)
+
+        assert str(excinfo.value).count("unknown provider") == 1
 
 
 @pytest.mark.unit
@@ -444,6 +839,40 @@ async def test_generate_podcast_happy_path(mocker, tmp_audio_path):
 
 @pytest.mark.integration
 @pytest.mark.anyio
+async def test_a_bad_speaker_type_costs_nothing(mocker, tmp_audio_path):
+    """`_validate_script` promises to "fail before spending a single API call".
+    A non-string `name` alongside an explicit `id` broke that promise the
+    hardest: it rendered, wrote the file, then died in PodcastResult."""
+    from sanzaru.storage.local import LocalStorageBackend
+
+    mock_response = mocker.MagicMock()
+    mock_response.content = b"FAKE"
+    mock_client = mocker.MagicMock()
+    mock_client.audio.speech.create = mocker.AsyncMock(return_value=mock_response)
+    mocker.patch("sanzaru.audio.providers.openai_provider.get_client", return_value=mock_client)
+    stitch = mocker.patch("sanzaru.tools.podcast._stitch_audio", return_value=b"STITCHED")
+    mocker.patch(
+        "sanzaru.infrastructure.file_system.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"audio": tmp_audio_path}),
+    )
+
+    from sanzaru.tools.podcast import generate_podcast
+
+    with pytest.raises(ValueError, match="must be strings"):
+        await generate_podcast(
+            {
+                "speakers": [{"id": "a", "name": 123, "voice": "ash"}],
+                "segments": [{"speaker": "a", "text": "hello"}],
+            }
+        )
+
+    assert mock_client.audio.speech.create.call_count == 0
+    assert stitch.call_count == 0
+    assert not list(tmp_audio_path.iterdir())  # no orphaned mp3
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
 async def test_generate_podcast_honors_an_explicit_filename(mocker, tmp_audio_path):
     """`filename` is written verbatim and reported back — #54.
 
@@ -655,7 +1084,7 @@ class TestValidateScriptProviders:
 
     def test_unknown_speaker_provider_raises(self, minimal_script):
         minimal_script["speakers"][0]["provider"] = "azure"
-        with pytest.raises(ValueError, match="Speaker 0 'provider': unknown provider"):
+        with pytest.raises(ValueError, match=r"Speaker 0 \('host'\) 'provider': unknown provider"):
             _validate_script(minimal_script)
 
     def test_unknown_config_provider_raises(self, minimal_script):

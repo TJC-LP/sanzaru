@@ -145,8 +145,9 @@ the token cap, so raise `--turn-tokens` and resume instead of paying for the sam
   configured media dir, else the cwd (noted on stderr). The envelope always has the absolute path.
 - Inputs (`--input-ref`, `--input-image`, audio files) take real paths or bare media-dir filenames.
 - Long content: inline, `@file`, or `-` (stdin) — e.g. `sanzaru audio speak @ch1.txt -o ch1.mp3`,
-  `sanzaru podcast generate - < episode.json -o ep.mp3` (script `config` requires
-  `default_pause_ms`, `normalize_loudness`, and `output_format` — see `podcast generate -h`).
+  `sanzaru podcast generate - < episode.json -o ep.mp3` (a script needs only `speakers` and
+  `segments`; `id` defaults to `name`, `speed` to 1.0, and `config`/`title` are optional —
+  see `podcast generate -h`).
 - Reference-image → video: keep the video prompt **motion-only** (the image already carries look):
   `sanzaru image prepare hero.png --size 1280x720` then `video create "she turns and smiles" --input-ref ...`.
 
