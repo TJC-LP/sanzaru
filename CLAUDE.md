@@ -32,6 +32,7 @@ uv run sanzaru --transport http --host 0.0.0.0 --port 8080
 uv run sanzaru capabilities
 uv run sanzaru video create "a cat stretches" --seconds 4 -o ./out/cat.mp4
 uv run sanzaru image generate "an icon" --quality high -o ./art/icon.png
+uv run sanzaru podcast generate @script.json --verify -o ep.mp3   # check the audio says it
 uv run sanzaru podcast rundown "why TTS drops sentence tails" --acts 3 -m 6 -o rundown.json
 uv run sanzaru podcast simulate @rundown.json --dry-run          # plan + cost, spends nothing
 uv run sanzaru podcast simulate @rundown.json --max-cost 2.00 -o ep.mp3
@@ -234,6 +235,27 @@ Client seam: `config.get_elevenlabs_client()` mirrors `get_client()`, but builds
 rather than being installed eagerly by the CLI runtime, so `sanzaru --help` never imports the SDK.
 Missing key raises `RuntimeError`, missing extra raises `ImportError` — both map to CLI exit 3 via
 `_classify`. `ConfigurationError` would *not* (it falls through to exit 1).
+
+### Podcast Verification
+
+`generate_podcast(verify=True)` transcribes each rendered unit **before stitching** and checks it
+against the script. Verifying there rather than against the finished episode is what makes
+attribution exact: `segment_bytes_list` is still index-aligned to `units`, every unit is far under
+the 25MB/duration limits so no windowing is involved, and no offset arithmetic against the mixed
+file is needed. It does not prove the stitch — but the documented failure is TTS dropping speech,
+and stitching is a deterministic pydub concatenation.
+
+Two checks, because there are two documented failures: a fuzzy match on the last
+`VERIFY_TAIL_WORDS` (tails are what drop), and presence anywhere in the unit's audio for segments
+of `VERIFY_SHORT_SEGMENT_WORDS` or fewer (a three-word segment vanished whole). Thresholds are
+loose on purpose — this looks for *absent speech*, not a perfect reading, and ASR reorders
+currency and wobbles on proper nouns.
+
+Failures re-render **once**, then are reported. Drops are per-render random, not per-segment
+sticky, so a segment that fails twice wants its tail rewritten rather than a third render. A
+dialogue unit is atomic — a failure anywhere in a batched run re-renders the whole run, since the
+model paced those turns together. A transcription failure downgrades a segment to
+`not_transcribed` and never fails the episode, the same property `run_qc` has.
 
 ### Simulated Podcasts (realtime)
 

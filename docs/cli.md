@@ -235,7 +235,7 @@ Three verbs, in the order you use them:
 | --- | --- | --- |
 | `rundown PREMISE` | plans an episode into acts; emits editable JSON | one text call |
 | `simulate BRIEF` | records realtime agents actually conversing | real; see below |
-| `generate SCRIPT` | speaks a script you wrote (multi-voice TTS) | TTS rates |
+| `generate SCRIPT` | speaks a script you wrote (multi-voice TTS); `--verify` checks the audio says it | TTS rates |
 
 Reach for `simulate` when you have a **topic** and want a real conversation, `generate
 --render-mode dialogue` when you have a **script** and want it performed naturally, and
@@ -362,6 +362,34 @@ plus `intro_silence_ms`, `outro_silence_ms`, `output_bitrate`, `provider`, `max_
 than one per run. Speakers accept optional `provider`, `model`, and `voice_settings`, resolved
 as `speaker.provider > config.provider > --provider` — so one episode can mix OpenAI and ElevenLabs
 voices. The envelope includes the full transcript — pipe to a file for long episodes.
+
+#### `--verify`
+
+TTS drops the tail of a segment, and occasionally a whole short segment, **at random and with
+no error**. `transcript` in the envelope is just an echo of the script you sent, so it is no
+evidence the audio contains the words — which is why callers built an external QC discipline
+around this tool, budgeting a median of three renders per episode.
+
+`--verify` transcribes each rendered unit *before* stitching and checks it against the script:
+a fuzzy match on the last 8 words (the tail is where drops happen), or presence anywhere in the
+audio for segments of 4 words or fewer. Anything that fails is re-rendered **once** and
+re-checked. The episode is written either way.
+
+```console
+$ sanzaru podcast generate @episode.json --verify -o ep.mp3
+sanzaru: verified: all 28 segments present in the audio
+sanzaru:   (1 re-rendered to get there)
+```
+
+The envelope carries `verified`, `verify_retries`, and a `segment_verdicts` list with a reason
+(`tail_missing`, `segment_missing`, `diverged`, `not_transcribed`) and similarity per segment.
+`verified` is `null` when you did not ask for it.
+
+Costs one transcription per unit, so it is off by default. Two things it does not do: drops are
+per-render random rather than per-segment sticky, so a segment failing **twice** wants its tail
+rewritten to be grammatically part of a longer sentence rather than a third render — the tool
+says so and stops. And a dialogue-mode run is one request or nothing, so a failure anywhere in a
+batched run re-renders the whole run.
 
 #### Render modes
 
