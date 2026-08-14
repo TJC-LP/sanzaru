@@ -23,7 +23,7 @@ from typing import Literal, NoReturn, NotRequired, TypedDict, cast
 import anyio
 from aioresult import ResultCapture  # type: ignore[import-untyped]
 from openai.types.audio.speech_model import SpeechModel
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydub import AudioSegment  # type: ignore[import-untyped]
 from pydub.effects import normalize as pydub_normalize  # type: ignore[import-untyped]
 
@@ -50,6 +50,7 @@ from ..audio.providers import (
     synthesize_speech,
     validate_provider_name,
 )
+from ..audio.verification import similarity, transcribe_bytes, words
 from ..config import logger
 from ..infrastructure import FileSystemRepository
 
@@ -127,6 +128,21 @@ class PodcastScript(TypedDict):
     config: NotRequired[PodcastConfig]
 
 
+class SegmentVerdict(BaseModel):
+    """What verification found for one segment of the script (#35)."""
+
+    index: int
+    speaker: str
+    ok: bool
+    reason: str = ""
+    """Empty when ok; otherwise `tail_missing`, `segment_missing`, `diverged`,
+    or `not_transcribed` (verification itself failed for this unit)."""
+    similarity: float = 1.0
+    """Word overlap between the script text and what the audio actually says."""
+    retried: bool = False
+    """True when this segment's audio was re-rendered before the final stitch."""
+
+
 class PodcastResult(BaseModel):
     """Result from generate_podcast."""
 
@@ -136,6 +152,94 @@ class PodcastResult(BaseModel):
     estimated_duration_seconds: float
     speakers: list[str]
     transcript: str
+    verified: bool | None = None
+    """None when `verify` was not requested. True when every segment was
+    confirmed present in the rendered audio, False when some were not — the
+    episode is still written either way."""
+    verify_retries: int = 0
+    """Segments re-rendered because verification flagged them."""
+    segment_verdicts: list[SegmentVerdict] = Field(default_factory=list)
+    """Per-segment findings; empty unless `verify` was requested."""
+
+
+VERIFY_TAIL_WORDS = 8
+"""How much of a segment's ending to check.
+
+The documented failure is a *tail* drop — the last words of a segment simply
+absent from the audio — so the check is aimed there rather than at the segment
+as a whole, where a few missing words barely move an overall score."""
+
+VERIFY_TAIL_THRESHOLD = 0.75
+"""Fuzzy-match floor for that tail. Below it, the words are not there.
+
+Loose on purpose: ASR reorders currency, spells numbers differently, and wobbles
+on proper nouns. This is looking for absent speech, not for a perfect reading."""
+
+VERIFY_SHORT_SEGMENT_WORDS = 4
+"""At or under this, a segment is checked for presence anywhere in the audio
+instead of by its tail — a four-word segment has no tail to speak of, and whole
+short segments are the other documented failure (one three-word segment
+vanished entirely)."""
+
+VERIFY_SEGMENT_THRESHOLD = 0.60
+"""Overall floor for a whole segment. A tail can pass while the middle is gone;
+this catches the gross case without flagging normal ASR disagreement."""
+
+
+def _tail_of(text: str, count: int = VERIFY_TAIL_WORDS) -> str:
+    return " ".join(words(text)[-count:])
+
+
+def _best_window_similarity(needle: str, haystack: str) -> float:
+    """Best match for `needle` anywhere in `haystack`, at word level.
+
+    A segment's words sit somewhere inside the rendered text, not at a known
+    offset, so comparing the two whole strings would score a short segment
+    against a long transcript as almost total mismatch. Sliding a
+    needle-sized window is what makes "is this present at all?" answerable.
+    """
+    needle_words = words(needle)
+    hay_words = words(haystack)
+    if not needle_words:
+        return 1.0
+    if not hay_words:
+        return 0.0
+    span = len(needle_words)
+    if len(hay_words) <= span:
+        return similarity(needle, haystack)
+    return max(
+        similarity(needle, " ".join(hay_words[start : start + span])) for start in range(len(hay_words) - span + 1)
+    )
+
+
+def _verdict_for(index: int, speaker: str, intended: str, rendered: str) -> SegmentVerdict:
+    """Judge one segment against the audio the unit containing it produced."""
+    overall = _best_window_similarity(intended, rendered)
+    if len(words(intended)) <= VERIFY_SHORT_SEGMENT_WORDS:
+        # No meaningful tail; the question is only whether it is there at all.
+        ok = overall >= VERIFY_TAIL_THRESHOLD
+        return SegmentVerdict(
+            index=index,
+            speaker=speaker,
+            ok=ok,
+            reason="" if ok else "segment_missing",
+            similarity=round(overall, 3),
+        )
+
+    tail_score = _best_window_similarity(_tail_of(intended), rendered)
+    if tail_score < VERIFY_TAIL_THRESHOLD:
+        reason = "tail_missing"
+    elif overall < VERIFY_SEGMENT_THRESHOLD:
+        reason = "diverged"
+    else:
+        reason = ""
+    return SegmentVerdict(
+        index=index,
+        speaker=speaker,
+        ok=not reason,
+        reason=reason,
+        similarity=round(min(overall, tail_score), 3),
+    )
 
 
 def _resolve_provider_name(
@@ -872,6 +976,7 @@ async def generate_podcast(
     model: SpeechModel | ElevenLabsModel = "gpt-4o-mini-tts",
     provider: TTSProviderName = "openai",
     filename: str | None = None,
+    verify: bool = False,
 ) -> PodcastResult:
     """Generate a multi-voice podcast from a structured PodcastScript.
 
@@ -887,6 +992,11 @@ async def generate_podcast(
             `SimulationBrief.filename`. Defaults to a title-and-timestamp slug.
             `PodcastResult.output_file` always reports the name actually
             written, so a caller never has to guess which of two names is real.
+        verify: Transcribe each rendered unit and check it actually says what
+            the script said, re-rendering the ones that do not, once (#35). TTS
+            drops segment tails and whole short segments at random, with no
+            error — and `transcript` is only an echo of the input, so it is no
+            evidence. Costs one transcription per unit and is off by default.
 
     Raises ValueError if the script fails validation.
     """
@@ -1013,6 +1123,68 @@ async def generate_podcast(
     output_format = config.get("output_format", DEFAULT_OUTPUT_FORMAT)
     output_bitrate = config.get("output_bitrate", "192k")
 
+    async def _verify_units(targets: list[int]) -> dict[int, list[SegmentVerdict]]:
+        """Transcribe the given units' audio and judge their segments.
+
+        Verifying *before* stitching is what makes attribution exact: each
+        unit's bytes are still separate and index-aligned to `units`, every one
+        is far under the transcription limits, and no offset arithmetic against
+        the finished file is needed. It does not prove the stitch — but the
+        documented failure is TTS dropping speech, and stitching is a
+        deterministic concatenation.
+        """
+        verify_limiter = anyio.CapacityLimiter(4)
+
+        async def _one(unit_index: int) -> tuple[int, list[SegmentVerdict]]:
+            unit = units[unit_index]
+            try:
+                async with verify_limiter:
+                    rendered = await transcribe_bytes(
+                        segment_bytes_list[unit_index], f"unit{unit_index}.{output_format}"
+                    )
+            except Exception as exc:  # noqa: BLE001 - verification must never lose the episode
+                logger.warning("Verification could not transcribe unit %d: %s", unit_index, exc)
+                return unit_index, [
+                    SegmentVerdict(
+                        index=i,
+                        speaker=speaker_map[segments[i]["speaker"]]["name"],
+                        ok=True,
+                        reason="not_transcribed",
+                        similarity=0.0,
+                    )
+                    for i in unit.indices
+                ]
+            return unit_index, [
+                _verdict_for(i, speaker_map[segments[i]["speaker"]]["name"], segments[i]["text"], rendered)
+                for i in unit.indices
+            ]
+
+        async with anyio.create_task_group() as verify_tg:
+            verify_captures = [ResultCapture.start_soon(verify_tg, _one, i) for i in targets]
+        return dict(capture.result() for capture in verify_captures)
+
+    verdicts_by_unit: dict[int, list[SegmentVerdict]] = {}
+    retried_count = 0
+    if verify:
+        logger.info("Verifying %d rendered unit(s) against the script", len(units))
+        verdicts_by_unit = await _verify_units(list(range(len(units))))
+
+        # A dialogue unit is one request or nothing — the model paced those turns
+        # together — so a failure anywhere in a run re-renders the whole run.
+        failed_units = [i for i, verdicts in verdicts_by_unit.items() if any(not v.ok for v in verdicts)]
+        if failed_units:
+            flagged = [f"{v.index + 1} ({v.reason})" for i in failed_units for v in verdicts_by_unit[i] if not v.ok]
+            logger.warning("Verification flagged segment(s) %s - re-rendering once", ", ".join(flagged))
+            async with anyio.create_task_group() as retry_tg:
+                retry_captures = [(i, ResultCapture.start_soon(retry_tg, _gen_unit, units[i])) for i in failed_units]
+            for unit_index, capture in retry_captures:
+                segment_bytes_list[unit_index] = capture.result()
+                retried_count += len(units[unit_index].indices)
+
+            # Re-judge only what was re-rendered; a passing unit is untouched.
+            for unit_index, verdicts in (await _verify_units(failed_units)).items():
+                verdicts_by_unit[unit_index] = [v.model_copy(update={"retried": True}) for v in verdicts]
+
     logger.info("Stitching podcast audio...")
     final_audio = await anyio.to_thread.run_sync(
         lambda: _stitch_audio(
@@ -1034,6 +1206,23 @@ async def generate_podcast(
 
     transcript = "\n\n".join(f"**{speaker_map[s['speaker']]['name']}:** {s['text']}" for s in segments)
 
+    verdicts = sorted(
+        (v for unit_verdicts in verdicts_by_unit.values() for v in unit_verdicts),
+        key=lambda v: v.index,
+    )
+    if verify:
+        unresolved = [v for v in verdicts if not v.ok]
+        if unresolved:
+            logger.warning(
+                "Verification: %d segment(s) still not found in the audio after one retry: %s. "
+                "A segment that fails twice is unlikely to be fixed by a third render - "
+                "rewrite the tail so it is grammatically part of a longer sentence",
+                len(unresolved),
+                ", ".join(f"{v.index + 1} ({v.reason})" for v in unresolved),
+            )
+        else:
+            logger.info("Verification: every segment confirmed present in the rendered audio")
+
     return PodcastResult(
         output_file=written_name,
         title=title,
@@ -1041,4 +1230,7 @@ async def generate_podcast(
         estimated_duration_seconds=round(estimated_duration, 1),
         speakers=[s["name"] for s in speakers],
         transcript=transcript,
+        verified=None if not verify else all(v.ok for v in verdicts),
+        verify_retries=retried_count,
+        segment_verdicts=verdicts,
     )

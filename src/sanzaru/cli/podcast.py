@@ -34,6 +34,7 @@ from .audio import _ELEVENLABS_MODELS, _PROVIDERS, _TTS_MODELS, resolve_tts_mode
 
 if TYPE_CHECKING:
     # Runtime import would pull openai/pydantic in at `sanzaru.cli` import time.
+    from ..tools.podcast import PodcastResult
     from ..tools.simulate_podcast import SimulatedPodcastResult
 
 _AUDIO_DEP_MESSAGE = "podcast generation requires optional dependencies — install with: uv pip install 'sanzaru[audio]'"
@@ -114,6 +115,14 @@ def podcast() -> None:
     "dialogue: consecutive ElevenLabs eleven_v3 turns go out together so the model paces them. "
     "Overrides config.render_mode.",
 )
+@click.option(
+    "--verify",
+    is_flag=True,
+    default=False,
+    help="Transcribe each rendered unit and check it says what the script said, re-rendering "
+    "the ones that do not, once. TTS drops segment tails and whole short segments at random "
+    "with no error. Costs one transcription per unit.",
+)
 @click.option("-o", "--output", default=None, help="Output file or directory (default: media dir).")
 @click.pass_context
 @run_async("podcast.generate")
@@ -123,6 +132,7 @@ async def podcast_generate(
     provider: str,
     model: str | None,
     render_mode: str | None,
+    verify: bool,
     output: str | None,
 ) -> int:
     """Render a podcast from a PodcastScript JSON. SCRIPT is inline JSON, @file, or - (stdin).
@@ -223,11 +233,13 @@ async def podcast_generate(
         # does. Renaming afterwards left `result.output_file` reporting the
         # auto-generated name that no longer existed on disk (#54).
         filename=plan.filename,
+        verify=verify,
     )
     final_path = await finalize_output(session, plan, result.output_file)
     payload: dict[str, object] = result.model_dump(mode="json")
     payload["file"] = {"path": final_path}
     reconcile_output_name(payload, final_path)
+    _note_verification(result, state.quiet)
     emit(success_envelope("podcast.generate", payload, elapsed_s=time.monotonic() - started))
     return 0
 
@@ -644,6 +656,22 @@ async def podcast_simulate(
     _note_result(result, state.quiet)
     emit(success_envelope("podcast.simulate", envelope_payload, elapsed_s=time.monotonic() - started))
     return 0
+
+
+def _note_verification(result: PodcastResult, quiet: bool) -> None:
+    """Say on stderr what verification found; the envelope carries the detail."""
+    if quiet or result.verified is None:
+        return
+    if result.verified:
+        note(f"verified: all {result.segment_count} segments present in the audio")
+        if result.verify_retries:
+            note(f"  ({result.verify_retries} re-rendered to get there)")
+        return
+    unresolved = [v for v in result.segment_verdicts if not v.ok]
+    note(f"verified: {len(unresolved)} of {result.segment_count} segments NOT found after a retry")
+    for verdict in unresolved:
+        note(f"  segment {verdict.index + 1} ({verdict.speaker}): {verdict.reason}, similarity {verdict.similarity}")
+    note("  a segment that fails twice wants its tail rewritten into a longer sentence, not another render")
 
 
 def _note_dry_run(result: SimulatedPodcastResult, quiet: bool) -> None:
