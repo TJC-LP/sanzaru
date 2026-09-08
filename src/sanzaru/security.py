@@ -69,7 +69,12 @@ def check_not_symlink(path: pathlib.Path, error_context: str) -> None:
         RuntimeError: If permission denied checking path
     """
     try:
-        if path.exists() and path.is_symlink():
+        # `is_symlink()` alone, and first: `exists()` follows the link, so a
+        # *dangling* symlink answered False and skipped the test entirely — the
+        # guard let through exactly the links a later `open(..., "wb")` would
+        # follow and create the target of. is_symlink() is lstat-based and true
+        # for a broken link.
+        if path.is_symlink():
             raise ValueError(f"{error_context} cannot be a symbolic link: {path.name}")
     except PermissionError as e:
         raise RuntimeError(f"Cannot validate {error_context}: permission denied for {path}") from e

@@ -74,7 +74,7 @@ src/sanzaru/
 ├── types.py            # TypedDict definitions
 ├── config.py           # OpenAI client + path configuration (get_client/set_client, get_path)
 ├── security.py         # File security utilities
-├── utils.py            # Shared helpers
+├── utils.py            # Shared helpers (+ validate_resource_id, reject_reserved_name)
 ├── features.py         # Feature detection (optional deps + env vars)
 ├── descriptions.py     # LLM-facing tool descriptions
 ├── user_context.py     # Per-request user context (multi-tenant support)
@@ -385,6 +385,18 @@ Additional security:
 - Symlinks rejected in environment variable paths (`get_path()` validation)
 - Empty/whitespace-only env vars rejected
 - User filenames validated against allowed extensions where applicable
+
+**`check_not_symlink` tests `is_symlink()` alone, never `exists() and is_symlink()`.**
+`exists()` follows the link, so the compound form returned False for a *dangling*
+symlink and skipped the check — passing exactly the links a `"wb"` open would then
+follow and create the target of. Same rule applies anywhere else this pattern is
+written.
+
+### Invariants that are load-bearing, not stylistic
+
+Each of these closed a specific hole. They look like ordinary defensive code, so
+they are easy to "simplify" away.
+
 
 ## Prompting Sora with Reference Images
 

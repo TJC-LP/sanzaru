@@ -160,3 +160,37 @@ class TestSafeOpenFile:
         Difficult to test reliably across platforms (Unix vs Windows, container environments).
         """
         pass
+
+
+@pytest.mark.unit
+class TestDanglingSymlinksAreCaught:
+    """`exists()` follows the link, so it answered False for a broken one.
+
+    The guard therefore skipped `is_symlink()` entirely for exactly the links a
+    later `open(..., "wb")` would follow and create the target of — the anti-
+    symlink check passed the case it existed to stop.
+    """
+
+    def test_a_dangling_symlink_is_rejected(self, tmp_path):
+        link = tmp_path / "output.mp3"
+        link.symlink_to(tmp_path / "does_not_exist_yet.mp3")
+
+        with pytest.raises(ValueError, match="cannot be a symbolic link"):
+            check_not_symlink(link, "output file")
+
+    def test_a_live_symlink_is_still_rejected(self, tmp_path):
+        target = tmp_path / "real.mp3"
+        target.write_bytes(b"data")
+        link = tmp_path / "link.mp3"
+        link.symlink_to(target)
+
+        with pytest.raises(ValueError, match="cannot be a symbolic link"):
+            check_not_symlink(link, "audio file")
+
+    def test_an_ordinary_file_passes(self, tmp_path):
+        path = tmp_path / "real.mp3"
+        path.write_bytes(b"data")
+        check_not_symlink(path, "audio file")
+
+    def test_a_missing_path_passes(self, tmp_path):
+        check_not_symlink(tmp_path / "nothing.mp3", "audio file")

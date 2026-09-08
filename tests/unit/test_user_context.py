@@ -17,45 +17,109 @@ from sanzaru.user_context import (
 # ------------------------------------------------------------------
 
 
+def _readable(email: str) -> str:
+    """The human half of a slug — everything before the hash suffix."""
+    return user_slug(email).rsplit("-", 1)[0]
+
+
 @pytest.mark.unit
 class TestUserSlug:
+    """The readable half stays greppable; see TestUserSlugIsInjective for the rest."""
+
     def test_simple_email(self):
-        assert user_slug("user@example.com") == "user"
+        assert _readable("user@example.com") == "user"
 
     def test_email_with_numbers(self):
-        assert user_slug("rcaputo3@tjclp.com") == "rcaputo3"
+        assert _readable("rcaputo3@tjclp.com") == "rcaputo3"
 
     def test_dots_replaced(self):
-        assert user_slug("jane.doe@example.com") == "jane_doe"
+        assert _readable("jane.doe@example.com") == "jane_doe"
 
     def test_plus_replaced(self):
-        assert user_slug("user+work@example.com") == "user_work"
+        assert _readable("user+work@example.com") == "user_work"
 
     def test_mixed_special_chars(self):
-        assert user_slug("Jane.Doe+work@example.com") == "jane_doe_work"
+        assert _readable("Jane.Doe+work@example.com") == "jane_doe_work"
 
     def test_uppercase_lowered(self):
-        assert user_slug("RCaputo3@TJCLP.COM") == "rcaputo3"
+        assert _readable("RCaputo3@TJCLP.COM") == "rcaputo3"
 
     def test_hyphens_replaced(self):
-        assert user_slug("first-last@example.com") == "first_last"
+        assert _readable("first-last@example.com") == "first_last"
 
     def test_consecutive_specials_collapsed(self):
-        assert user_slug("a..b@example.com") == "a_b"
+        assert _readable("a..b@example.com") == "a_b"
 
     def test_leading_trailing_specials_stripped(self):
-        assert user_slug(".user.@example.com") == "user"
+        assert _readable(".user.@example.com") == "user"
 
-    def test_empty_local_part_raises(self):
-        with pytest.raises(ValueError, match="Cannot derive user slug"):
-            user_slug("@example.com")
+    @pytest.mark.parametrize("email", ["...@example.com", "+++@x.com", "张三@example.com", "@example.com"])
+    def test_an_unreadable_local_part_still_yields_a_slug(self, email):
+        """A local part with nothing in [a-z0-9_] must not be fatal.
 
-    def test_all_special_chars_raises(self):
-        with pytest.raises(ValueError, match="Cannot derive user slug"):
-            user_slug("...@example.com")
+        `UserContext` accepts these addresses, so raising here turned a
+        legitimate user into a failure deep in the storage layer (and, over
+        HTTP, a 500). The hash half alone is still injective, which is the
+        property isolation actually rests on.
+        """
+        slug = user_slug(email)
+        assert slug.startswith("user-")
+        assert len(slug.rsplit("-", 1)[1]) >= 8
+
+    def test_unreadable_local_parts_are_still_distinct_from_each_other(self):
+        assert user_slug("...@example.com") != user_slug("+++@example.com")
+        assert user_slug("张三@example.com") != user_slug("李四@example.com")
 
     def test_underscores_preserved(self):
-        assert user_slug("user_name@example.com") == "user_name"
+        assert _readable("user_name@example.com") == "user_name"
+
+    def test_hash_suffix_is_hex(self):
+        suffix = user_slug("user@example.com").rsplit("-", 1)[1]
+        assert len(suffix) >= 8
+        assert set(suffix) <= set("0123456789abcdef")
+
+    def test_slug_is_path_safe(self):
+        """The slug becomes a Volumes path segment, so nothing may traverse or split it."""
+        slug = user_slug("../../Jane.Doe+work@example.com")
+        assert "/" not in slug
+        assert ".." not in slug
+
+
+@pytest.mark.unit
+class TestUserSlugIsInjective:
+    """Two distinct identities must never share a storage prefix (CWE-706)."""
+
+    def test_punctuation_variants_differ(self):
+        """The readable half folds ., - and _ together; the hash must not."""
+        slugs = {
+            user_slug("jane.doe@corp.com"),
+            user_slug("jane-doe@corp.com"),
+            user_slug("jane_doe@corp.com"),
+            user_slug("Jane..Doe@corp.com"),
+        }
+        assert len(slugs) == 4
+
+    def test_same_local_part_different_domain_differs(self):
+        """The readable half drops the domain entirely — two companies, one bob."""
+        assert user_slug("bob@company-a.com") != user_slug("bob@company-b.com")
+
+    def test_domain_alone_distinguishes_identical_readable_halves(self):
+        a = user_slug("jane.doe@corp.com")
+        b = user_slug("jane.doe@other.com")
+        assert a != b
+        assert a.rsplit("-", 1)[0] == b.rsplit("-", 1)[0] == "jane_doe"
+
+    def test_local_part_case_differs(self):
+        """Local parts are case-sensitive per RFC 5321: err toward two prefixes."""
+        assert user_slug("JaneDoe@corp.com") != user_slug("janedoe@corp.com")
+
+    def test_domain_case_folded(self):
+        """Domains are case-insensitive, so one identity keeps one prefix."""
+        assert user_slug("jane@CORP.com") == user_slug("jane@corp.com")
+
+    def test_stable_across_calls(self):
+        """The slug is a storage path: the same identity must always resolve to it."""
+        assert user_slug("jane.doe@corp.com") == user_slug("jane.doe@corp.com")
 
 
 # ------------------------------------------------------------------

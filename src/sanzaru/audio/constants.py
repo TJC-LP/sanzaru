@@ -134,6 +134,75 @@ TRANSCRIBE_AUDIO_FORMATS = {
 
 CHAT_WITH_AUDIO_FORMATS = {".mp3", ".wav"}
 
+# Extensions we are willing to hand to ffmpeg/pydub as the *input demuxer*.
+#
+# pydub selects the demuxer from `format=<ext>`, so taking that from a file's own
+# (untrusted) extension is a local-file-inclusion vector: playlist demuxers
+# (hls, concat, dash, m3u8) treat the file's *content* as references to other
+# local files and decode those into the result (CWE-610).
+#
+# The rule is "a real, self-contained container", not "a format we transcribe".
+# Deriving this from TRANSCRIBE_AUDIO_FORMATS was too narrow and broke the tool
+# it was protecting: `convert_audio` exists precisely to turn formats the API
+# cannot take into ones it can, and .aac/.opus/.aiff are the reason anyone calls
+# it. What matters for the vulnerability is only that the demuxer cannot
+# dereference an embedded path.
+DECODABLE_AUDIO_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        "aac",
+        "aif",
+        "aifc",
+        "aiff",
+        "amr",
+        "au",
+        "caf",
+        "flac",
+        "m4a",
+        "m4b",
+        "mka",
+        "mov",
+        "mp3",
+        "mp4",
+        "mpeg",
+        "mpga",
+        "oga",
+        "ogg",
+        "opus",
+        "wav",
+        "webm",
+        "wma",
+    }
+)
+
+#: What a caller may name as a convert/compress *output*. Deliberately the
+#: narrow set: an output name is a file this server creates, and there is no
+#: reason it should be able to mint a `.json` manifest or an `.html` page that
+#: the /media route would then serve (CWE-73/CWE-79).
+SAFE_AUDIO_EXTENSIONS: frozenset[str] = frozenset(
+    ext.lstrip(".") for ext in (TRANSCRIBE_AUDIO_FORMATS | CHAT_WITH_AUDIO_FORMATS)
+)
+
+
+def safe_audio_format(name_or_suffix: str, *, allowed: frozenset[str] | None = None) -> str:
+    """Return the demuxer/format name for an allowlisted audio extension.
+
+    Accepts either a filename (``track.mp3``) or a bare/dotted suffix
+    (``mp3`` / ``.mp3``) and returns the lowercased extension. Raises
+    ``ValueError`` for anything outside `allowed`, so a planted playlist file
+    (``evil.hls``, ``evil.concat``) is refused before ``AudioSegment.from_file``
+    can invoke a demuxer that opens other local files.
+
+    `allowed` defaults to the decodable set, which is the one that matters for
+    the demuxer; pass :data:`SAFE_AUDIO_EXTENSIONS` when validating a name this
+    server is about to *create*.
+    """
+    permitted = DECODABLE_AUDIO_EXTENSIONS if allowed is None else allowed
+    ext = name_or_suffix.rsplit(".", 1)[-1].lower() if "." in name_or_suffix else name_or_suffix.lower()
+    if ext not in permitted:
+        raise ValueError(f"unsupported audio format {ext!r}; allowed: {', '.join(sorted(permitted))}")
+    return ext
+
+
 # Enhancement Prompts
 ENHANCEMENT_PROMPTS: dict[EnhancementType, str] = {
     "detailed": "The following is a detailed transcript that includes all verbal and non-verbal elements. "

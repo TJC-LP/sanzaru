@@ -25,6 +25,69 @@ from .protocol import FileInfo, PathType
 
 logger = logging.getLogger("sanzaru")
 
+# How much of a failed response body reaches the log. Databricks puts its error
+# code and message in the first line; the rest is rarely worth the log volume.
+_LOG_BODY_CHARS = 500
+
+#: Makes a missing per-request identity fatal instead of falling back to the
+#: shared volume root. Off by default because this backend also serves
+#: single-tenant deployments, where there is no identity to require and the
+#: shared root is the right answer.
+REQUIRE_USER_CONTEXT_ENV = "SANZARU_REQUIRE_USER_CONTEXT"
+
+
+class StorageRequestError(httpx.HTTPError):
+    """A backend request failed, described without describing the backend.
+
+    Subclasses :class:`httpx.HTTPError` because that is already this backend's
+    de-facto failure contract — :meth:`DatabricksVolumesBackend.exists` swallows
+    it to answer ``False``, and callers upstream catch it the same way. Only the
+    *message* changes.
+    """
+
+    def __init__(self, operation: str, status_code: int, filename: str | None = None) -> None:
+        target = f" for {filename!r}" if filename else ""
+        super().__init__(f"Storage {operation} failed{target} (HTTP {status_code})")
+        self.operation = operation
+        self.status_code = status_code
+        self.filename = filename
+
+
+def _check_response(resp: httpx.Response, operation: str, filename: str | None = None) -> None:
+    """Raise a sanitised error for a failed response, sending the full one to the log.
+
+    Stands in for ``resp.raise_for_status()``, whose message embeds the request
+    URL — and that message travels: ``FileSystemRepository`` interpolates it into
+    an ``AudioFileError`` and FastMCP hands the text to the MCP client. For this
+    backend the URL is
+    ``{host}/api/2.0/fs/files/Volumes/{catalog}/{schema}/{volume}/{prefix}/{subdir}/{name}``,
+    so a caller who asked for one file learns the workspace host, the Unity
+    Catalog topology, the media layout and the shape of the per-tenant prefix
+    (CWE-209). The operator needs exactly that detail to debug, so it goes to the
+    log; the caller gets a status code and the name they themselves supplied.
+
+    The success test is 2xx rather than "not 4xx/5xx" so the substitution is
+    exact: ``raise_for_status()`` also refuses a redirect, and a 3xx that
+    silently returned its body here would hand the caller the wrong bytes.
+    """
+    if resp.is_success:
+        return
+    try:
+        body = resp.text[:_LOG_BODY_CHARS]
+    except httpx.ResponseNotRead:
+        # Nothing here streams today, but an error path that raises its own
+        # exception would bury the status code the caller is about to be told.
+        body = "<body not read>"
+    logger.error(
+        "Databricks %s failed: HTTP %d for %s %s — %s",
+        operation,
+        resp.status_code,
+        resp.request.method,
+        resp.request.url,
+        body,
+    )
+    raise StorageRequestError(operation, resp.status_code, filename)
+
 
 class DatabricksVolumesBackend:
     """Databricks Unity Catalog Volumes storage backend.
@@ -121,7 +184,7 @@ class DatabricksVolumesBackend:
                 "scope": "all-apis",
             },
         )
-        resp.raise_for_status()
+        _check_response(resp, "authentication")
         payload = resp.json()
         self._token = payload["access_token"]
         # Default to 1-hour expiry if not provided
@@ -141,13 +204,31 @@ class DatabricksVolumesBackend:
         """Return a per-user path segment derived from the current user context.
 
         When :func:`~sanzaru.user_context.get_user_context` returns a
-        ``UserContext``, this method returns a sanitised slug (e.g.
-        ``"rcaputo3"``) suitable for inserting between the volume root
-        and the media subdirectory.  When there is no user context
+        ``UserContext``, this method returns a readable-plus-hash segment
+        (e.g. ``"rcaputo3-44827c88f857"``) suitable for inserting between the
+        volume root and the media subdirectory.  When there is no user context
         (single-tenant mode), returns an empty string.
+
+        This segment is the *only* thing separating one tenant's files from
+        another's, so it has to be injective over identities rather than merely
+        readable — see :func:`~sanzaru.user_context.user_slug` for what the hash
+        half defends against.
+
+        Falling back to the shared root when no identity is present is safe for
+        the single-tenant case this backend also serves, and catastrophic for
+        the multi-tenant one: with the contextvar unset every user resolved to
+        the same namespace, so the isolation the README advertises was simply
+        absent (CWE-862). ``SANZARU_REQUIRE_USER_CONTEXT=1`` turns that fallback
+        into a refusal, which is what a shared deployment wants — better a
+        failed request than one silently served out of everybody's directory.
         """
         ctx = get_user_context()
         if ctx is None:
+            if os.environ.get(REQUIRE_USER_CONTEXT_ENV, "").strip().lower() in ("1", "true", "yes"):
+                raise PermissionError(
+                    f"{REQUIRE_USER_CONTEXT_ENV} is set but this request carries no user identity — "
+                    "refusing to fall back to the shared volume root"
+                )
             return ""
         return user_slug(ctx.email)
 
@@ -189,7 +270,7 @@ class DatabricksVolumesBackend:
         resp = await self._client.get(self._file_url(path_type, filename), headers=headers)
         if resp.status_code == 404:
             raise FileNotFoundError(f"File not found: {filename}")
-        resp.raise_for_status()
+        _check_response(resp, "read", self._validate_filename(filename))
         return resp.content
 
     async def read_range(self, path_type: PathType, filename: str, offset: int, length: int) -> bytes:
@@ -202,15 +283,15 @@ class DatabricksVolumesBackend:
             raise FileNotFoundError(f"File not found: {filename}")
         # Accept both 200 (full content) and 206 (partial content)
         if resp.status_code not in (200, 206):
-            resp.raise_for_status()
+            _check_response(resp, "range read", self._validate_filename(filename))
         return resp.content
 
     async def write(self, path_type: PathType, filename: str, data: bytes) -> str:
-        self._validate_filename(filename)
+        safe = self._validate_filename(filename)
         headers = await self._headers()
         headers["Content-Type"] = "application/octet-stream"
         resp = await self._client.put(self._file_url(path_type, filename), headers=headers, content=data)
-        resp.raise_for_status()
+        _check_response(resp, "write", safe)
         return self.resolve_display_path(path_type, filename)
 
     async def write_stream(self, path_type: PathType, filename: str, chunks: AsyncIterator[bytes]) -> str:
@@ -244,7 +325,7 @@ class DatabricksVolumesBackend:
     ) -> list[FileInfo]:
         headers = await self._headers()
         resp = await self._client.get(self._dir_url(path_type), headers=headers)
-        resp.raise_for_status()
+        _check_response(resp, "list")
 
         results: list[FileInfo] = []
         for entry in resp.json().get("contents", []):
@@ -274,13 +355,14 @@ class DatabricksVolumesBackend:
         return results
 
     async def stat(self, path_type: PathType, filename: str) -> FileInfo:
+        safe = self._validate_filename(filename)
         headers = await self._headers()
         resp = await self._client.head(self._file_url(path_type, filename), headers=headers)
         if resp.status_code == 404:
             raise FileNotFoundError(f"File not found: {filename}")
-        resp.raise_for_status()
+        _check_response(resp, "stat", safe)
         return FileInfo(
-            name=self._validate_filename(filename),
+            name=safe,
             size_bytes=int(resp.headers.get("Content-Length", 0)),
             modified_timestamp=0.0,  # HEAD doesn't return mtime
         )
@@ -293,6 +375,10 @@ class DatabricksVolumesBackend:
             return resp.status_code == 200
         except (ValueError, httpx.HTTPError):
             return False
+        # PermissionError from _user_prefix is deliberately NOT swallowed:
+        # "this deployment will not resolve a namespace for you" is a different
+        # answer from "no such file", and collapsing the two would make a resume
+        # believe its checkpoints were gone and pay to record them again.
 
     # ------------------------------------------------------------------
     # Local-path helpers

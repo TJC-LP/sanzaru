@@ -1,15 +1,16 @@
 # SPDX-License-Identifier: MIT
 """Unit tests for DatabricksVolumesBackend with mocked httpx."""
 
+import logging
 import pathlib
 import time
 
 import httpx
 import pytest
 
-from sanzaru.storage.databricks import DatabricksVolumesBackend
+from sanzaru.storage.databricks import DatabricksVolumesBackend, StorageRequestError
 from sanzaru.storage.protocol import FileInfo, StorageBackend
-from sanzaru.user_context import UserContext, reset_user_context, set_user_context
+from sanzaru.user_context import UserContext, reset_user_context, set_user_context, user_slug
 
 # ------------------------------------------------------------------
 # Fixtures
@@ -507,10 +508,14 @@ def test_resolve_display_path_reference(backend):
 # ------------------------------------------------------------------
 
 
+USER_EMAIL = "rcaputo3@tjclp.com"
+USER_PREFIX = user_slug(USER_EMAIL)  # e.g. "rcaputo3-44827c88f857"
+
+
 @pytest.fixture
 def user_ctx():
     """Set a user context for the duration of the test, then reset."""
-    token = set_user_context(UserContext(email="rcaputo3@tjclp.com"))
+    token = set_user_context(UserContext(email=USER_EMAIL))
     yield
     reset_user_context(token)
 
@@ -522,39 +527,45 @@ def test_user_prefix_returns_empty_without_context(backend):
 
 @pytest.mark.unit
 def test_user_prefix_returns_slug_with_context(backend, user_ctx):
-    assert backend._user_prefix() == "rcaputo3"
+    assert backend._user_prefix() == USER_PREFIX
+
+
+@pytest.mark.unit
+def test_user_prefix_starts_with_readable_local_part(backend, user_ctx):
+    """The hash suffix must not cost operators a greppable directory listing."""
+    assert backend._user_prefix().startswith("rcaputo3-")
 
 
 @pytest.mark.unit
 def test_file_url_includes_user_prefix(backend, user_ctx):
     url = backend._file_url("video", "clip.mp4")
-    assert "/catalog/schema/vol/rcaputo3/videos/clip.mp4" in url
+    assert f"/catalog/schema/vol/{USER_PREFIX}/videos/clip.mp4" in url
 
 
 @pytest.mark.unit
 def test_file_url_no_user_prefix_without_context(backend):
     url = backend._file_url("video", "clip.mp4")
     assert "/catalog/schema/vol/videos/clip.mp4" in url
-    assert "/rcaputo3/" not in url
+    assert "/rcaputo3" not in url
 
 
 @pytest.mark.unit
 def test_dir_url_includes_user_prefix(backend, user_ctx):
     url = backend._dir_url("reference")
-    assert "/catalog/schema/vol/rcaputo3/images" in url
+    assert f"/catalog/schema/vol/{USER_PREFIX}/images" in url
 
 
 @pytest.mark.unit
 def test_dir_url_no_user_prefix_without_context(backend):
     url = backend._dir_url("reference")
     assert "/catalog/schema/vol/images" in url
-    assert "/rcaputo3/" not in url
+    assert "/rcaputo3" not in url
 
 
 @pytest.mark.unit
 def test_resolve_display_path_with_user_context(backend, user_ctx):
     display = backend.resolve_display_path("video", "clip.mp4")
-    assert display == "/Volumes/catalog/schema/vol/rcaputo3/videos/clip.mp4"
+    assert display == f"/Volumes/catalog/schema/vol/{USER_PREFIX}/videos/clip.mp4"
 
 
 @pytest.mark.unit
@@ -570,7 +581,7 @@ async def test_write_uses_user_prefixed_path(backend, mocker, mock_token_respons
 
     display = await backend.write("reference", "result.png", b"DATA")
 
-    assert display == "/Volumes/catalog/schema/vol/rcaputo3/images/result.png"
+    assert display == f"/Volumes/catalog/schema/vol/{USER_PREFIX}/images/result.png"
 
 
 @pytest.mark.unit
@@ -581,4 +592,188 @@ async def test_read_uses_user_prefixed_url(backend, mocker, mock_token_response,
     await backend.read("video", "clip.mp4")
 
     url = mock_get.call_args.args[0]
-    assert "/rcaputo3/videos/clip.mp4" in url
+    assert f"/{USER_PREFIX}/videos/clip.mp4" in url
+
+
+# ------------------------------------------------------------------
+# Tenant isolation: colliding identities must not share a namespace
+# ------------------------------------------------------------------
+
+
+def _display_path_as(email: str, backend: DatabricksVolumesBackend) -> str:
+    token = set_user_context(UserContext(email=email))
+    try:
+        return backend.resolve_display_path("video", "clip.mp4")
+    finally:
+        reset_user_context(token)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "victim,impostor",
+    [
+        # The readable slug folds ., - and _ to the same character...
+        ("jane.doe@corp.com", "jane-doe@corp.com"),
+        ("jane.doe@corp.com", "jane_doe@corp.com"),
+        ("jane.doe@corp.com", "Jane..Doe@corp.com"),
+        # ...and drops the domain, so anyone at any domain can be "jane.doe".
+        ("jane.doe@corp.com", "jane.doe@other.com"),
+        ("bob@company-a.com", "bob@company-b.com"),
+    ],
+)
+def test_distinct_identities_get_distinct_volume_paths(backend, victim, impostor):
+    """Whoever signs up second must not land in the first tenant's directory (CWE-706)."""
+    assert _display_path_as(victim, backend) != _display_path_as(impostor, backend)
+
+
+@pytest.mark.unit
+def test_same_identity_gets_a_stable_volume_path(backend):
+    """Isolation is worthless if a user cannot find yesterday's files."""
+    assert _display_path_as(USER_EMAIL, backend) == _display_path_as(USER_EMAIL, backend)
+
+
+# ------------------------------------------------------------------
+# Error sanitisation: failures must not describe the backend
+# ------------------------------------------------------------------
+
+
+def _error_resp(status_code: int, url: str) -> httpx.Response:
+    """A failure whose request carries a realistic, secret-bearing Volumes URL."""
+    return httpx.Response(status_code, request=httpx.Request("GET", url), text="PERMISSION_DENIED: no access")
+
+
+LEAKY_URL = "https://test.databricks.net/api/2.0/fs/files/Volumes/catalog/schema/vol/rcaputo3/videos/clip.mp4"
+
+
+def _assert_sanitised(exc: StorageRequestError, filename: str | None = None) -> None:
+    message = str(exc)
+    for secret in ("test.databricks.net", "/api/2.0/fs", "/Volumes/", "catalog", "schema", "videos"):
+        assert secret not in message, f"{secret!r} leaked to the client in {message!r}"
+    assert str(exc.status_code) in message
+    if filename:
+        assert filename in message
+
+
+@pytest.mark.unit
+async def test_read_error_is_sanitised(backend, mocker, mock_token_response):
+    mocker.patch.object(backend._client, "post", return_value=mock_token_response)
+    mocker.patch.object(backend._client, "get", return_value=_error_resp(500, LEAKY_URL))
+
+    with pytest.raises(StorageRequestError) as exc_info:
+        await backend.read("video", "clip.mp4")
+
+    _assert_sanitised(exc_info.value, "clip.mp4")
+
+
+@pytest.mark.unit
+async def test_read_range_error_is_sanitised(backend, mocker, mock_token_response):
+    mocker.patch.object(backend._client, "post", return_value=mock_token_response)
+    mocker.patch.object(backend._client, "get", return_value=_error_resp(403, LEAKY_URL))
+
+    with pytest.raises(StorageRequestError) as exc_info:
+        await backend.read_range("video", "clip.mp4", offset=0, length=10)
+
+    _assert_sanitised(exc_info.value, "clip.mp4")
+
+
+@pytest.mark.unit
+async def test_write_error_is_sanitised(backend, mocker, mock_token_response):
+    mocker.patch.object(backend._client, "post", return_value=mock_token_response)
+    mocker.patch.object(backend._client, "put", return_value=_error_resp(507, LEAKY_URL))
+
+    with pytest.raises(StorageRequestError) as exc_info:
+        await backend.write("video", "clip.mp4", b"DATA")
+
+    _assert_sanitised(exc_info.value, "clip.mp4")
+
+
+@pytest.mark.unit
+async def test_list_files_error_is_sanitised(backend, mocker, mock_token_response):
+    mocker.patch.object(backend._client, "post", return_value=mock_token_response)
+    mocker.patch.object(backend._client, "get", return_value=_error_resp(500, LEAKY_URL))
+
+    with pytest.raises(StorageRequestError) as exc_info:
+        await backend.list_files("video")
+
+    _assert_sanitised(exc_info.value)
+
+
+@pytest.mark.unit
+async def test_stat_error_is_sanitised(backend, mocker, mock_token_response):
+    mocker.patch.object(backend._client, "post", return_value=mock_token_response)
+    mocker.patch.object(backend._client, "head", return_value=_error_resp(500, LEAKY_URL))
+
+    with pytest.raises(StorageRequestError) as exc_info:
+        await backend.stat("video", "clip.mp4")
+
+    _assert_sanitised(exc_info.value, "clip.mp4")
+
+
+@pytest.mark.unit
+async def test_token_error_is_sanitised(backend, mocker):
+    """The OAuth endpoint discloses the workspace host just as the Files API does."""
+    mocker.patch.object(
+        backend._client,
+        "post",
+        return_value=_error_resp(401, "https://test.databricks.net/oidc/v1/token"),
+    )
+
+    with pytest.raises(StorageRequestError) as exc_info:
+        await backend._get_token()
+
+    _assert_sanitised(exc_info.value)
+
+
+@pytest.mark.unit
+async def test_error_url_still_reaches_the_log(backend, mocker, mock_token_response, caplog):
+    """Sanitised for the caller, complete for the operator — otherwise this is undebuggable."""
+    mocker.patch.object(backend._client, "post", return_value=mock_token_response)
+    mocker.patch.object(backend._client, "get", return_value=_error_resp(500, LEAKY_URL))
+
+    with caplog.at_level(logging.ERROR, logger="sanzaru"), pytest.raises(StorageRequestError):
+        await backend.read("video", "clip.mp4")
+
+    logged = caplog.text
+    assert LEAKY_URL in logged
+    assert "500" in logged
+    assert "PERMISSION_DENIED" in logged
+
+
+@pytest.mark.unit
+async def test_traversal_filename_is_not_echoed_back(backend, mocker, mock_token_response):
+    """Only the basename the backend actually used comes back, never the raw input."""
+    mocker.patch.object(backend._client, "post", return_value=mock_token_response)
+    mocker.patch.object(backend._client, "get", return_value=_error_resp(500, LEAKY_URL))
+
+    with pytest.raises(StorageRequestError) as exc_info:
+        await backend.read("video", "some/dir/clip.mp4")
+
+    assert "some/dir" not in str(exc_info.value)
+    assert "clip.mp4" in str(exc_info.value)
+
+
+@pytest.mark.unit
+async def test_sanitised_error_is_still_an_httpx_error(backend, mocker):
+    """exists() answers False by swallowing httpx.HTTPError; keep that contract.
+
+    A failing token fetch is the one path where exists() meets the sanitised
+    error, so it is what proves the substitution did not change the type.
+    """
+    mocker.patch.object(
+        backend._client,
+        "post",
+        return_value=_error_resp(401, "https://test.databricks.net/oidc/v1/token"),
+    )
+
+    assert isinstance(StorageRequestError("read", 500, "clip.mp4"), httpx.HTTPError)
+    assert await backend.exists("video", "clip.mp4") is False
+
+
+@pytest.mark.unit
+async def test_404_still_raises_file_not_found_not_storage_error(backend, mocker, mock_token_response):
+    """404 keeps its own semantics — callers branch on FileNotFoundError."""
+    mocker.patch.object(backend._client, "post", return_value=mock_token_response)
+    mocker.patch.object(backend._client, "get", return_value=_error_resp(404, LEAKY_URL))
+
+    with pytest.raises(FileNotFoundError, match="clip.mp4"):
+        await backend.read("video", "clip.mp4")
