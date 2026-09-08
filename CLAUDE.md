@@ -415,7 +415,15 @@ they are easy to "simplify" away.
   switch's failure mode is "every user shares one namespace", so an unrecognised
   value (`enabled`, `y`) is a configuration error, never a silent "off" — the original
   `1/true/yes` parse treated `on` as off.
-
+- **`/media` serves an allowlisted content type or `application/octet-stream`,
+  always with `nosniff` + `Content-Disposition: attachment`.** The response type
+  used to come from `mimetypes.guess_type()` of a caller-chosen name, which made a
+  stored `.html` an executable document in the server's own origin — the origin the
+  MCP SDK's rebinding allowlist trusts for `/mcp`. It also applies the same
+  Host/Origin policy as `/mcp` by hand, because FastMCP appends custom routes
+  outside that middleware.
+- **HTTP mode requires a bearer token on a non-loopback bind.** The Host allowlist
+  is not authentication — a network peer writes that header themselves.
 
 ## Prompting Sora with Reference Images
 
@@ -527,6 +535,14 @@ SANZARU_REALTIME_TURN_TIMEOUT=120     # per-turn stall bound; default 6x turn_se
 SANZARU_REALTIME_ACT_BUDGET=3000      # per-act wall clock; default 3000s, under the 60-min close
 # Override stale list pricing: text_in,cached_text_in,audio_in,cached_audio_in,audio_out,text_out
 SANZARU_REALTIME_PRICE_GPT_REALTIME_2_1=4,0.4,32,0.4,64,24
+
+# HTTP transport security (ignored on stdio)
+SANZARU_HTTP_TOKEN="..."               # bearer token required on /mcp and /media
+SANZARU_ALLOW_UNAUTHENTICATED_HTTP=1   # only when a proxy already authenticates; a
+                                       # non-loopback bind refuses to start without one
+SANZARU_IDENTITY_HEADER=x-forwarded-email  # opt-in: trust this proxy-injected header for caller
+                                       # identity (multi-tenant). Unset = no header is trusted.
+                                       # Set only behind a proxy that strips client copies.
 ```
 
 **For MCP servers (Claude Desktop):**

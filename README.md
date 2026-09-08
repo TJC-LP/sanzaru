@@ -322,6 +322,23 @@ sanzaru podcast simulate --resume 6f1a9c02
 | **stdio** (default) | `uv run sanzaru` | Claude Desktop, Claude Code, local MCP clients |
 | **HTTP** | `uv run sanzaru --transport http` | Remote access, Databricks Apps, web clients |
 
+### Authenticating HTTP mode
+
+HTTP mode exposes the full toolset — paid generation, `delete_video`, and every
+stored media file — to whoever can reach the port. Set a token and send it as
+`Authorization: Bearer <token>` on both `/mcp` and `/media`:
+
+```bash
+export SANZARU_HTTP_TOKEN="$(openssl rand -hex 32)"
+uv run sanzaru --transport http --host 0.0.0.0
+```
+
+Binding to anything other than loopback **requires** the token: sanzaru refuses
+to start otherwise. Set `SANZARU_ALLOW_UNAUTHENTICATED_HTTP=1` only when
+something in front of it already authenticates every request. On a loopback
+bind the token is optional but still recommended — it is what stops a page in
+the user's browser from reaching the server through DNS rebinding.
+
 ### What a `.env` file can (and cannot) configure
 
 The `sanzaru` command — every subcommand, `sanzaru serve` included — autoloads a
@@ -356,7 +373,7 @@ operator actions rather than a file discovered on disk.
 | **Local** (default) | `SANZARU_MEDIA_PATH=/path/to/media` | Development, local deployments |
 | **Databricks** | `STORAGE_BACKEND=databricks` | Databricks Apps with Unity Catalog Volumes |
 
-The Databricks backend supports per-user storage isolation via the `user_context` module, enabling multi-tenant deployments where each user's media is stored under their own volume prefix (`<local-part>-<hash>`, injective over email addresses; the prefix format changed after 0.10.0 — see CLAUDE.md for the migration note). Set `SANZARU_REQUIRE_USER_CONTEXT=1` on a shared deployment so a request with no identity is refused instead of served from the shared root.
+The Databricks backend supports per-user storage isolation via the `user_context` module, enabling multi-tenant deployments where each user's media is stored under their own volume prefix (`<local-part>-<hash>`, injective over email addresses; the prefix format changed after 0.10.0 — see CLAUDE.md for the migration note). Set `SANZARU_REQUIRE_USER_CONTEXT=1` on a shared deployment so a request with no identity is refused instead of served from the shared root. In HTTP mode the identity comes from a proxy-injected header, and trusting one is **opt-in**: set `SANZARU_IDENTITY_HEADER` (e.g. `x-forwarded-email` on Databricks Apps) only when a proxy in front of sanzaru both injects that header and **strips** any client-supplied copy. When it is unset, no header is trusted and every request resolves to the shared volume root.
 
 See [CLAUDE.md](CLAUDE.md) for full configuration details.
 

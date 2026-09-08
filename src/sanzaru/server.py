@@ -9,28 +9,26 @@ Business logic is organized into submodules under tools/.
 
 import argparse
 import importlib.resources
-import mimetypes
+import os
+import secrets
 from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
+from mcp.server.transport_security import TransportSecurityMiddleware, TransportSecuritySettings
 from mcp.types import ToolAnnotations
 from openai.types import VideoModel, VideoSeconds, VideoSize
 from openai.types.responses.tool_param import ImageGeneration
+from starlette.datastructures import Headers
 from starlette.requests import Request
 from starlette.responses import Response
+from starlette.types import Receive, Scope, Send
 
 from .config import DEFAULT_IMAGE_MODEL, logger
+from .dotenv_loader import load_local_dotenv
 from .features import check_audio_available, check_image_available, check_video_available
 from .storage.factory import get_storage
 from .tools.media_viewer import MEDIA_TYPE_TO_PATH_TYPE
-
-# Optional dotenv support for local development
-try:
-    from dotenv import load_dotenv
-
-    _DOTENV_AVAILABLE = True
-except ImportError:
-    _DOTENV_AVAILABLE = False
+from .user_context import UserContext, reset_user_context, set_user_context
 
 # Initialize FastMCP server (stateless configuration set at runtime)
 mcp = FastMCP("sanzaru")
@@ -406,10 +404,197 @@ if check_video_available() or check_audio_available() or check_image_available()
     logger.info("Media viewer tools registered (2 tools)")
 
 
+# ==================== HTTP TRANSPORT SECURITY ====================
+# Everything below applies to HTTP mode only. stdio is a single trusted client
+# on a pipe and is unaffected.
+
+#: Bearer token required on /mcp and /media when set.
+HTTP_TOKEN_ENV = "SANZARU_HTTP_TOKEN"
+#: Escape hatch for operators who terminate authentication in front of us
+#: (a reverse proxy, a service mesh). Without it a non-loopback bind refuses
+#: to start unauthenticated rather than silently serving the whole toolset.
+ALLOW_UNAUTH_ENV = "SANZARU_ALLOW_UNAUTHENTICATED_HTTP"
+#: Header carrying the proxy-verified caller identity for multi-tenant
+#: deployments (Databricks Apps injects `x-forwarded-email`). Unset, no header
+#: is trusted at all — see `identity_header_name`.
+IDENTITY_HEADER_ENV = "SANZARU_IDENTITY_HEADER"
+
+#: Content types /media is willing to emit. Anything else is served as an
+#: opaque download: the route used to hand back `mimetypes.guess_type()` of a
+#: caller-chosen name, so any stored file named `x.html` became an executable
+#: document in the server's own origin — the one origin the SDK's rebinding
+#: allowlist trusts, which put same-origin POSTs to /mcp within reach of a
+#: stored payload (CWE-79).
+_MEDIA_CONTENT_TYPES: dict[str, str] = {
+    ".mp4": "video/mp4",
+    ".webm": "video/webm",
+    ".mov": "video/quicktime",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+    ".ogg": "audio/ogg",
+    ".flac": "audio/flac",
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+}
+
+#: Sent on every /media response. `nosniff` stops content sniffing from
+#: promoting an octet-stream back to HTML, `attachment` keeps the browser from
+#: rendering it inline at all, and the sandbox CSP neuters script even if some
+#: future change reintroduces an executable content type.
+_MEDIA_SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "Content-Disposition": "attachment",
+    "Content-Security-Policy": "default-src 'none'; sandbox",
+}
+
+
+def http_auth_token() -> str | None:
+    """The configured bearer token, or None when HTTP auth is disabled."""
+    token = os.environ.get(HTTP_TOKEN_ENV, "").strip()
+    return token or None
+
+
+def identity_header_name() -> str | None:
+    """The header trusted for caller identity, or None when none is.
+
+    Explicitly opt-in — there is no default header. The value is only
+    trustworthy behind a proxy that both injects it and strips any
+    client-supplied copy, and whether such a proxy exists is a fact about the
+    deployment that only the operator knows. Defaulting to `x-forwarded-email`
+    trusted that header everywhere: on a direct-exposed Databricks-backed
+    server, any client holding the bearer token could choose an arbitrary
+    tenant namespace by writing the header themselves, and a corporate proxy
+    that injects it unasked silently re-pathed a single-tenant deployment's
+    files into per-user prefixes.
+    """
+    return os.environ.get(IDENTITY_HEADER_ENV, "").strip().lower() or None
+
+
+def _is_loopback(host: str) -> bool:
+    return host in ("127.0.0.1", "localhost", "::1", "[::1]")
+
+
+def _authorized(headers: Headers, token: str) -> bool:
+    """Constant-time check of an `Authorization: Bearer <token>` header.
+
+    Compared as bytes, not str. `secrets.compare_digest` refuses str operands
+    that are not pure ASCII, and Starlette decodes raw header bytes as latin-1 —
+    so a header of `Bearer \\xff` raised TypeError out of the auth path and came
+    back as a 500 (the error middleware sits outside this one) instead of a 401.
+    A non-ASCII `SANZARU_HTTP_TOKEN` was worse still: every single request 500ed.
+    """
+    supplied = headers.get("authorization", "")
+    scheme, _, value = supplied.partition(" ")
+    if scheme.lower() != "bearer":
+        return False
+    # latin-1 to encode, because that is the inverse of Starlette's decode: it
+    # recovers the exact bytes the client put on the wire, which is what a UTF-8
+    # token has to be compared against. Encoding as UTF-8 here would re-encode
+    # already-mangled text and never match a non-ASCII token.
+    return secrets.compare_digest(value.strip().encode("latin-1", "replace"), token.encode("utf-8"))
+
+
+class BearerTokenMiddleware:
+    """Require a bearer token on every HTTP request.
+
+    The SDK's DNS-rebinding allowlist is not authentication: a direct network
+    attacker sets `Host: 127.0.0.1:8000` themselves and matches it. Once the
+    port is reachable, nothing else distinguished the operator from anyone else
+    — every tool, including paid generation and `delete_video`, was callable by
+    a single unauthenticated POST (CWE-306).
+    """
+
+    def __init__(self, app: object, token: str) -> None:
+        self._app = app
+        self._token = token
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)  # type: ignore[operator]
+            return
+        if not _authorized(Headers(scope=scope), self._token):
+            response = Response(
+                content="Unauthorized",
+                status_code=401,
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+            await response(scope, receive, send)
+            return
+        await self._app(scope, receive, send)  # type: ignore[operator]
+
+
+class UserContextMiddleware:
+    """Bind the proxy-supplied identity to the request's context variable.
+
+    The Databricks backend prefixes every path with the caller's slug, but
+    nothing ever populated the contextvar it reads, so every tenant of a shared
+    deployment resolved to the one shared namespace while the README promised
+    isolation (CWE-862). This is the missing half.
+
+    The header is only trustworthy because a proxy injects it *and* strips any
+    client-supplied copy — the same assumption Databricks Apps documents. That
+    is why this middleware is opt-in: it is only installed when
+    `SANZARU_IDENTITY_HEADER` is explicitly set, so trusting a header is an
+    operator's statement that such a proxy exists. A header nobody strips is a
+    header anyone can set.
+    """
+
+    def __init__(self, app: object, header: str) -> None:
+        self._app = app
+        self._header = header
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)  # type: ignore[operator]
+            return
+
+        email = Headers(scope=scope).get(self._header, "").strip()
+        ctx: UserContext | None = None
+        if email:
+            try:
+                ctx = UserContext(email=email)
+            except ValueError:
+                logger.warning("Ignoring malformed identity header %s", self._header)
+
+        token = set_user_context(ctx)
+        try:
+            await self._app(scope, receive, send)  # type: ignore[operator]
+        finally:
+            reset_user_context(token)
+
+
+def _media_guard() -> TransportSecurityMiddleware:
+    """Host/Origin policy for /media — deliberately the same object /mcp uses.
+
+    FastMCP appends `custom_route` handlers straight onto the Starlette app,
+    outside the middleware that guards the streamable-HTTP endpoint, so this
+    route answered requests with any Host header at all. A rebound browser page
+    could read the whole media library through it while /mcp rejected the same
+    request (CWE-346).
+    """
+    return TransportSecurityMiddleware(mcp.settings.transport_security)
+
+
 # Custom HTTP route for direct media serving (functional in HTTP mode)
 @mcp.custom_route("/media/{media_type}/{filename:path}", methods=["GET"])
 async def serve_media(request: Request) -> Response:
     """Serve media files directly over HTTP — no base64 overhead."""
+    # Same rebinding policy as /mcp, applied by hand because custom routes sit
+    # outside the SDK's middleware stack.
+    rejected = await _media_guard().validate_request(request)
+    if rejected is not None:
+        return rejected
+
+    # And the same credential. The route is registered on the app unconditionally,
+    # so it cannot rely on the token middleware that only wraps HTTP mode.
+    token = http_auth_token()
+    if token is not None and not _authorized(request.headers, token):
+        return Response(content="Unauthorized", status_code=401, headers={"WWW-Authenticate": "Bearer"})
+
     media_type = request.path_params["media_type"]
     filename = request.path_params["filename"]  # Path traversal protection handled by storage backend
 
@@ -422,11 +607,16 @@ async def serve_media(request: Request) -> Response:
         data = await storage.read(path_type, filename)
     except (FileNotFoundError, ValueError):
         return Response(content="Not found", status_code=404)
+    except PermissionError:
+        # SANZARU_REQUIRE_USER_CONTEXT with no identity on the request. A refusal
+        # to resolve a namespace is a 403, not a crash — uncaught it reached the
+        # error middleware as a 500 with a traceback.
+        return Response(content="Forbidden", status_code=403)
 
-    mime, _ = mimetypes.guess_type(filename)
-    content_type = mime or "application/octet-stream"
+    suffix = os.path.splitext(filename)[1].lower()
+    content_type = _MEDIA_CONTENT_TYPES.get(suffix, "application/octet-stream")
 
-    return Response(content=data, media_type=content_type)
+    return Response(content=data, media_type=content_type, headers=dict(_MEDIA_SECURITY_HEADERS))
 
 
 # ==================== SERVER ENTRYPOINT ====================
@@ -462,15 +652,75 @@ def run_server(transport: Literal["stdio", "http"] = "stdio", host: str = "127.0
 
     # Run server with selected transport
     if transport == "http":
-        logger.info(f"Starting sanzaru MCP server over HTTP at http://{host}:{port}/mcp")
-        # Configure for stateless HTTP (no session IDs needed - all state in OpenAI cloud)
-        mcp.settings.stateless_http = True
-        mcp.settings.host = host
-        mcp.settings.port = port
-        mcp.run(transport="streamable-http")
+        _run_http(host=host, port=port)
     else:
         logger.info("Starting sanzaru MCP server over stdio")
         mcp.run()
+
+
+def _run_http(*, host: str, port: int) -> None:
+    """Serve the streamable-HTTP transport with sanzaru's own middleware stack.
+
+    Built here rather than via `mcp.run(transport="streamable-http")` because
+    that helper hands the bare app straight to uvicorn, leaving no seam to
+    require a credential on. Authentication is the whole point: this transport
+    exposes `delete_video`, paid generation, and every media file to whoever
+    reaches the port.
+    """
+    import uvicorn
+
+    token = http_auth_token()
+    loopback = _is_loopback(host)
+
+    if token is None and not loopback:
+        if os.environ.get(ALLOW_UNAUTH_ENV, "").strip().lower() not in ("1", "true", "yes"):
+            raise SystemExit(
+                f"Refusing to serve {host}:{port} without authentication.\n"
+                f"Set {HTTP_TOKEN_ENV} to a secret value and send it as "
+                f"'Authorization: Bearer <token>', or set {ALLOW_UNAUTH_ENV}=1 if "
+                f"a proxy in front of sanzaru already authenticates every request."
+            )
+        logger.warning(
+            "Serving %s:%d with NO authentication because %s is set — every MCP tool "
+            "and every media file is exposed to anyone who can reach this port.",
+            host,
+            port,
+            ALLOW_UNAUTH_ENV,
+        )
+
+    # Configure for stateless HTTP (no session IDs needed - all state in OpenAI cloud)
+    mcp.settings.stateless_http = True
+    mcp.settings.host = host
+    mcp.settings.port = port
+
+    if not loopback:
+        # The auto-configured allowlist only names localhost, and it was
+        # computed from the *constructor's* host before this override. Against a
+        # network peer who writes the Host header themselves it proves nothing,
+        # and left in place it would reject the deployment's real hostname. The
+        # bearer token is the control that actually holds here.
+        mcp.settings.transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+
+    app = mcp.streamable_http_app()
+
+    identity_header = identity_header_name()
+    if identity_header is not None:
+        app.add_middleware(UserContextMiddleware, header=identity_header)
+        logger.info(
+            "Trusting the %r header for caller identity (%s is set) — a proxy in front of "
+            "sanzaru must inject it and strip any client-supplied copy",
+            identity_header,
+            IDENTITY_HEADER_ENV,
+        )
+    if token is not None:
+        # Added last so it wraps outermost: identity is only trusted once the
+        # request has proven it is allowed to be here at all.
+        app.add_middleware(BearerTokenMiddleware, token=token)
+
+    auth_state = "bearer token required" if token else "UNAUTHENTICATED"
+    logger.info("Starting sanzaru MCP server over HTTP at http://%s:%d/mcp (%s)", host, port, auth_state)
+
+    uvicorn.run(app, host=host, port=port, log_level=mcp.settings.log_level.lower())
 
 
 def main():
@@ -504,10 +754,10 @@ def main():
     )
     args = parser.parse_args()
 
-    # Optional: Load .env file if dotenv is installed (local development only)
-    if _DOTENV_AVAILABLE:
-        load_dotenv()
-        logger.debug("Loaded environment variables from .env file")
+    # Optional: load ./.env for local development. Scoped and filtered — see
+    # sanzaru.dotenv_loader; the default ancestor walk let a file in an
+    # untrusted workspace redirect the operator's API credentials.
+    load_local_dotenv()
 
     run_server(transport=args.transport, host=args.host, port=args.port)
 
