@@ -526,6 +526,29 @@ class TestCheckpointAudioIsNotClobberable:
         await file_repo.write_audio_file("brand_new.mp3", b"fresh")
         assert (media / "brand_new.mp3").read_bytes() == b"fresh"
 
+    async def test_generate_podcast_refuses_the_name_before_any_synthesis(self, repo, mocker):
+        """The copy of this check inside `write_audio_file` fires only after
+        the whole episode has been rendered and billed — and the scripted path
+        has no checkpoints to recover that spend from. The pre-flight copy in
+        `generate_podcast` must refuse before a single TTS request goes out."""
+        from sanzaru.exceptions import AudioFileError
+        from sanzaru.tools.podcast import generate_podcast
+
+        _, media = repo
+        self._plant_checkpoint(media, "Show_a1b2c3d4_act1")
+        synth = mocker.patch("sanzaru.tools.podcast.synthesize_speech", new_callable=mocker.AsyncMock)
+
+        script = {
+            "title": "My Episode",
+            "speakers": [{"id": "a", "name": "Alex", "voice": "ash"}],
+            "segments": [{"speaker": "a", "text": "Hello."}],
+        }
+        with pytest.raises(AudioFileError, match="refusing to overwrite"):
+            await generate_podcast(script, filename="Show_a1b2c3d4_act1.mp3")
+
+        synth.assert_not_called()
+        assert (media / "Show_a1b2c3d4_act1.mp3").read_bytes() == b"VICTIM-PAID-AUDIO"
+
 
 @pytest.mark.unit
 class TestConversionStillAcceptsUnsupportedFormats:

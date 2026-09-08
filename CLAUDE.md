@@ -514,6 +514,9 @@ they are easy to "simplify" away.
   what covers resume, since `model_copy(update=...)` does not re-run validators.
   A dry run is exempt — it spends nothing and its projection is how you discover
   the model is unpriced (`project_run` reports `unpriced_models`, `usd=None`).
+- **`verified=True` means checked, not merely un-flagged.** A `SegmentVerdict`
+  carries `checked` separately from `ok`; folding them made a transcription failure
+  report success.
 
 ## Prompting Sora with Reference Images
 

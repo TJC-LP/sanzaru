@@ -1842,3 +1842,42 @@ async def test_usage_is_reported_per_provider(mocker, tmp_audio_path):
     assert set(by_provider) == {"openai", "elevenlabs"}
     assert by_provider["openai"].characters == len(openai_line)
     assert by_provider["elevenlabs"].characters == len(eleven_line)
+
+
+@pytest.mark.unit
+class TestResourceBoundsAreValidatedNotAllocated:
+    """The silence knobs and segment count are allocation sizes, not preferences.
+
+    `_stitch_audio` turns each millisecond value straight into a zero-filled
+    buffer, and each segment becomes its own task and its own HTTPS connection,
+    so both have to be bounded before any synthesis is paid for rather than
+    discovered when the host runs out of memory or file descriptors.
+    """
+
+    @pytest.mark.parametrize("knob", ["intro_silence_ms", "outro_silence_ms", "default_pause_ms"])
+    def test_an_unbounded_silence_knob_is_rejected(self, minimal_script, knob):
+        # ~44GB of silence after a fraction of a cent of TTS (CWE-789).
+        minimal_script["config"] = {knob: 2_000_000_000}
+        with pytest.raises(ValueError, match=f"{knob}.*between 0 and 60000"):
+            _validate_script(minimal_script)
+
+    def test_a_negative_silence_knob_is_rejected(self, minimal_script):
+        minimal_script["config"] = {"intro_silence_ms": -1}
+        with pytest.raises(ValueError, match="between 0 and 60000"):
+            _validate_script(minimal_script)
+
+    def test_a_plausible_silence_knob_still_passes(self, minimal_script):
+        minimal_script["config"] = {"intro_silence_ms": 2_000, "outro_silence_ms": 3_000}
+        _validate_script(minimal_script)
+
+    def test_segment_pause_after_is_bounded_too(self, minimal_script):
+        # Same allocation, reachable one segment at a time.
+        minimal_script["segments"][0]["pause_after"] = 2_000_000_000
+        with pytest.raises(ValueError, match="between 0 and 60000"):
+            _validate_script(minimal_script)
+
+    def test_an_unbounded_segment_count_is_rejected(self, minimal_script):
+        speaker = minimal_script["segments"][0]["speaker"]
+        minimal_script["segments"] = [{"speaker": speaker, "text": "hi"} for _ in range(2_001)]
+        with pytest.raises(ValueError, match="at most 2000 segments"):
+            _validate_script(minimal_script)

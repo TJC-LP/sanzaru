@@ -51,9 +51,10 @@ from ..audio.providers import (
     synthesize_speech,
     validate_provider_name,
 )
-from ..audio.verification import similarity, transcribe_bytes, words
+from ..audio.verification import TRANSCRIBE_MAX_BYTES, similarity, transcribe_bytes, words
 from ..config import logger
 from ..infrastructure import FileSystemRepository
+from ..utils import reject_reserved_name
 
 _ELEVENLABS_MODEL_NAMES = frozenset(ELEVENLABS_MODELS)
 
@@ -73,6 +74,30 @@ DEFAULT_SPEAKER_SPEED = 1.0
 #: `_safe_title` falls back to this same value, so naming it once keeps the two
 #: from drifting the way the config defaults above would have.
 DEFAULT_TITLE = "podcast"
+
+#: Ceiling on every silence knob, matching `SimulationBrief`'s pydantic bound so
+#: the two podcast tools agree on what a plausible gap is. `_stitch_audio` turns
+#: these straight into a zero-filled buffer via `AudioSegment.silent()`, so the
+#: value *is* an allocation size: a one-word script with
+#: `intro_silence_ms: 2_000_000_000` asked for ~44GB and OOM-killed the server
+#: after a fraction of a cent of TTS (CWE-789). A minute of leading silence is
+#: already far past anything an episode wants.
+MAX_SILENCE_MS = 60_000
+
+#: Ceiling on segment count. One render unit becomes one task and one HTTPS
+#: connection, and the OpenAI provider's default limiter is unbounded, so a
+#: few-MB script of 50,000 one-word segments opened tens of thousands of
+#: sockets at once — exhausting file descriptors for every other session on the
+#: server before the task group unwound (CWE-770). The simulated path caps acts
+#: at 24 and sessions at 6 for the same reason; this is the scripted path's
+#: equivalent, set high enough that no real episode can reach it.
+MAX_SEGMENTS = 2_000
+
+#: Ceiling on the silence in a whole episode. The per-knob bound alone leaves
+#: `MAX_SEGMENTS * MAX_SILENCE_MS` reachable — ~33 hours, several GB of samples
+#: at 44.1kHz, allocated quadratically by pydub's `+=`. An hour of total silence
+#: is already more than any real episode contains.
+MAX_TOTAL_SILENCE_MS = 3_600_000
 
 
 class Speaker(TypedDict):
@@ -144,9 +169,20 @@ class SegmentVerdict(BaseModel):
     index: int
     speaker: str
     ok: bool
+    """No problem was *found*. Read it together with `checked`: a segment whose
+    audio could not be transcribed has nothing against it and nothing for it."""
     reason: str = ""
     """Empty when ok; otherwise `tail_missing`, `segment_missing`, `diverged`,
-    or `not_transcribed` (verification itself failed for this unit)."""
+    or `not_transcribed`/`too_large_to_verify` (verification itself failed)."""
+    checked: bool = True
+    """False when the unit's audio was never transcribed, so this segment was
+    never actually compared against anything.
+
+    Separate from `ok` because the two answer different questions and conflating
+    them made the control assert its own success: a transcription failure
+    returned `ok=True`, `verified` was `all(v.ok)`, and an episode where every
+    single unit failed to transcribe still reported "every segment confirmed
+    present in the rendered audio" (CWE-636)."""
     similarity: float = 1.0
     """Word overlap between the script text and what the audio actually says."""
     retried: bool = False
@@ -167,9 +203,11 @@ class PodcastResult(BaseModel):
     one episode can mix providers, and only the ElevenLabs rows draw on a
     character quota."""
     verified: bool | None = None
-    """None when `verify` was not requested. True when every segment was
-    confirmed present in the rendered audio, False when some were not — the
-    episode is still written either way."""
+    """None when `verify` was not requested. True only when every segment was
+    actually transcribed *and* found in the rendered audio; False when any
+    segment was missing **or** could not be checked at all. The episode is
+    written either way — an unverifiable episode is not a lost one, but it is
+    also not a verified one."""
     verify_retries: int = 0
     """Segments re-rendered because verification flagged them."""
     segment_verdicts: list[SegmentVerdict] = Field(default_factory=list)
@@ -392,6 +430,7 @@ def _check_output_filename(filename: str | None, output_format: str) -> str | No
         )
     if filename in (".", "..") or len(filename) > _FILENAME_MAX_LEN:
         raise ValueError(f"output filename {filename!r} is not a usable filename")
+    reject_reserved_name(filename)
     if pathlib.PurePath(filename).suffix.lstrip(".").lower() != output_format:
         # Warn, don't raise: the caller may well want a different extension on
         # purpose. Here rather than at write time so it is not learned after
@@ -466,6 +505,11 @@ def _validate_script(
         errors.append("PodcastScript supports at most 4 speakers")
     if not script["segments"]:
         errors.append("PodcastScript must have at least 1 segment")
+    elif len(script["segments"]) > MAX_SEGMENTS:
+        # Before synthesis, not during: the fan-out is what costs, and the
+        # failure it produces (EMFILE across every concurrent session) does not
+        # look like "your script was too big".
+        errors.append(f"PodcastScript supports at most {MAX_SEGMENTS} segments, got {len(script['segments'])}")
 
     # Speaker elements only. Segment elements are checked in phase 3, where the
     # rest of the segment rules live: a malformed segment does not stop speaker
@@ -515,6 +559,8 @@ def _validate_script(
     ):
         if ms_value is not None and (isinstance(ms_value, bool) or not isinstance(ms_value, int)):
             errors.append(f"PodcastConfig {ms_key!r} must be an integer, got {type(ms_value).__name__}")
+        elif ms_value is not None and not 0 <= ms_value <= MAX_SILENCE_MS:
+            errors.append(f"PodcastConfig {ms_key!r} must be between 0 and {MAX_SILENCE_MS} ms, got {ms_value}")
 
     render_mode: PodcastRenderMode = config.get("render_mode", DEFAULT_RENDER_MODE)
     if render_mode not in RENDER_MODES:
@@ -721,6 +767,13 @@ def _validate_script(
             # Detonates in pydub rather than here if it gets through.
             errors.append(f"Segment {i} 'pause_after' must be an integer, got {type(segment['pause_after']).__name__}")
             continue
+        if "pause_after" in segment and not 0 <= segment["pause_after"] <= MAX_SILENCE_MS:
+            # Same allocation-sized value as the config knobs above, reachable
+            # one segment at a time.
+            errors.append(
+                f"Segment {i} 'pause_after' must be between 0 and {MAX_SILENCE_MS} ms, got {segment['pause_after']}"
+            )
+            continue
         if "speed_override" in segment and (
             isinstance(segment["speed_override"], bool) or not isinstance(segment["speed_override"], int | float)
         ):
@@ -754,6 +807,27 @@ def _validate_script(
 
     if errors:
         _raise_validation_errors(errors)
+
+    # Per-knob bounds are not the same as a bound on the total: 2,000 segments
+    # each asking for the maximum pause is still ~33 hours of silence, which
+    # `_stitch_audio` materialises as multiple GB (and quadratically, since
+    # `combined += ...` copies each time).
+    #
+    # After the raise above, not before: every segment is known to be a dict
+    # with a valid `pause_after` by this point, so the sum cannot trip over a
+    # malformed one and turn a clear usage error into an AttributeError.
+    total_silence = (
+        int(config.get("intro_silence_ms") or 0)
+        + int(config.get("outro_silence_ms") or 0)
+        + sum(int(s.get("pause_after", config.get("default_pause_ms", DEFAULT_PAUSE_MS))) for s in segments)
+    )
+    if total_silence > MAX_TOTAL_SILENCE_MS:
+        _raise_validation_errors(
+            [
+                f"PodcastScript asks for {total_silence / 1000:.0f}s of silence in total, over the "
+                f"{MAX_TOTAL_SILENCE_MS / 1000:.0f}s ceiling — lower the pauses or the segment count"
+            ]
+        )
 
     return title, speakers, segments, config
 
@@ -1019,6 +1093,12 @@ async def generate_podcast(
     # traversal attempt too, but only at the final write — after the whole
     # episode has been synthesized and billed, and with the audio then dropped.
     filename = _check_output_filename(filename, config.get("output_format", DEFAULT_OUTPUT_FORMAT))
+    if filename is not None:
+        # Same timing argument, same refusal the final write would produce: a
+        # name that lands on another run's act checkpoint must cost nothing to
+        # discover. Only the caller's name needs checking — the fallback is
+        # timestamped and cannot collide with anything that has a sidecar.
+        await FileSystemRepository().refuse_clobbering_a_checkpoint(filename)
     speaker_map: dict[str, Speaker] = {s["id"]: s for s in speakers}
 
     # Resolve each speaker's provider and model once, up front.
@@ -1169,29 +1249,60 @@ async def generate_podcast(
         """
         verify_limiter = anyio.CapacityLimiter(4)
 
+        def _unchecked(unit_index: int, reason: str) -> tuple[int, list[SegmentVerdict]]:
+            """Verdicts for a unit whose audio never got transcribed.
+
+            `ok=True` keeps the unit out of the paid re-render — a second render
+            of an oversized unit is still oversized — while `checked=False` is
+            what stops the episode from claiming it was verified.
+            """
+            return unit_index, [
+                SegmentVerdict(
+                    index=i,
+                    speaker=speaker_map[segments[i]["speaker"]]["name"],
+                    ok=True,
+                    reason=reason,
+                    checked=False,
+                    similarity=0.0,
+                )
+                for i in units[unit_index].indices
+            ]
+
         async def _one(unit_index: int) -> tuple[int, list[SegmentVerdict]]:
             unit = units[unit_index]
+            audio = segment_bytes_list[unit_index]
+            # verification.py's contract is that callers check this themselves.
+            # Not doing so made the limit a bypass: a segment near the accepted
+            # 40,000-char cap renders a unit well over 25MB, so the API rejected
+            # it, the exception below swallowed the rejection, and the segment
+            # shipped "verified" without ever being looked at.
+            if len(audio) > TRANSCRIBE_MAX_BYTES:
+                logger.warning(
+                    "Verification skipped unit %d: %.1fMB exceeds the %dMB transcription limit - "
+                    "split the segment to make it checkable",
+                    unit_index,
+                    len(audio) / 1024 / 1024,
+                    TRANSCRIBE_MAX_BYTES // 1024 // 1024,
+                )
+                return _unchecked(unit_index, "too_large_to_verify")
             try:
                 async with verify_limiter:
-                    rendered = await transcribe_bytes(
-                        segment_bytes_list[unit_index], f"unit{unit_index}.{output_format}"
-                    )
+                    rendered = await transcribe_bytes(audio, f"unit{unit_index}.{output_format}")
             except Exception as exc:  # noqa: BLE001 - verification must never lose the episode
                 logger.warning("Verification could not transcribe unit %d: %s", unit_index, exc)
-                return unit_index, [
-                    SegmentVerdict(
-                        index=i,
-                        speaker=speaker_map[segments[i]["speaker"]]["name"],
-                        ok=True,
-                        reason="not_transcribed",
-                        similarity=0.0,
-                    )
+                return _unchecked(unit_index, "not_transcribed")
+
+            # Off the event loop: scoring is difflib.SequenceMatcher with
+            # autojunk disabled, over word lists the script controls the size
+            # of, so a repetitive 40k-char segment is tens of seconds of
+            # uninterruptible CPU. The stitch already takes this precaution.
+            def _judge() -> list[SegmentVerdict]:
+                return [
+                    _verdict_for(i, speaker_map[segments[i]["speaker"]]["name"], segments[i]["text"], rendered)
                     for i in unit.indices
                 ]
-            return unit_index, [
-                _verdict_for(i, speaker_map[segments[i]["speaker"]]["name"], segments[i]["text"], rendered)
-                for i in unit.indices
-            ]
+
+            return unit_index, await anyio.to_thread.run_sync(_judge)
 
         async with anyio.create_task_group() as verify_tg:
             verify_captures = [ResultCapture.start_soon(verify_tg, _one, i) for i in targets]
@@ -1257,6 +1368,7 @@ async def generate_podcast(
     )
     if verify:
         unresolved = [v for v in verdicts if not v.ok]
+        unchecked = [v for v in verdicts if not v.checked]
         if unresolved:
             logger.warning(
                 "Verification: %d segment(s) still not found in the audio after one retry: %s. "
@@ -1265,7 +1377,16 @@ async def generate_podcast(
                 len(unresolved),
                 ", ".join(f"{v.index + 1} ({v.reason})" for v in unresolved),
             )
-        else:
+        # Reported separately and never folded into the line above: these
+        # segments are not known-bad, they are unknown, and saying "confirmed"
+        # about them is the failure this branch exists to prevent.
+        if unchecked:
+            logger.warning(
+                "Verification: %d segment(s) could not be checked (%s) - the episode is written but NOT verified",
+                len(unchecked),
+                ", ".join(f"{v.index + 1} ({v.reason})" for v in unchecked),
+            )
+        if not unresolved and not unchecked:
             logger.info("Verification: every segment confirmed present in the rendered audio")
 
     return PodcastResult(
@@ -1276,7 +1397,9 @@ async def generate_podcast(
         speakers=[s["name"] for s in speakers],
         transcript=transcript,
         usage=usage,
-        verified=None if not verify else all(v.ok for v in verdicts),
+        # `checked` as well as `ok`: a segment nobody transcribed has not been
+        # verified, whatever else is true of it.
+        verified=None if not verify else all(v.ok and v.checked for v in verdicts),
         verify_retries=retried_count,
         segment_verdicts=verdicts,
     )

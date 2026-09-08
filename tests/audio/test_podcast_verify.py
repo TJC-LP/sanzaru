@@ -233,16 +233,44 @@ class TestVerifyPass:
         assert AudioSegment.from_mp3(__import__("io").BytesIO(written)).duration_seconds > 0
 
     async def test_a_transcription_failure_does_not_lose_the_episode(self, podcast_env):
-        """Verification degrades to "unverified", never to a lost render."""
+        """Verification degrades to "unverified", never to a lost render.
+
+        Unverified means `verified is False`, not `True`: reporting success for
+        audio nobody transcribed is the fail-open this pass exists to avoid
+        (CWE-636). The episode is still written, and the unverifiable segment is
+        still kept out of the paid re-render.
+        """
         audio_dir, install = podcast_env
         install({}, failing_transcribe=True)
 
         result = await generate_podcast(_script(SPOKEN), verify=True)
 
         assert (audio_dir / result.output_file).exists()
-        assert result.verified is True, "an unverifiable segment is not a failed one"
+        assert result.verified is False, "audio nobody could transcribe was not verified"
         assert result.segment_verdicts[0].reason == "not_transcribed"
+        assert result.segment_verdicts[0].checked is False
+        assert result.segment_verdicts[0].ok is True, "unchecked is not the same as found-missing"
         assert result.verify_retries == 0
+
+    async def test_a_unit_over_the_transcription_limit_is_not_reported_verified(self, podcast_env, monkeypatch):
+        """A segment big enough to exceed the API's 25MB limit cannot bypass the check.
+
+        This is the deterministic, input-driven route into the fail-open path:
+        script validation accepts 40,000 characters, which renders a unit the
+        transcription endpoint refuses outright.
+        """
+        audio_dir, install = podcast_env
+        install({})
+        # Shrink the ceiling rather than synthesizing 25MB of audio; the branch
+        # under test is the size comparison, not the encoder.
+        monkeypatch.setattr("sanzaru.tools.podcast.TRANSCRIBE_MAX_BYTES", 1)
+
+        result = await generate_podcast(_script(SPOKEN), verify=True)
+
+        assert (audio_dir / result.output_file).exists()
+        assert result.verified is False
+        assert result.segment_verdicts[0].reason == "too_large_to_verify"
+        assert result.segment_verdicts[0].checked is False
 
 
 @pytest.mark.integration
