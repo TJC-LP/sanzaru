@@ -199,6 +199,81 @@ async def test_create_video_with_reference_image_mime_types(mocker, mock_video_q
         assert input_reference_arg[2] == expected_mime, f"MIME type mismatch for {filename}: {input_reference_arg[2]}"
 
 
+# ==================== Resource ID Validation ====================
+
+# Every one of these reaches the SDK as a raw path segment, so a traversing id
+# is not a failed lookup — it is a different, authenticated endpoint. Keyed by
+# name so a failure says which sink lost its guard.
+_ID_SINKS = {
+    "get_video_status": lambda video_id: get_video_status(video_id),
+    "download_video": lambda video_id: download_video(video_id, filename="loot.bin"),
+    "delete_video": lambda video_id: delete_video(video_id),
+    "remix_video": lambda video_id: remix_video(video_id, "new prompt"),
+}
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("sink", list(_ID_SINKS), ids=list(_ID_SINKS))
+@pytest.mark.parametrize(
+    "video_id",
+    [
+        "../files/file-XYZ/content?",  # GET /v1/files/file-XYZ/content -> any org file into VIDEO_PATH
+        "../files?",  # reflects the org file listing back to the caller
+        "../models/ft:gpt-4.1:org:custom",  # DELETE against a fine-tuned model
+        "vid_123/content",
+        "vid_123?limit=100",
+        "vid_123#frag",
+        "vid%2F123",
+        "",
+    ],
+)
+async def test_hostile_video_id_raises_before_any_request(mocker, sink, video_id):
+    """The id must be rejected before the client is even constructed."""
+    mock_get_client = mocker.patch("sanzaru.tools.video.get_client")
+    mock_get_storage = mocker.patch("sanzaru.tools.video.get_storage")
+
+    with pytest.raises(ValueError, match="not a valid OpenAI resource id"):
+        await _ID_SINKS[sink](video_id)
+
+    # Nothing was built, so nothing could have been sent.
+    mock_get_client.assert_not_called()
+    mock_get_storage.assert_not_called()
+
+
+@pytest.mark.integration
+async def test_real_video_id_still_works(mocker, mock_video_response):
+    """A production-shaped id is unaffected by the guard."""
+    mock_get_client = mocker.patch("sanzaru.tools.video.get_client")
+    mock_get_client.return_value.videos.retrieve = mocker.AsyncMock(return_value=mock_video_response)
+
+    await get_video_status("video_68d9f7a1b2c34d56789abcdef0123456")
+
+    mock_get_client.return_value.videos.retrieve.assert_called_once_with("video_68d9f7a1b2c34d56789abcdef0123456")
+
+
+@pytest.mark.integration
+async def test_download_derives_filename_from_a_validated_id(mocker, tmp_video_path):
+    """The id is also the default basename, so validating it guards both sinks."""
+    storage = LocalStorageBackend(path_overrides={"video": tmp_video_path})
+    mocker.patch("sanzaru.tools.video.get_storage", return_value=storage)
+
+    async def mock_iter():
+        yield b"chunk1"
+
+    mock_response = mocker.MagicMock()
+    mock_response.iter_bytes.return_value = mock_iter()
+    mock_stream_ctx = mocker.MagicMock()
+    mock_stream_ctx.__aenter__ = mocker.AsyncMock(return_value=mock_response)
+    mock_stream_ctx.__aexit__ = mocker.AsyncMock(return_value=None)
+
+    mock_get_client = mocker.patch("sanzaru.tools.video.get_client")
+    mock_get_client.return_value.with_streaming_response.videos.download_content.return_value = mock_stream_ctx
+
+    result = await download_video("video_68d9f7a1")
+
+    assert result["filename"] == "video_68d9f7a1.mp4"
+
+
 # ==================== list_local_videos Tests ====================
 
 

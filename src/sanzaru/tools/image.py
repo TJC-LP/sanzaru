@@ -26,7 +26,7 @@ from PIL import Image
 from ..config import DEFAULT_IMAGE_MODEL, get_client, logger
 from ..storage import get_storage
 from ..types import ImageDownloadResult, ImageResponse
-from ..utils import generate_filename
+from ..utils import generate_filename, validate_resource_id
 
 # ==================== HELPER FUNCTIONS ====================
 
@@ -126,6 +126,11 @@ async def create_image(
         }
         # gpt-image-1.5 only: "input_fidelity": "high"/"low", "background": "transparent"
     """
+    # A body field here, not a path segment — but an id is an id, so it fails
+    # the same way on every entry point rather than only where it is exploitable.
+    if previous_response_id is not None:
+        validate_resource_id(previous_response_id, "previous_response_id")
+
     client = get_client()
     storage = get_storage()
 
@@ -245,7 +250,11 @@ async def get_image_status(response_id: str) -> ImageResponse:
 
     Raises:
         RuntimeError: If OPENAI_API_KEY not set
+        ValueError: If response_id is not a plain resource id
     """
+    # GET /responses/{response_id} is built by unencoded f-string; see
+    # validate_resource_id for why that makes the id an endpoint selector.
+    validate_resource_id(response_id, "response_id")
     client = get_client()
     response = await client.responses.retrieve(response_id)
 
@@ -271,8 +280,9 @@ async def download_image(
 
     Raises:
         RuntimeError: If IMAGE_PATH not configured or OPENAI_API_KEY not set
-        ValueError: If image generation not found or invalid filename
+        ValueError: If response_id is not a plain resource id, image generation not found, or invalid filename
     """
+    validate_resource_id(response_id, "response_id")
     storage = get_storage()
 
     client = get_client()

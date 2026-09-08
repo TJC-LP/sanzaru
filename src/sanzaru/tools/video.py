@@ -17,7 +17,7 @@ from openai.types import Video, VideoDeleteResponse, VideoModel, VideoSeconds, V
 from ..config import get_client, logger
 from ..storage import get_storage
 from ..types import DownloadResult, ListResult, VideoFile, VideoSummary
-from ..utils import generate_filename, suffix_for_variant
+from ..utils import generate_filename, suffix_for_variant, validate_resource_id
 
 
 async def create_video(
@@ -102,7 +102,11 @@ async def get_video_status(video_id: str) -> Video:
 
     Raises:
         RuntimeError: If OPENAI_API_KEY not set
+        ValueError: If video_id is not a plain resource id
     """
+    # The id is interpolated into GET /videos/{video_id} unencoded — see
+    # validate_resource_id for what a "../" in it would actually fetch.
+    validate_resource_id(video_id, "video_id")
     client = get_client()
     video = await client.videos.retrieve(video_id)
     return video
@@ -125,8 +129,14 @@ async def download_video(
 
     Raises:
         RuntimeError: If VIDEO_PATH not configured or OPENAI_API_KEY not set
-        ValueError: If invalid filename or path traversal detected
+        ValueError: If video_id is not a plain resource id, or invalid filename / path traversal detected
     """
+    # Two sinks, one check: the id is a path segment of
+    # GET /videos/{video_id}/content, and it is also the basename we write to
+    # when the caller passes no filename. A traversing id would otherwise
+    # redirect the download to an arbitrary org file (the storage backend still
+    # sanitizes the basename, so only the first sink is exploitable).
+    validate_resource_id(video_id, "video_id")
     storage = get_storage()
     client = get_client()
     suffix = suffix_for_variant(variant)
@@ -188,7 +198,11 @@ async def delete_video(video_id: str) -> VideoDeleteResponse:
 
     Raises:
         RuntimeError: If OPENAI_API_KEY not set
+        ValueError: If video_id is not a plain resource id
     """
+    # Highest-stakes sink of the three: an unvalidated id turns this into
+    # DELETE /v1/files/{id} or DELETE /v1/models/{fine-tune}.
+    validate_resource_id(video_id, "video_id")
     client = get_client()
     resp = await client.videos.delete(video_id)
     logger.info("Deleted %s", video_id)
@@ -207,7 +221,10 @@ async def remix_video(previous_video_id: str, prompt: str) -> Video:
 
     Raises:
         RuntimeError: If OPENAI_API_KEY not set
+        ValueError: If previous_video_id is not a plain resource id
     """
+    # POST /videos/{previous_video_id}/remix — the id picks the endpoint.
+    validate_resource_id(previous_video_id, "previous_video_id")
     client = get_client()
     video = await client.videos.remix(previous_video_id, prompt=prompt)
     logger.info("Started remix %s (from %s)", video.id, previous_video_id)
