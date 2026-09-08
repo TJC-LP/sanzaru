@@ -348,15 +348,28 @@ class TestFileSystemRepository:
             assert result.modified_time == expected_mtime
 
     @pytest.mark.anyio
-    async def test_list_audio_files_regex_pattern_matches_filename(
+    async def test_list_audio_files_glob_pattern_matches_filename(
         self, repo: FileSystemRepository, audio_dir: Path
     ) -> None:
-        """Test that regex pattern matches against filename."""
+        """A glob pattern (linear-time; never a backtracking regex) matches on filename."""
         (audio_dir / "test.mp3").write_bytes(b"data")
         (audio_dir / "audio.mp3").write_bytes(b"data")
 
-        # Pattern should match filename
-        result = await repo.list_audio_files(pattern=r"test\.mp3$")
+        # Glob anchored at the end matches only test.mp3
+        result = await repo.list_audio_files(pattern="*test.mp3")
 
         assert len(result) == 1
         assert result[0].name == "test.mp3"
+
+    @pytest.mark.anyio
+    async def test_list_audio_files_pathological_pattern_is_bounded(
+        self, repo: FileSystemRepository, audio_dir: Path
+    ) -> None:
+        """A pattern that would cause catastrophic regex backtracking returns promptly (CWE-1333)."""
+        (audio_dir / ("a" * 60 + ".mp3")).write_bytes(b"data")
+
+        # Under the old re.search this spun indefinitely; now it is a linear
+        # substring test and simply does not match.
+        result = await repo.list_audio_files(pattern="(a+)+$")
+
+        assert result == []

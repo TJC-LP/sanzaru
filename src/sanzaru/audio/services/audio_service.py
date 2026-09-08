@@ -10,9 +10,42 @@ import anyio.to_thread
 
 from ...config import logger
 from ...storage import get_storage
+from ...utils import reject_reserved_name
 from .. import AudioProcessor
-from ..constants import DEFAULT_MAX_FILE_SIZE_MB, SupportedChatWithAudioFormat
+from ..constants import (
+    DEFAULT_MAX_FILE_SIZE_MB,
+    SAFE_AUDIO_EXTENSIONS,
+    SupportedChatWithAudioFormat,
+    safe_audio_format,
+)
 from ..models import AudioProcessingResult
+
+
+def _require_audio_name(filename: str, role: str, *, is_output: bool = False) -> None:
+    """Refuse a convert/compress path whose extension is not a real audio format.
+
+    The no-compression branch (and format conversion) ultimately does a plain
+    byte copy for same-size inputs; without this a caller could duplicate any
+    audio-directory file (e.g. a run manifest ``simrun_*.json``) under an
+    arbitrary name/extension — minting a ``.json``/``.html`` artifact served by
+    the ``/media`` route (CWE-79). Both the input and any caller-chosen output
+    are constrained to audio extensions.
+
+    Outputs are additionally refused the run-bookkeeping namespace: an act
+    checkpoint *is* an mp3, so the extension rule alone would still let one be
+    overwritten (CWE-73). Inputs are not — reading your own checkpoint back is
+    legitimate, and only the write destroys anything.
+    """
+    try:
+        # Outputs are held to the narrower set — this server is creating that
+        # file. Inputs only need to be a container ffmpeg can decode without
+        # dereferencing a path out of its contents, which is what keeps
+        # `convert_audio` able to do its actual job (.aac, .opus, ...).
+        safe_audio_format(filename, allowed=SAFE_AUDIO_EXTENSIONS if is_output else None)
+    except ValueError as exc:
+        raise ValueError(f"{role} {filename!r}: {exc}") from exc
+    if is_output:
+        reject_reserved_name(filename, role)
 
 
 class AudioService:
@@ -41,7 +74,14 @@ class AudioService:
             AudioProcessingResult: Result with name of the converted audio file.
 
         """
+        _require_audio_name(input_filename, "input file")
         output_name = output_filename or f"{Path(input_filename).stem}.{target_format}"
+        # Check the name that is actually written, not the argument. Guarding
+        # only an explicit `output_filename` left the derived one unchecked, and
+        # since inputs are deliberately *not* reserved-checked, converting
+        # `<slug>_<runid>_act1.wav` produced `<slug>_<runid>_act1.mp3` — the
+        # victim's checkpoint audio, overwritten, through the guard.
+        _require_audio_name(output_name, "output file", is_output=True)
         storage = get_storage()
 
         async with (
@@ -96,6 +136,9 @@ class AudioService:
             input's own name otherwise.
 
         """
+        _require_audio_name(input_filename, "input file")
+        if output_filename is not None:
+            _require_audio_name(output_filename, "output file", is_output=True)
         storage = get_storage()
 
         # Check if compression is needed
@@ -121,9 +164,12 @@ class AudioService:
             conversion_result = await self.convert_audio(input_filename, None, "mp3")
             input_filename = conversion_result.output_file
 
-        # Determine output filename
+        # Determine output filename, then check the name actually written —
+        # `compressed_<stem>.mp3` is derived, so guarding only the argument
+        # would leave it unchecked (the same gap convert_audio had).
         stem = Path(input_filename).stem
         output_name = output_filename or f"compressed_{stem}.mp3"
+        _require_audio_name(output_name, "output file", is_output=True)
 
         logger.debug(f"Original file: {input_filename}")
         logger.debug(f"Output file: {output_name}")

@@ -450,7 +450,7 @@ Supported formats:
 - Chat (GPT-4o audio): mp3, wav
 
 Parameters:
-- pattern: Optional regex pattern to filter files by name (e.g., "meeting.*\\.mp3")
+- pattern: Optional case-insensitive filter — a substring, or a glob like "*.mp3" when it contains * ? or [
 - min_size_bytes: Minimum file size in bytes (optional)
 - max_size_bytes: Maximum file size in bytes (useful for API limits like 25MB)
 - min_duration_seconds: Minimum audio duration in seconds (optional)

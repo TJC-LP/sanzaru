@@ -4,7 +4,7 @@
 Migrated from mcp-server-whisper v1.1.0 by Richie Caputo (MIT license).
 """
 
-import re
+import fnmatch
 
 import anyio
 from openai.types import AudioModel
@@ -13,6 +13,7 @@ from pydub import AudioSegment  # type: ignore
 from ..audio.constants import (
     AUDIO_CHAT_MODELS,
     CHAT_WITH_AUDIO_FORMATS,
+    DECODABLE_AUDIO_EXTENSIONS,
     TRANSCRIBE_AUDIO_FORMATS,
     TRANSCRIPTION_MODELS,
     AudioChatModel,
@@ -21,6 +22,22 @@ from ..audio.models import FilePathSupportParams
 from ..exceptions import AudioFileError, AudioFileNotFoundError
 from ..storage import get_storage
 from ..storage.protocol import FileInfo, StorageBackend
+
+# Names are matched with a linear-time matcher, never a backtracking regex: a
+# client-supplied pattern like ``(a+)+$`` against a long filename made Python's
+# ``re`` engine spin indefinitely on the event loop, freezing the whole server
+# (CWE-1333). A pattern is capped in length and interpreted as a case-insensitive
+# substring, or, when it carries glob metacharacters, an fnmatch glob.
+_MAX_PATTERN_LEN = 256
+
+
+def _name_matches(pattern: str, name: str) -> bool:
+    """Linear-time filename filter: glob when the pattern has ``*?[`` else substring."""
+    pattern = pattern[:_MAX_PATTERN_LEN]
+    lowered = name.lower()
+    if any(ch in pattern for ch in "*?["):
+        return fnmatch.fnmatch(lowered, pattern.lower())
+    return pattern.lower() in lowered
 
 
 class FileSystemRepository:
@@ -61,14 +78,21 @@ class FileSystemRepository:
         # Get file stats from storage backend
         info = await self._storage.stat("audio", filename)
 
-        # Get duration if possible (downloads file for remote backends)
+        # Get duration if possible (downloads file for remote backends). Only
+        # decode allowlisted audio containers — the demuxer is chosen from the
+        # untrusted extension, and a playlist demuxer (hls/concat/dash) would
+        # read other local files (CWE-610). A non-audio extension simply yields
+        # no duration rather than invoking ffmpeg.
         duration_seconds = None
-        try:
-            async with self._storage.local_path("audio", filename) as local:
-                audio = await anyio.to_thread.run_sync(lambda: AudioSegment.from_file(str(local), format=audio_format))
-                duration_seconds = len(audio) / 1000.0
-        except Exception:
-            pass
+        if audio_format in DECODABLE_AUDIO_EXTENSIONS:
+            try:
+                async with self._storage.local_path("audio", filename) as local:
+                    audio = await anyio.to_thread.run_sync(
+                        lambda: AudioSegment.from_file(str(local), format=audio_format)
+                    )
+                    duration_seconds = len(audio) / 1000.0
+            except Exception:
+                pass
 
         return FilePathSupportParams(
             file_name=filename,
@@ -119,7 +143,8 @@ class FileSystemRepository:
         """List audio files matching the given criteria.
 
         Args:
-            pattern: Optional regex pattern to filter files by name.
+            pattern: Optional case-insensitive filter — a substring, or a glob
+                (e.g. ``*.mp3``) when it contains ``*``, ``?`` or ``[``.
             min_size_bytes: Minimum file size in bytes.
             max_size_bytes: Maximum file size in bytes.
             format_filter: Specific audio format to filter by (e.g., 'mp3', 'wav').
@@ -134,8 +159,8 @@ class FileSystemRepository:
         for info in file_infos:
             file_ext = ("." + info.name.rsplit(".", 1)[-1].lower()) if "." in info.name else ""
 
-            # Apply regex pattern filtering if provided
-            if pattern and not re.search(pattern, info.name):
+            # Apply pattern filtering if provided (linear-time; never a regex)
+            if pattern and not _name_matches(pattern, info.name):
                 continue
 
             # Apply format filtering if provided

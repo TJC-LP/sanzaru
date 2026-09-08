@@ -87,7 +87,10 @@ class FilePathSupportParams(BaseModel):
 class ListAudioFilesInputParams(BaseModel):
     """Input parameters for the list_audio_files tool."""
 
-    pattern: str | None = Field(default=None, description="Optional regex pattern to filter audio files by name")
+    pattern: str | None = Field(
+        default=None,
+        description="Optional case-insensitive filter: a substring, or a glob like '*.mp3' when it contains * ? or [",
+    )
     min_size_bytes: int | None = Field(default=None, description="Minimum file size in bytes")
     max_size_bytes: int | None = Field(default=None, description="Maximum file size in bytes")
     min_duration_seconds: float | None = Field(default=None, description="Minimum audio duration in seconds")

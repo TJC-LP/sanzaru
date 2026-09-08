@@ -201,6 +201,42 @@ class TestElevenLabsValidation:
         assert "OpenAI-only" in caplog.text
 
 
+@pytest.mark.unit
+class TestElevenLabsVoiceIdIsAPathSegment:
+    """The voice id lands in f"v1/text-to-speech/{voice_id}" unencoded, and the
+    SDK resolves that with urljoin — so a traversing voice retargets an
+    authenticated POST that carries the operator's xi-api-key."""
+
+    @pytest.mark.parametrize(
+        "voice",
+        [
+            "../../v1/voices/VICTIM/settings/edit?",  # the reported exploit
+            "../../v1/user?",
+            "..",
+            "abc/def",
+            "abc\\def",
+            "abc?optimize_streaming_latency=4",
+            "abc#frag",
+            "%2e%2e%2fabc",  # pre-encoded traversal: nothing legitimate carries '%'
+            "voice abc",
+            "a" * 65,
+        ],
+    )
+    def test_resolve_voice_rejects_anything_that_could_move_the_url(self, voice):
+        with pytest.raises(ValueError, match="not a valid ElevenLabs voice id"):
+            get_provider("elevenlabs").resolve_voice(voice)
+
+    @pytest.mark.parametrize("voice", ["21m00Tcm4TlvDq8ikWAM", "voice_abc", "voice-abc", "  21m00Tcm4TlvDq8ikWAM  "])
+    def test_real_voice_ids_survive(self, voice):
+        assert get_provider("elevenlabs").resolve_voice(voice) == voice.strip()
+
+    def test_validate_is_the_backstop_for_a_hand_built_request(self):
+        # resolve_voice is the one chokepoint every caller uses, but validate()
+        # is the last thing to run before the URL exists.
+        with pytest.raises(ValueError, match="not a valid ElevenLabs voice id"):
+            get_provider("elevenlabs").validate(elevenlabs_request(voice="../../v1/user?"))
+
+
 # ---------- synthesis ----------
 
 
@@ -265,6 +301,16 @@ class TestElevenLabsSynthesis:
 
         assert len(client.text_to_speech.calls) == 4  # _MAX_ATTEMPTS
         assert sleep.await_count == 3
+
+    async def test_hostile_voice_never_reaches_the_client(self, mocker, fake_elevenlabs):
+        """No request may be built at all — the fake records every convert()."""
+        client = fake_elevenlabs.Client()
+        mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=client)
+
+        with pytest.raises(ValueError, match="not a valid ElevenLabs voice id"):
+            await synthesize_speech(get_provider("elevenlabs"), elevenlabs_request(voice="../../v1/user?"))
+
+        assert client.text_to_speech.calls == []
 
     async def test_client_error_is_not_retried(self, mocker, fake_elevenlabs):
         client = fake_elevenlabs.Client(error=fake_elevenlabs.ApiError(401))

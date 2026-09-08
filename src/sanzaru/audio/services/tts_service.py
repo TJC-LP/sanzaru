@@ -8,6 +8,7 @@ import time
 import anyio
 
 from ...infrastructure import FileSystemRepository
+from ...utils import reject_reserved_name
 from ..models import TTSResult
 from ..providers import SpeechRequest, VoiceSettingsDict, get_provider, synthesize_speech
 
@@ -48,6 +49,10 @@ class TTSService:
             TTSResult: Result with name of the generated audio file.
 
         """
+        # Before synthesis: an output name that would land on another run's
+        # bookkeeping should cost nothing to discover.
+        if output_filename is not None:
+            reject_reserved_name(output_filename)
         tts = get_provider(provider)
         request = SpeechRequest(
             text=text_prompt,

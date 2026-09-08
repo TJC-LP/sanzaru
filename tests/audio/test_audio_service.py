@@ -301,3 +301,106 @@ class TestAudioService:
 
         # Should not compress (below threshold)
         assert result.output_file == "test.mp3"
+
+
+@pytest.mark.unit
+class TestAudioPathsAreNotAGenericFileGadget:
+    """convert/compress must not become a way to move arbitrary bytes around.
+
+    The no-compression branch is a plain `shutil.copyfile` — it never decodes
+    the input as audio — so without an extension rule it copied ANY file in the
+    audio directory to ANY caller-chosen name. That is two separate primitives:
+    replacing another run's `simrun_*.json` bookkeeping (CWE-73) and republishing
+    stored text under a browser-executable `.html` name that `/media` would then
+    serve from the server's own origin (CWE-79).
+    """
+
+    @pytest.fixture
+    def service(self) -> AudioService:
+        return AudioService()
+
+    async def test_compress_refuses_to_write_a_run_manifest(self, service, mocker: MockerFixture):
+        storage = MagicMock()
+        mocker.patch("sanzaru.audio.services.audio_service.get_storage", return_value=storage)
+
+        with pytest.raises(ValueError, match="unsupported audio format"):
+            await service.compress_audio("simrun_attacker.json", "simrun_victim.json", max_mb=1000)
+
+        storage.stat.assert_not_called()
+
+    async def test_compress_refuses_a_browser_executable_output_name(self, service, mocker: MockerFixture):
+        storage = MagicMock()
+        mocker.patch("sanzaru.audio.services.audio_service.get_storage", return_value=storage)
+
+        with pytest.raises(ValueError, match="unsupported audio format"):
+            await service.compress_audio("episode.mp3", "x.html")
+
+        storage.stat.assert_not_called()
+
+    async def test_convert_refuses_a_non_audio_output_name(self, service, mocker: MockerFixture):
+        storage = MagicMock()
+        mocker.patch("sanzaru.audio.services.audio_service.get_storage", return_value=storage)
+
+        with pytest.raises(ValueError, match="unsupported audio format"):
+            await service.convert_audio("episode.mp3", "notes.json")
+
+
+@pytest.mark.unit
+class TestFfmpegDemuxerIsNotChosenByTheFile:
+    """pydub picks the ffmpeg demuxer from `format=<ext>`.
+
+    Deriving that from an untrusted filename made playlist demuxers reachable:
+    a file named `evil.hls` is parsed by ffmpeg's HLS demuxer, whose *content*
+    then names other local files to decode and concatenate into the result —
+    reading straight past the storage layer's directory confinement (CWE-610).
+    """
+
+    @pytest.mark.parametrize("name", ["evil.hls", "evil.concat", "evil.dash", "evil.m3u8", "evil.txt"])
+    async def test_a_playlist_extension_never_reaches_ffmpeg(self, tmp_path: Path, mocker: MockerFixture, name):
+        planted = tmp_path / name
+        planted.write_text("#EXTM3U\n#EXTINF:600,\nfile:///etc/passwd\n#EXT-X-ENDLIST\n")
+        from_file = mocker.patch("sanzaru.audio.processor.AudioSegment.from_file")
+
+        with pytest.raises(ValueError, match="unsupported audio format"):
+            await AudioProcessor.load_audio_from_path(planted)
+
+        from_file.assert_not_called()
+
+    @pytest.mark.parametrize("name", ["clip.mp3", "clip.wav", "clip.m4a", "clip.flac", "clip.MP3"])
+    async def test_real_audio_still_decodes(self, tmp_path: Path, mocker: MockerFixture, name):
+        path = tmp_path / name
+        path.write_bytes(b"data")
+        from_file = mocker.patch("sanzaru.audio.processor.AudioSegment.from_file")
+
+        await AudioProcessor.load_audio_from_path(path)
+
+        assert from_file.call_args.kwargs["format"] == name.rsplit(".", 1)[1].lower()
+
+
+@pytest.mark.unit
+class TestConversionStillAcceptsUnsupportedFormats:
+    """`convert_audio` exists to turn formats the API cannot take into ones it
+    can, so gating its *input* on the transcription allowlist broke the tool's
+    entire purpose. Inputs need only be a container ffmpeg decodes without
+    dereferencing paths out of its contents."""
+
+    @pytest.mark.parametrize("name", ["clip.aac", "clip.opus", "clip.aiff", "clip.wma", "clip.m4b"])
+    def test_formats_worth_converting_are_accepted_as_input(self, name):
+        from sanzaru.audio.services.audio_service import _require_audio_name
+
+        _require_audio_name(name, "input file")
+
+    @pytest.mark.parametrize("name", ["evil.hls", "evil.concat", "evil.m3u8", "evil.dash"])
+    def test_playlist_extensions_are_still_refused_as_input(self, name):
+        from sanzaru.audio.services.audio_service import _require_audio_name
+
+        with pytest.raises(ValueError, match="unsupported audio format"):
+            _require_audio_name(name, "input file")
+
+    @pytest.mark.parametrize("name", ["out.aac", "out.opus", "out.json", "out.html"])
+    def test_outputs_stay_on_the_narrow_set(self, name):
+        """An output is a file this server creates; no reason it can mint these."""
+        from sanzaru.audio.services.audio_service import _require_audio_name
+
+        with pytest.raises(ValueError, match="unsupported audio format"):
+            _require_audio_name(name, "output file", is_output=True)

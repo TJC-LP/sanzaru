@@ -13,7 +13,12 @@ from pydub import AudioSegment  # type: ignore
 
 from ..config import logger
 from ..exceptions import AudioCompressionError, AudioConversionError
-from .constants import DEFAULT_MAX_FILE_SIZE_MB, DEFAULT_TTS_SAMPLE_RATE, SupportedChatWithAudioFormat
+from .constants import (
+    DEFAULT_MAX_FILE_SIZE_MB,
+    DEFAULT_TTS_SAMPLE_RATE,
+    SupportedChatWithAudioFormat,
+    safe_audio_format,
+)
 
 
 class AudioProcessor:
@@ -122,8 +127,13 @@ class AudioProcessor:
             AudioConversionError: If loading fails.
 
         """
+        # Validate the extension against the audio allowlist *before* invoking
+        # ffmpeg. The demuxer is chosen from this suffix, and a playlist demuxer
+        # (hls/concat/dash) selected from a planted file's extension would read
+        # other local files as "segments" (CWE-610). Raises ValueError for
+        # anything that is not a real audio container.
+        format_str = safe_audio_format(file_path.suffix)
         try:
-            format_str = file_path.suffix[1:]  # Remove leading dot
             return await anyio.to_thread.run_sync(lambda: AudioSegment.from_file(str(file_path), format=format_str))
         except Exception as e:
             raise AudioConversionError(f"Failed to load audio file {file_path}: {e}") from e

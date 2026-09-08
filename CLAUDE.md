@@ -416,6 +416,20 @@ they are easy to "simplify" away.
   switch's failure mode is "every user shares one namespace", so an unrecognised
   value (`enabled`, `y`) is a configuration error, never a silent "off" — the original
   `1/true/yes` parse treated `on` as off.
+- **The ffmpeg demuxer is never chosen from an untrusted extension.** pydub turns
+  `format=<ext>` into `ffmpeg -f <ext>`, and playlist demuxers (`hls`, `concat`,
+  `dash`) read *other local files* named by the file's content. Every
+  `AudioSegment.from_file` whose format derives from a filename goes through
+  `safe_audio_format()` first. Current ffmpeg blunts the known escapes on its own
+  (`concat` defaults to `safe=1`; `hls` has an `allowed_extensions` check), so this
+  is defense that does not depend on the host's ffmpeg build.
+- **Two extension sets, and they are not interchangeable.**
+  `DECODABLE_AUDIO_EXTENSIONS` gates what ffmpeg may *read* — the rule is only
+  "a self-contained container", so `.aac`/`.opus`/`.wma` belong here and
+  narrowing it to the transcription formats broke `convert_audio`, whose whole
+  job is unsupported input. `SAFE_AUDIO_EXTENSIONS` gates what this server may
+  *create*, and stays narrow so no tool can mint a `.json` or `.html` for
+  `/media` to serve.
 - **`/media` serves an allowlisted content type or `application/octet-stream`,
   always with `nosniff` + `Content-Disposition: attachment`.** The response type
   used to come from `mimetypes.guess_type()` of a caller-chosen name, which made a
