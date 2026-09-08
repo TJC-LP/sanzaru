@@ -322,6 +322,27 @@ sanzaru podcast simulate --resume 6f1a9c02
 | **stdio** (default) | `uv run sanzaru` | Claude Desktop, Claude Code, local MCP clients |
 | **HTTP** | `uv run sanzaru --transport http` | Remote access, Databricks Apps, web clients |
 
+### What a `.env` file can (and cannot) configure
+
+Both entry points autoload a `.env` for local development, with two deliberate
+limits — a file found on disk must not be able to redirect credentials or relax
+transport security:
+
+- **Only `./.env` is read** — the directory you run sanzaru in. There is no
+  search of parent directories, so a `.env` at your project root is not found
+  when you run from a subdirectory.
+- **Only sanzaru's documented configuration keys load** (API keys, media paths,
+  storage backend credentials, tuning knobs). Everything else in the file is
+  ignored with a warning naming the keys. Notably ignored on purpose:
+  `DATABRICKS_HOST` and any `*_BASE_URL`/proxy variable (they decide *where*
+  credentials are sent), `SANZARU_HTTP_TOKEN` and
+  `SANZARU_ALLOW_UNAUTHENTICATED_HTTP` (a planted file must not weaken or
+  satisfy transport auth), and `SANZARU_RUN_SECRET` (the signing key).
+
+Anything the allowlist skips still works exported in the real environment, or
+injected explicitly with `npx dotenv-cli -- <command>` — both are deliberate
+operator actions rather than a file discovered on disk.
+
 ## Storage Backends
 
 | Backend | Config | Use Case |

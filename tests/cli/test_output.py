@@ -7,7 +7,7 @@ import pathlib
 import pydantic
 import pytest
 
-from sanzaru.cli._output import aggregate_exit_code, error_envelope, render, success_envelope
+from sanzaru.cli._output import aggregate_exit_code, error_envelope, note, render, success_envelope
 
 
 class _Usage(pydantic.BaseModel):
@@ -79,6 +79,43 @@ def test_error_envelope_carries_resume_and_extra():
 )
 def test_aggregate_exit_code(codes, expected):
     assert aggregate_exit_code(codes) == expected
+
+
+# ---------- stderr diagnostics (CWE-150) ----------
+#
+# note() interpolates strings this process did not author — act titles a planner
+# invented from a premise that may quote third-party material, API error text.
+# A raw ESC on a TTY is not text: CSI overwrites the cost warning printed a
+# moment ago, OSC 52 writes to the clipboard.
+
+
+@pytest.mark.unit
+def test_note_neutralizes_terminal_control_sequences(capsys):
+    note("act1: \x1b]0;pwned\x07 \x1b[2J\x1b[1;1Hcost $0.00 \x9b31m")
+
+    err = capsys.readouterr().err
+    assert "\x1b" not in err
+    assert "\x07" not in err
+    assert "\x9b" not in err
+    assert "\\x1b]0;pwned\\x07" in err  # still legible as what it was
+    assert err.endswith("\n")
+
+
+@pytest.mark.unit
+def test_note_neutralizes_a_carriage_return_rewriting_the_line(capsys):
+    note("planning 4 acts\rsanzaru: nothing to worry about")
+
+    err = capsys.readouterr().err
+    assert "\r" not in err
+    assert "\\x0d" in err
+    assert err.count("\n") == 1  # one line in, one line out
+
+
+@pytest.mark.unit
+def test_note_leaves_real_text_alone(capsys):
+    note("café 日本語 🎙 — naïve\n\tindented")
+
+    assert capsys.readouterr().err == "sanzaru: café 日本語 🎙 — naïve\n\tindented\n"
 
 
 @pytest.mark.unit

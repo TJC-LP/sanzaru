@@ -27,6 +27,7 @@ from ._io import (
     plan_output,
     read_content_arg,
     reconcile_output_name,
+    write_output_bytes,
 )
 from ._output import EXIT_CONFIG, EXIT_PARTIAL, EXIT_USAGE, emit, note, success_envelope
 from ._runtime import CLIError, _classify, find_in_group, get_state, run_async
@@ -335,9 +336,11 @@ async def podcast_rundown(
     if output is not None:
         # The file is the pure rundown so it can be piped straight back into
         # `simulate` (and hand-edited) — the envelope alone carries `file`.
+        # write_output_bytes, not write_text: this is a `-o` destination like
+        # any other, and must not be written through a symlink planted there.
         target = pathlib.Path(output).expanduser()
         target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        write_output_bytes(target, json.dumps(payload, indent=2).encode("utf-8"))
         payload = dict(payload)
         payload["file"] = {"path": str(target.resolve())}
 
@@ -347,8 +350,12 @@ async def podcast_rundown(
         from ..audio.realtime.types import extension_cap
 
         for act in rundown.acts:
+            # Quoted, like `result.title` in the dry run: an act title is the
+            # planner's prose, steerable by whatever the premise pulled in, and
+            # it should read as a value rather than as our own line. `note`
+            # neutralizes control characters; the quotes mark the boundary.
             note(
-                f"  {act.id}: {act.title} — {act.target_seconds:.0f}s, "
+                f"  {act.id}: {act.title!r} — {act.target_seconds:.0f}s, "
                 f"~{act.max_turns} planned turns (up to {extension_cap(act.max_turns)})"
             )
     emit(success_envelope("podcast.rundown", payload, elapsed_s=time.monotonic() - started))
@@ -688,7 +695,7 @@ def _note_dry_run(result: SimulatedPodcastResult, quiet: bool) -> None:
     for act in result.acts:
         budget = planned.get(act.act_id)
         shape = f"{budget} planned, up to {act.turns}" if budget is not None else f"up to {act.turns}"
-        note(f"  {act.act_id}: {act.title} — {act.seconds:.0f}s, {shape} turns")
+        note(f"  {act.act_id}: {act.title!r} — {act.seconds:.0f}s, {shape} turns")
     usage = result.cost.usage
     note(
         f"projected ~{result.duration_seconds / 60:.0f} min audio, "

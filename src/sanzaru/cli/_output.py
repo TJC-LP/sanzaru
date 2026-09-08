@@ -98,9 +98,40 @@ def emit_line(envelope: dict[str, object]) -> None:
     click.echo(render(envelope, pretty=False))
 
 
+#: C0 controls, DEL, and the C1 range, rendered as visible ``\xNN`` text.
+#: Tab and newline are the two controls stderr diagnostics legitimately carry.
+_TERMINAL_ESCAPES = str.maketrans(
+    {code: f"\\x{code:02x}" for code in (*range(0x00, 0x20), 0x7F, *range(0x80, 0xA0)) if code not in (0x09, 0x0A)}
+)
+
+
+def scrub_for_terminal(message: str) -> str:
+    """Neutralize terminal control sequences in a string bound for stderr.
+
+    Diagnostics interpolate strings this process did not author — act titles a
+    planner model invented, error text an API returned — and a premise built
+    from third-party material can steer those. A raw ESC on a TTY is not text:
+    CSI can reposition the cursor and overwrite the cost warning or the resume
+    hint printed a moment earlier, and OSC can retitle the window or push a
+    command into the clipboard (OSC 52). Escaping rather than deleting keeps
+    the diagnostic honest about what the string actually contained.
+
+    Only C0/C1 and DEL are touched, by codepoint: accents, CJK and emoji are
+    ordinary text and pass through untouched.
+    """
+    return message.translate(_TERMINAL_ESCAPES)
+
+
 def note(message: str) -> None:
-    """Write a human-readable diagnostic line to stderr."""
-    click.echo(f"sanzaru: {message}", err=True)
+    """Write a human-readable diagnostic line to stderr.
+
+    Every human-readable line in the CLI goes through here, which is why the
+    scrub lives here rather than at the call sites that interpolate remote
+    strings — one of those was already missed (act titles printed raw next to a
+    sibling line that used ``!r``). stdout needs no equivalent: json.dumps
+    escapes control characters on its own.
+    """
+    click.echo(f"sanzaru: {scrub_for_terminal(message)}", err=True)
 
 
 def aggregate_exit_code(codes: list[int]) -> int:

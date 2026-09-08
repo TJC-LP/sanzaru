@@ -155,14 +155,39 @@ def test_audio_convert_moves_output_across_dirs(mocker, tmp_path):
     result = CliRunner().invoke(cli, ["audio", "convert", str(src), "-o", str(out_dir / "final.mp3")])
 
     assert result.exit_code == 0, result.stderr
-    assert convert.call_args.kwargs["output_file_name"] == "final__sanzaru_tmp.mp3"
+    staged = convert.call_args.kwargs["output_file_name"]
+    # Unguessable staging name (CWE-59): nothing sharing the input's directory
+    # can pre-plant a symlink for the tool's write to follow.
+    assert staged.startswith("sanzaru_tmp_") and staged.endswith(".mp3")
     parsed = json.loads(result.stdout)
     assert parsed["result"]["file"]["path"] == str(out_dir / "final.mp3")
     # #54: the envelope must not leak the internal staging name — that file is
     # gone by the time the caller reads this.
     assert parsed["result"]["output_file"] == "final.mp3"
     assert (out_dir / "final.mp3").read_bytes() == b"converted"
-    assert not (in_dir / "final__sanzaru_tmp.mp3").exists()
+    assert list(in_dir.iterdir()) == [in_dir / "raw.wav"]  # staging file cleaned up
+
+
+@pytest.mark.integration
+def test_a_symlink_at_the_output_path_stops_the_command(mocker, tmp_path):
+    """CWE-59 end to end: `-o` leaves the media sandbox, so security.py's
+    check_not_symlink never sees this path. A link planted at it used to make
+    the CLI truncate the link's target with the operator's privileges."""
+    in_dir, out_dir = tmp_path / "in", tmp_path / "out"
+    in_dir.mkdir()
+    out_dir.mkdir()
+    (in_dir / "raw.wav").write_bytes(b"wav")
+    victim = tmp_path / "bashrc"
+    victim.write_text("# the operator's shell")
+    (out_dir / "final.mp3").symlink_to(victim)
+    convert = mocker.patch("sanzaru.tools.audio.convert_audio", mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, ["audio", "convert", str(in_dir / "raw.wav"), "-o", str(out_dir / "final.mp3")])
+
+    assert result.exit_code == 2
+    assert json.loads(result.stdout)["error"]["type"] == "usage"
+    assert victim.read_text() == "# the operator's shell"
+    convert.assert_not_called()  # refused before anything was generated
 
 
 @pytest.mark.integration

@@ -77,6 +77,7 @@ src/sanzaru/
 ├── utils.py            # Shared helpers (+ validate_resource_id, reject_reserved_name)
 ├── features.py         # Feature detection (optional deps + env vars)
 ├── descriptions.py     # LLM-facing tool descriptions
+├── dotenv_loader.py    # ./.env autoload, minus the variables that redirect credentials
 ├── user_context.py     # Per-request user context (multi-tenant support)
 ├── storage/            # Pluggable file I/O
 │   ├── protocol.py     # StorageBackend protocol + FileInfo

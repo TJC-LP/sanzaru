@@ -116,11 +116,10 @@ _register_commands()
 
 
 def main() -> None:
-    # Optional .env for local development (parity with server.main()).
-    try:
-        from dotenv import load_dotenv
+    # Optional .env for local development (parity with server.main()). Scoped to
+    # ./.env with endpoint variables filtered — see sanzaru.dotenv_loader for why
+    # the default ancestor walk was a credential-exfiltration path.
+    from ..dotenv_loader import load_local_dotenv
 
-        load_dotenv()
-    except ImportError:
-        pass
+    load_local_dotenv()
     cli(prog_name="sanzaru")
