@@ -399,6 +399,8 @@ operator actions rather than a file discovered on disk.
 
 The Databricks backend supports per-user storage isolation via the `user_context` module, enabling multi-tenant deployments where each user's media is stored under their own volume prefix (`<local-part>-<hash>`, injective over email addresses; the prefix format changed after 0.10.0 — see CLAUDE.md for the migration note). In HTTP mode the identity comes from a proxy-injected header, and trusting one is **opt-in**: set `SANZARU_IDENTITY_HEADER` (e.g. `x-forwarded-email` on Databricks Apps) only when a proxy in front of sanzaru both injects that header and **strips** any client-supplied copy. When it is unset, no header is trusted and every request resolves to the shared volume root. A request carrying the header twice (an appending proxy forwards the client's copy first) or malformed is refused with 400 rather than binding either copy. Set `SANZARU_REQUIRE_USER_CONTEXT=1` on a shared deployment so a request with no identity is refused (403 on `/media`) instead of silently served out of the shared root.
 
+Multi-tenant deployments should also set `SANZARU_RUN_SECRET`, which signs simulated-podcast run manifests and act checkpoints so `--resume` refuses bookkeeping this installation did not write.
+
 See [CLAUDE.md](CLAUDE.md) for full configuration details.
 
 ## Performance

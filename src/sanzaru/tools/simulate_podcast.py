@@ -30,6 +30,8 @@ records only what is missing.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import math
 import os
 import pathlib
@@ -88,6 +90,7 @@ from ..config import logger
 from ..exceptions import CostCeilingError
 from ..infrastructure import FileSystemRepository
 from ..storage import StorageBackend, get_default_storage, get_storage
+from ..utils import reject_reserved_name
 from .podcast import _safe_title, _stitch_audio
 
 DEFAULT_MAX_SESSIONS = 6
@@ -160,6 +163,18 @@ class SimulationBrief(BaseModel):
     models at consistent levels."""
 
     @model_validator(mode="after")
+    def _check_filename_is_not_bookkeeping(self) -> SimulationBrief:
+        """An episode may not be named after run state, its own included.
+
+        `Filename` only forbids separators, so `simrun_<other id>.json` and
+        another run's checkpoint name both passed — and the final write is an
+        unconditional truncate (CWE-73).
+        """
+        if self.filename is not None:
+            reject_reserved_name(self.filename)
+        return self
+
+    @model_validator(mode="after")
     def _check_there_is_something_to_record(self) -> SimulationBrief:
         """Reject a brief with no episode in it before anything else happens."""
         if not (self.premise.strip() or self.rundown is not None or self.resume):
@@ -197,25 +212,25 @@ class SimulationBrief(BaseModel):
 
     @model_validator(mode="after")
     def _warn_on_unpriced_model(self) -> SimulationBrief:
-        """A ceiling that cannot price the model cannot enforce anything.
+        """Note an unpriceable model. Only ever a note — see `check_ceiling_is_enforceable`.
 
-        Not an error — a new model should still be usable the day it ships — but
-        silently accepting `max_cost_usd` against a model we cannot price would
-        be the worst of both worlds.
+        A refusal cannot live in a validator. `RunManifest.brief` *is* a
+        `SimulationBrief`, so `RunManifest.model_validate_json` re-runs every
+        validator here just to read a manifest off disk. Raising made
+        `--resume <id>` unrecoverable the moment a price fell out of the table:
+        the parse failed before any caller override could apply, so not even
+        dropping `--max-cost` helped, and finished acts that were already paid
+        for became unreachable. Deserializing a record is not the moment to
+        decide whether a run may proceed.
         """
-        if prices_for(self.model) is not None:
-            return self
-        env_name = "SANZARU_REALTIME_PRICE_" + self.model.upper().replace("-", "_").replace(".", "_")
-        if self.max_cost_usd is not None:
-            logger.warning(
-                "max_cost_usd=%.2f is set, but no price is known for model %r, so the ceiling "
-                "will never fire - set %s to enable it",
-                self.max_cost_usd,
-                self.model,
-                env_name,
+        billable = {self.model} | {host.model for host in (self.rundown.hosts if self.rundown else []) if host.model}
+        unpriced = sorted(model for model in billable if prices_for(model) is None)
+        if unpriced:
+            logger.info(
+                "No price known for %s; spend will be reported as unknown (set %s)",
+                ", ".join(repr(m) for m in unpriced),
+                _price_env_names(unpriced),
             )
-        else:
-            logger.info("No price known for model %r; spend will be reported as unknown (set %s)", self.model, env_name)
         return self
 
     @model_validator(mode="after")
@@ -283,12 +298,89 @@ class SimulatedPodcastResult(BaseModel):
 # ---------- checkpoints ----------
 
 
-class ActCheckpoint(BaseModel):
+RUN_SECRET_ENV = "SANZARU_RUN_SECRET"
+
+
+def _run_secret() -> bytes | None:
+    """Key for authenticating this installation's own bookkeeping, if configured.
+
+    Opt-in, and worth understanding before switching it on. Run bookkeeping is
+    read back purely by name out of a flat, shared directory, so on a deployment
+    where anything else can write there — a shared Unity Catalog volume, a
+    multi-user media dir — the resume path will believe whatever it finds. With
+    a secret set, a manifest or checkpoint that this installation did not write
+    is refused rather than replayed.
+
+    Setting it later invalidates in-flight runs: existing files carry no
+    signature and will no longer verify. That is the intended direction (an
+    unsigned file is exactly what an outsider can produce), but it means the
+    switch is for between runs, not during one.
+    """
+    secret = os.environ.get(RUN_SECRET_ENV, "").strip()
+    return secret.encode() if secret else None
+
+
+def _sign(payload: str) -> str | None:
+    secret = _run_secret()
+    return hmac.new(secret, payload.encode(), hashlib.sha256).hexdigest() if secret else None
+
+
+def _signature_ok(payload: str, signature: str | None) -> bool:
+    """Whether `signature` authenticates `payload` under the configured secret.
+
+    True when no secret is configured — verification is opt-in, and the run_id
+    binding below is the check that always applies.
+    """
+    expected = _sign(payload)
+    if expected is None:
+        return True
+    return signature is not None and hmac.compare_digest(expected, signature)
+
+
+class _SignedRecord(BaseModel):
+    """Base for on-disk bookkeeping that resume trusts.
+
+    `sig` is excluded from the signed bytes for the obvious reason, and defaults
+    to None so a file written before signing was enabled still parses — it just
+    fails verification once a secret exists.
+    """
+
+    sig: str | None = None
+
+    def signed_payload(self) -> str:
+        """The bytes the signature covers. Field order is pydantic's, so it is
+        stable across a write/read round trip."""
+        return self.model_dump_json(exclude={"sig"})
+
+    def verify(self) -> bool:
+        return _signature_ok(self.signed_payload(), self.sig)
+
+
+def _signed_json(record: _SignedRecord) -> str:
+    """Serialize a bookkeeping record with its signature attached."""
+    return record.model_copy(update={"sig": _sign(record.signed_payload())}).model_dump_json(indent=2)
+
+
+class ActCheckpoint(_SignedRecord):
     """Sidecar written next to each act's audio.
 
     Holds everything the audio cannot: what was said, how long each turn ran, and
     what it cost. Without it a resumed run reports zero usage, has no transcript,
     and cannot rebuild per-speaker stems.
+
+    Signed because `usage` is replayed straight into the shared `CostBudget` on
+    resume, so a planted sidecar moves the spend accounting before a single new
+    turn is recorded.
+
+    `run_id` and `audio_sha256` are part of the record, and therefore part of
+    what the signature covers, because a signature over the rest alone proves
+    almost nothing in the deployment it exists for. The threat model for
+    `SANZARU_RUN_SECRET` is a *shared* installation, where the attacker can
+    start their own run and have this very code mint them a validly-signed
+    checkpoint carrying any `usage` they like; without the run binding they
+    could drop it on a victim's act and it would verify. And a sidecar that says
+    nothing about the mp3 beside it leaves the audio swappable, which is the
+    half that ends up in the finished episode.
     """
 
     act_id: str
@@ -296,10 +388,23 @@ class ActCheckpoint(BaseModel):
     stop_reason: str
     usage: RealtimeUsage
     turns: list[Turn]
+    run_id: str = ""
+    """Which run this act belongs to. Defaults to empty so a checkpoint written
+    before this field existed still parses; it simply will not verify."""
+    audio_sha256: str = ""
+    """Digest of the act's mp3, so the pair is authenticated together."""
 
 
-class RunManifest(BaseModel):
-    """One file, named by run id alone, that makes `resume` self-sufficient."""
+class RunManifest(_SignedRecord):
+    """One file, named by run id alone, that makes `resume` self-sufficient.
+
+    Which also makes it the run's configuration: on resume every field the
+    caller did not pass is restored from here, including `max_cost_usd`, the
+    models, and the output filename. A manifest that this installation did not
+    write is therefore attacker-supplied configuration for somebody else's
+    invocation (CWE-15), which is what `run_id` binding and the optional
+    signature above defend.
+    """
 
     run_id: str
     slug: str
@@ -338,6 +443,40 @@ def checkpoint_storage() -> StorageBackend:
             )
         return active
     return default
+
+
+def _price_env_names(models: list[str]) -> str:
+    return ", ".join("SANZARU_REALTIME_PRICE_" + m.upper().replace("-", "_").replace(".", "_") for m in models)
+
+
+def check_ceiling_is_enforceable(brief: SimulationBrief, rundown: Rundown) -> None:
+    """Refuse a spend ceiling over a model whose spend cannot be counted.
+
+    Every model the run can *bill*, not just the episode-level one:
+    `HostSpec.model` is a free-text per-host override inside the caller-supplied
+    rundown and `run_act` resolves each agent as `host.model or settings.model`,
+    so checking only `brief.model` left the override as a silent way to put every
+    turn on a model `usage_cost()` returns None for — at which point `charge()`
+    counted nothing and `max_cost_usd` was off (CWE-636).
+
+    Called here rather than from a pydantic validator because the same class is
+    what a run manifest stores: validating on construction meant a missing price
+    made an existing run's manifest unparseable, i.e. unresumable. This runs once
+    the effective brief and rundown are both known, still before any session
+    opens. `charge()` keeps its own copy of the rule, which is what covers a
+    resume — `model_copy(update=...)` does not re-run validators.
+    """
+    if brief.max_cost_usd is None:
+        return
+    billable = {brief.model} | {host.model for host in rundown.hosts if host.model}
+    unpriced = sorted(model for model in billable if prices_for(model) is None)
+    if not unpriced:
+        return
+    raise ValueError(
+        f"max_cost_usd={brief.max_cost_usd:.2f} cannot be enforced: no price is known for "
+        f"{', '.join(repr(m) for m in unpriced)}, so their spend would not be counted at all. "
+        f"Set {_price_env_names(unpriced)} to their rates, or drop max_cost_usd to run uncapped."
+    )
 
 
 def _manifest_name(run_id: str) -> str:
@@ -579,6 +718,23 @@ async def _load_checkpoint(
     try:
         mp3 = await storage.read("audio", audio_name)
         meta = ActCheckpoint.model_validate_json((await storage.read("audio", meta_name)).decode())
+        # A sidecar this installation did not write is treated as corrupt, not
+        # as fatal: its `usage` is replayed straight into the shared budget and
+        # its turns become part of the finished episode, so re-recording the act
+        # is the right answer. Also catches negative token counts, which
+        # `RealtimeUsage` now rejects at validation above.
+        if not meta.verify():
+            raise ValueError(f"checkpoint signature does not match ({RUN_SECRET_ENV} is set)")
+        if _run_secret() is not None:
+            # Only meaningful once there is a signature to make them binding —
+            # unsigned, these fields are as forgeable as the rest of the file.
+            # Together they stop a validly-signed checkpoint minted by the
+            # attacker's own run from being replayed onto this one, and stop the
+            # mp3 beside it from being swapped for different audio.
+            if meta.run_id != run_id:
+                raise ValueError(f"checkpoint belongs to run {meta.run_id!r}, not {run_id!r}")
+            if meta.audio_sha256 != hashlib.sha256(mp3).hexdigest():
+                raise ValueError("checkpoint audio does not match the digest its sidecar was signed with")
         # Decoding belongs inside the guard, not after it. A truncated write —
         # LocalStorageBackend.write is a plain open+write, so a crash leaves one
         # reachable — and a zero-audio act both fail here rather than at the
@@ -650,6 +806,8 @@ async def _record_act(
         stop_reason=result.stop_reason,
         usage=result.usage,
         turns=result.turns,
+        run_id=run_id,
+        audio_sha256=hashlib.sha256(mp3).hexdigest(),
     )
     # A checkpoint is two files, and `_load_checkpoint` requires both. A sibling
     # act failing — the cost ceiling, a stalled turn — cancels this task group at
@@ -658,9 +816,9 @@ async def _record_act(
     # Writing the sidecar first only moves which half survives, so shield the
     # pair (and the bookkeeping that says they are there) instead.
     with anyio.CancelScope(shield=True):
-        await checkpoints.write_audio_file(audio_name, mp3)
+        await checkpoints.write_audio_file(audio_name, mp3, is_bookkeeping=True)
         await checkpoints.write_audio_file(
-            _act_meta_name(slug, run_id, act.id), meta.model_dump_json(indent=2).encode()
+            _act_meta_name(slug, run_id, act.id), _signed_json(meta).encode(), is_bookkeeping=True
         )
         budget.mark_act_complete(act.id)
 
@@ -898,6 +1056,28 @@ async def simulate_podcast(
         manifest_name = _manifest_name(run_id)
         if await ckpt_storage.exists("audio", manifest_name):
             manifest = RunManifest.model_validate_json((await ckpt_storage.read("audio", manifest_name)).decode())
+            # Everything below restores this run's *configuration* from a file
+            # addressed by name in a shared directory, so establish first that
+            # the file is actually this run's.
+            #
+            # The binding is what stops the cheap version of the attack: mint a
+            # perfectly valid manifest by starting a run under your own id (it
+            # is written before recording, so an immediate failure costs
+            # nothing), then copy it over someone else's `simrun_<id>.json`.
+            # Without this check the copy worked verbatim, because `run_id` was
+            # simply overwritten with the requested one a few lines down —
+            # handing the victim's own invocation an attacker's ceiling, models,
+            # filename and rundown (CWE-15).
+            if manifest.run_id != run_id:
+                raise ValueError(
+                    f"run manifest for {run_id!r} was written for a different run "
+                    f"({manifest.run_id!r}) — refusing to resume from it"
+                )
+            if not manifest.verify():
+                raise ValueError(
+                    f"run manifest for {run_id!r} is not signed by this installation "
+                    f"({RUN_SECRET_ENV} is set) — refusing to resume from it"
+                )
             rundown = manifest.rundown
             # One rule, both directions: a field the caller actually passed this
             # time wins, everything else is restored from the manifest.
@@ -923,7 +1103,24 @@ async def simulate_podcast(
                 effective = effective.model_copy(
                     update={"filename": _with_format_suffix(effective.filename, effective.output_format)}
                 )
-            logger.info("Resuming run %s: %s", run_id, rundown.title)
+            # Stated, not assumed. These three are the settings a swapped
+            # manifest would be worth swapping *for* — what the run may spend,
+            # what it records with, and what it overwrites on the way out — and
+            # each is being taken from disk rather than from the caller. An
+            # operator following a bare `--resume <id>` should be able to see
+            # from the log that the ceiling that fired is still the ceiling.
+            logger.info(
+                # %r on the title: it is planner output (or a hand-edited
+                # rundown), so it is remote text reaching the operator's
+                # terminal. The CLI's own stderr writer scrubs control
+                # characters, but log records do not go through it.
+                "Resuming run %s: %r (restored from manifest: max_cost_usd=%s, model=%s, filename=%s)",
+                run_id,
+                rundown.title,
+                "none (uncapped)" if effective.max_cost_usd is None else f"${effective.max_cost_usd:.2f}",
+                effective.model,
+                effective.filename,
+            )
         elif brief.rundown is None:
             raise ValueError(
                 f"no run manifest for run_id {run_id!r} — pass the rundown explicitly, or check the audio directory"
@@ -936,6 +1133,19 @@ async def simulate_podcast(
     # were assigned at all.
     rundown = assign_rundown_voices(rundown)
     rundown = annotate_upcoming(rundown)
+
+    # Both halves are settled now — the effective brief (caller overrides applied
+    # over anything restored from the manifest) and the rundown that carries the
+    # per-host model overrides. Still before any session opens.
+    check_ceiling_is_enforceable(effective, rundown)
+
+    if effective.filename is not None:
+        # The final write runs this same check, but only after every act has
+        # been recorded and paid for — a refusal there strands the whole run's
+        # spend behind a resume with a different name. `effective.filename` is
+        # exactly what that write uses (the resume path already re-suffixed
+        # it), and the run-id fallback cannot collide with anything signed.
+        await repo.refuse_clobbering_a_checkpoint(effective.filename)
 
     slug = _safe_title(rundown.title)
     settings = SimulationSettings(
@@ -992,18 +1202,19 @@ async def simulate_podcast(
     # resumable.
     await checkpoints.write_audio_file(
         _manifest_name(run_id),
-        RunManifest(
-            run_id=run_id,
-            slug=slug,
-            created=time.time(),
-            rundown=rundown,
-            # The rundown is stripped so the manifest has one source of truth,
-            # and `resume` is set so what remains is still a valid brief on its
-            # own — it describes exactly the invocation that picks this run up.
-            brief=effective.model_copy(update={"run_id": run_id, "rundown": None, "resume": True}),
-        )
-        .model_dump_json(indent=2)
-        .encode(),
+        _signed_json(
+            RunManifest(
+                run_id=run_id,
+                slug=slug,
+                created=time.time(),
+                rundown=rundown,
+                # The rundown is stripped so the manifest has one source of truth,
+                # and `resume` is set so what remains is still a valid brief on its
+                # own — it describes exactly the invocation that picks this run up.
+                brief=effective.model_copy(update={"run_id": run_id, "rundown": None, "resume": True}),
+            )
+        ).encode(),
+        is_bookkeeping=True,
     )
 
     reuse: dict[str, _RecordedAct] = {}
@@ -1109,7 +1320,7 @@ async def simulate_podcast(
                 # download-and-reupload per flagged act on the remote backend.
                 with anyio.CancelScope(shield=True):
                     for backup_name, payload in payloads:
-                        await checkpoints.write_audio_file(backup_name, payload)
+                        await checkpoints.write_audio_file(backup_name, payload, is_bookkeeping=True)
                         preserved_takes.append(backup_name)
                         logger.info("qc-retry: previous take preserved as %s", backup_name)
             # Only the log knew these existed, which made choosing between takes

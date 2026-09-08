@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import math
 
+from ...config import logger
 from ...exceptions import CostCeilingError
 from .pricing import usage_cost
 from .types import RealtimeUsage
@@ -85,6 +86,34 @@ class CostBudget:
         cost = usage_cost(usage, model)
         if cost is None:
             self._unpriced_models.add(model)
+            # Uncapped runs keep the documented degrade path: a model should
+            # still be usable the day it ships, and with no ceiling there is
+            # nothing to enforce anyway. But when the caller *asked* for a
+            # ceiling, silently exempting every turn billed to an unpriced
+            # model turned max_cost_usd off entirely — and `HostSpec.model` is
+            # free text inside the caller-supplied rundown, so choosing a valid
+            # but unpriced realtime model was all it took (CWE-636).
+            if self.limit_usd is not None:
+                raise CostCeilingError(
+                    f"cannot enforce the ${self.limit_usd:.2f} ceiling: no price is known for {model!r}, "
+                    f"so its spend cannot be counted. Set "
+                    f"SANZARU_REALTIME_PRICE_{model.upper().replace('-', '_').replace('.', '_')} "
+                    f"to its rates, or drop --max-cost to run uncapped.",
+                    spent_usd=self._spent,
+                    limit_usd=self.limit_usd,
+                    completed_acts=self.completed_acts,
+                    suggested_limit_usd=self.suggested_limit_usd,
+                )
+            return
+        # Never backwards. Token counts arrive from two places that can carry
+        # negative values — a hand-edited act checkpoint replayed on resume, and
+        # the realtime peer itself — and a single negative charge drove the
+        # accumulator so far below zero that the ceiling could not trip again
+        # for the rest of the run (CWE-1284). `RealtimeUsage` now rejects
+        # negatives outright; this is the second door on the same room, because
+        # the arithmetic here is what the safety property actually rests on.
+        if cost < 0:
+            logger.warning("Ignoring negative cost %.6f for model %r - usage counts cannot be negative", cost, model)
             return
         self._spent += cost
         if self.limit_usd is not None and self._spent > self.limit_usd:

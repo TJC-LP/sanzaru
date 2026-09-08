@@ -235,12 +235,55 @@ class FileSystemRepository:
         except Exception as e:
             raise AudioFileError(f"Failed to read audio file '{filename}': {e}") from e
 
-    async def write_audio_file(self, filename: str, content: bytes) -> str:
+    async def refuse_clobbering_a_checkpoint(self, filename: str) -> None:
+        """Refuse a write that would land on a simulated-podcast act checkpoint.
+
+        Public because the podcast tools also call it *pre-flight*, before any
+        synthesis is billed: the copy inside `write_audio_file` is what actually
+        protects the checkpoint, but it fires only at the final write — after
+        the whole episode has been rendered and paid for, and the scripted path
+        has no checkpoints of its own to recover that spend from.
+
+        Checked by *looking*, not by matching the name. The name shape
+        (`<slug>_<runid>_<actid>.mp3`) cannot be recognised reliably: eight hex
+        characters is also what a date looks like, so a pattern strict enough to
+        catch checkpoints also rejected `interview_20250826_part1.mp3`. Asking
+        whether an act sidecar actually sits beside the target has no such
+        ambiguity.
+
+        Worth the extra stat because the alternative is silent: every
+        audio-producing tool writes into one flat directory under a caller-chosen
+        name and the storage write is an unconditional truncate, so on a shared
+        deployment this was how one session replaced another's paid-for act
+        audio — and, when the replacement decoded, how attacker-chosen audio got
+        into someone else's finished episode (CWE-73).
+        """
+        stem, _, suffix = filename.rpartition(".")
+        if suffix.lower() not in ("mp3", "wav") or not stem:
+            return
+        sidecar = f"{stem}.json"
+        try:
+            if not await self._storage.exists("audio", sidecar):
+                return
+            head = (await self._storage.read("audio", sidecar))[:2048]
+        except Exception:  # noqa: BLE001 - a failed probe must not block a legitimate write
+            return
+        if b'"act_id"' in head and b'"turns"' in head:
+            raise AudioFileError(
+                f"'{filename}' is the audio of a recorded act belonging to another run "
+                f"(its checkpoint sidecar '{sidecar}' is present) — refusing to overwrite it; "
+                "choose another output name"
+            )
+
+    async def write_audio_file(self, filename: str, content: bytes, *, is_bookkeeping: bool = False) -> str:
         """Write audio content to a file asynchronously.
 
         Args:
             filename: Name of the file to write.
             content: Audio content as bytes.
+            is_bookkeeping: True when the caller *is* the run-checkpoint writer,
+                which is the one path allowed to write over its own act audio
+                (``--qc-retry`` re-records an act that is already on disk).
 
         Returns:
             str: Display path of the written file.
@@ -248,6 +291,8 @@ class FileSystemRepository:
         Raises:
             AudioFileError: If there's an error writing the file.
         """
+        if not is_bookkeeping:
+            await self.refuse_clobbering_a_checkpoint(filename)
         try:
             return await self._storage.write("audio", filename, content)
         except Exception as e:

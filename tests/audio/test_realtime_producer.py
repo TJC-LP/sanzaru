@@ -6,6 +6,7 @@ async iteration.
 """
 
 import pytest
+from pydantic import ValidationError
 
 from sanzaru.audio.realtime.agent import RealtimeAgent
 from sanzaru.audio.realtime.budget import CostBudget
@@ -839,10 +840,47 @@ class TestCostBudget:
         assert budget.spent_usd == pytest.approx(20.0)
 
     def test_unknown_model_is_reported_not_silently_free(self):
-        budget = CostBudget(limit_usd=0.01)
+        """Uncapped, an unpriced model still records — it is just reported as unknown."""
+        budget = CostBudget()
         budget.charge(RealtimeUsage(output_audio_tokens=10_000_000), "some-future-model")
         assert budget.spent_usd == 0.0
         assert budget.unpriced_models == ["some-future-model"]
+
+    def test_a_ceiling_refuses_a_model_it_cannot_price(self):
+        """A ceiling that cannot count a turn must stop, not wave it through.
+
+        Charging an unpriced model used to return before both the accumulator
+        and the comparison, so every turn billed to a model outside the pricing
+        table was invisible to max_cost_usd — the ceiling was off while real
+        money was spent (CWE-636).
+        """
+        budget = CostBudget(limit_usd=0.01)
+
+        with pytest.raises(CostCeilingError) as excinfo:
+            budget.charge(RealtimeUsage(output_audio_tokens=10_000_000), "some-future-model")
+
+        assert "no price is known" in str(excinfo.value)
+        assert budget.unpriced_models == ["some-future-model"]
+
+    def test_negative_usage_cannot_drive_spend_backwards(self):
+        """A negative charge must not buy headroom under the ceiling (CWE-1284).
+
+        RealtimeUsage rejects negative counts outright now, so this reaches
+        charge() the only way it still can — a cost computed as negative.
+        """
+        budget = CostBudget(limit_usd=1.0)
+        budget.charge(RealtimeUsage(output_audio_tokens=1_000), "gpt-realtime-2.1-mini")
+        after_real_spend = budget.spent_usd
+        assert after_real_spend > 0
+
+        budget.charge(RealtimeUsage(), "gpt-realtime-2.1-mini")
+
+        assert budget.spent_usd >= after_real_spend
+
+    def test_usage_counts_cannot_be_negative(self):
+        """The checkpoint-resume ingestion path rejects tampered counts."""
+        with pytest.raises(ValidationError):
+            RealtimeUsage(output_audio_tokens=-100_000_000_000)
 
     def test_ceiling_carries_the_completed_acts(self):
         budget = CostBudget(limit_usd=0.001)

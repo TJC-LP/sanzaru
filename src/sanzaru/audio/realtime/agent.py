@@ -64,7 +64,18 @@ def _usage_from_event(usage: object) -> RealtimeUsage:
 
     def _int(obj: object, name: str) -> int:
         value = getattr(obj, name, None)
-        return int(value) if isinstance(value, int) else 0
+        if not isinstance(value, int):
+            return 0
+        if value < 0:
+            # Clamped rather than raised. `RealtimeUsage` rejects negatives
+            # because they invert the cost arithmetic and disable the ceiling
+            # (CWE-1284), but a validation error here would unwind the task
+            # group and throw away an act's worth of paid audio over a peer's
+            # malformed counter. A checkpoint carrying negatives is a different
+            # case: that one *should* fail and be re-recorded.
+            logger.warning("Realtime peer reported a negative %s (%d) - counting it as 0", name, value)
+            return 0
+        return value
 
     return RealtimeUsage(
         input_tokens=_int(usage, "input_tokens"),

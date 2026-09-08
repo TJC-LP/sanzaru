@@ -588,6 +588,30 @@ class TestSimulate:
         assert result.output_file == "chosen.mp3"
         assert (media_dir / "chosen.mp3").exists()
 
+    async def test_a_filename_landing_on_a_checkpoint_is_refused_before_recording(
+        self, rundown, media_dir, stub_run_act
+    ):
+        """The write-time guard fires only after every act is recorded and paid
+        for — a refusal there strands the run's whole spend behind a resume
+        with a different name. The pre-flight copy must cost nothing."""
+        import json
+
+        from sanzaru.exceptions import AudioFileError
+
+        (media_dir / "Other_deadbeef_act1.mp3").write_bytes(b"VICTIM-PAID-AUDIO")
+        (media_dir / "Other_deadbeef_act1.json").write_text(
+            json.dumps({"act_id": "act1", "title": "Act 1", "stop_reason": "complete", "usage": {}, "turns": []})
+        )
+
+        with pytest.raises(AudioFileError, match="refusing to overwrite"):
+            await sim.simulate_podcast(
+                sim.SimulationBrief(rundown=rundown, qc=False, run_id="newrun", filename="Other_deadbeef_act1.mp3")
+            )
+
+        assert stub_run_act == [], "no act may be recorded (billed) for a doomed output name"
+        assert not (media_dir / "simrun_newrun.json").exists(), "refused before the manifest was written"
+        assert (media_dir / "Other_deadbeef_act1.mp3").read_bytes() == b"VICTIM-PAID-AUDIO"
+
     async def test_the_briefs_producer_knobs_reach_every_act(self, rundown, media_dir, monkeypatch):
         """`turn_timeout_s` and friends are documented brief-level overrides.
 
@@ -1116,12 +1140,15 @@ class TestCostCeiling:
         act1_audio_written = anyio.Event()
         write_audio_file = FileSystemRepository.write_audio_file
 
-        async def instrumented(self, filename, data):
+        async def instrumented(self, filename, data, **kwargs):
             if filename.endswith("act1.json"):
                 # Widen the gap between act1's two writes to a window the
                 # sibling's abort is certain to land inside.
                 await anyio.sleep(0.05)
-            written = await write_audio_file(self, filename, data)
+            # **kwargs so is_bookkeeping reaches the real method: without it the
+            # run's own checkpoint writes look like a caller clobbering someone
+            # else's act and get refused.
+            written = await write_audio_file(self, filename, data, **kwargs)
             if filename.endswith("act1.mp3"):
                 act1_audio_written.set()
             return written
@@ -1221,13 +1248,98 @@ class TestResumeUnderTheRestoredCeiling:
     async def test_an_unpriceable_model_is_not_blocked_by_a_projection_it_cannot_make(
         self, rundown, media_dir, stub_run_act
     ):
-        await self._record(rundown, max_cost_usd=100.0, model="some-future-model")
+        """Uncapped is the only way to run an unpriced model, and resume must still work.
+
+        No ceiling means no projection to refuse against, which is exactly the
+        case that must not turn into a spurious abort.
+        """
+        await self._record(rundown, model="some-future-model")
         self._drop_act(media_dir, "act2")
         stub_run_act.clear()
 
         result = await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="testrun", qc=False))
         assert stub_run_act == ["act2"]
         assert result.cost.usd is None
+
+
+@pytest.mark.integration
+class TestManifestIsNotAttackerConfiguration:
+    """A resume restores this run's settings from a file addressed by name only.
+
+    That makes `simrun_<id>.json` the run's configuration — ceiling, models,
+    output filename, and the entire rundown — read out of a flat shared
+    directory. A manifest this installation did not write for this run is
+    somebody else's configuration for the victim's invocation (CWE-15).
+    """
+
+    async def _record(self, rundown, **kwargs):
+        await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, qc=False, run_id="victim", **kwargs))
+
+    async def test_a_manifest_written_for_another_run_is_refused(self, rundown, media_dir, stub_run_act):
+        """The documented chain: mint a valid manifest under your own id, copy it over.
+
+        `run_id` was overwritten with the requested one on restore, so a
+        manifest authored elsewhere applied verbatim — including a null ceiling
+        in place of the victim's deliberate one.
+        """
+        await self._record(rundown, max_cost_usd=100.0)
+        manifest_path = media_dir / "simrun_victim.json"
+        forged = json.loads(manifest_path.read_text())
+        forged["run_id"] = "attacker"
+        forged["brief"]["max_cost_usd"] = None
+        manifest_path.write_text(json.dumps(forged))
+
+        with pytest.raises(ValueError, match="written for a different run"):
+            await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="victim", qc=False))
+
+    async def test_a_signed_manifest_rejects_edits_when_a_secret_is_set(
+        self, rundown, media_dir, stub_run_act, monkeypatch
+    ):
+        """With SANZARU_RUN_SECRET set, tampering is detected even under the right run id."""
+        monkeypatch.setenv(sim.RUN_SECRET_ENV, "installation-secret")
+        await self._record(rundown, max_cost_usd=100.0)
+
+        manifest_path = media_dir / "simrun_victim.json"
+        forged = json.loads(manifest_path.read_text())
+        forged["brief"]["max_cost_usd"] = None
+        manifest_path.write_text(json.dumps(forged))
+
+        with pytest.raises(ValueError, match="not signed by this installation"):
+            await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="victim", qc=False))
+
+    async def test_an_untampered_signed_run_still_resumes(self, rundown, media_dir, stub_run_act, monkeypatch):
+        """Signing must not break the thing it protects."""
+        monkeypatch.setenv(sim.RUN_SECRET_ENV, "installation-secret")
+        await self._record(rundown, max_cost_usd=100.0)
+        for suffix in ("mp3", "json"):
+            (media_dir / f"Stitch_Test_victim_act2.{suffix}").unlink()
+        stub_run_act.clear()
+
+        result = await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="victim", qc=False))
+
+        assert stub_run_act == ["act2"]
+        assert result.cost.limit_usd == 100.0
+
+    async def test_a_planted_checkpoint_is_re_recorded_not_replayed(
+        self, rundown, media_dir, stub_run_act, monkeypatch
+    ):
+        """A checkpoint's `usage` is replayed straight into the shared budget.
+
+        Under a secret, one that does not verify is treated the way every other
+        corrupt checkpoint is — re-recorded, not trusted.
+        """
+        monkeypatch.setenv(sim.RUN_SECRET_ENV, "installation-secret")
+        await self._record(rundown, max_cost_usd=100.0)
+
+        sidecar = media_dir / "Stitch_Test_victim_act2.json"
+        tampered = json.loads(sidecar.read_text())
+        tampered["title"] = "attacker rewrote this"
+        sidecar.write_text(json.dumps(tampered))
+        stub_run_act.clear()
+
+        await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="victim", qc=False))
+
+        assert "act2" in stub_run_act
 
 
 @pytest.mark.unit
@@ -1389,10 +1501,59 @@ class TestSimulationBriefValidation:
         # acts/target_minutes only feed pre-production, which a rundown skips.
         assert sim.SimulationBrief(rundown=rundown, acts=2, target_minutes=200.0).rundown is rundown
 
-    def test_a_ceiling_on_an_unpriceable_model_warns_loudly(self, caplog):
-        with caplog.at_level("WARNING", logger="sanzaru"):
-            sim.SimulationBrief(premise="p", model="some-future-model", max_cost_usd=5.0)
-        assert "ceiling will never fire" in caplog.text
+    def test_constructing_a_brief_never_raises_over_pricing(self, rundown, caplog):
+        """Parsing must not be where a run is refused.
+
+        `RunManifest.brief` is a `SimulationBrief`, so raising here made reading
+        a manifest off disk fail — `--resume <id>` became unrecoverable the
+        moment a price left the table, stranding acts already paid for. The
+        refusal lives in `check_ceiling_is_enforceable` instead.
+        """
+        with caplog.at_level("INFO", logger="sanzaru"):
+            brief = sim.SimulationBrief(premise="p", model="some-future-model", max_cost_usd=5.0)
+        assert brief.model == "some-future-model"
+        assert "No price known" in caplog.text
+
+    def test_a_ceiling_on_an_unpriceable_model_is_refused_before_recording(self, rundown):
+        """Accepting a ceiling we know cannot fire is the worst outcome.
+
+        It reads as "capped" to everyone downstream while every turn goes
+        uncounted (CWE-636).
+        """
+        brief = sim.SimulationBrief(rundown=rundown, model="some-future-model", max_cost_usd=5.0)
+        with pytest.raises(ValueError, match="cannot be enforced"):
+            sim.check_ceiling_is_enforceable(brief, rundown)
+
+    def test_a_per_host_model_override_cannot_slip_past_the_ceiling(self, rundown):
+        """`HostSpec.model` is billable too, and was never pre-flight checked.
+
+        Only `brief.model` was checked, so overriding each host onto a valid but
+        unpriced realtime model disabled max_cost_usd for the whole episode with
+        no signal until the money was gone.
+        """
+        hosts = [h.model_copy(update={"model": "gpt-4o-realtime-preview"}) for h in rundown.hosts]
+        unpriced = rundown.model_copy(update={"hosts": hosts})
+        brief = sim.SimulationBrief(rundown=unpriced, max_cost_usd=5.0)
+
+        with pytest.raises(ValueError, match="gpt-4o-realtime-preview"):
+            sim.check_ceiling_is_enforceable(brief, unpriced)
+
+    def test_an_unpriceable_model_is_fine_without_a_ceiling(self, rundown):
+        """The degrade path stays: a new model is usable the day it ships."""
+        brief = sim.SimulationBrief(rundown=rundown, model="some-future-model")
+        sim.check_ceiling_is_enforceable(brief, rundown)
+
+    def test_a_manifest_naming_an_unpriced_model_still_parses(self, rundown):
+        """The regression this split exists to prevent: resume must stay possible."""
+        brief = sim.SimulationBrief(rundown=rundown, model="some-future-model", max_cost_usd=5.0)
+        manifest = sim.RunManifest(
+            run_id="abc12345", slug="show", created=0.0, rundown=rundown, brief=brief
+        ).model_dump_json()
+
+        restored = sim.RunManifest.model_validate_json(manifest)
+
+        assert restored.brief.model == "some-future-model"
+        assert restored.brief.max_cost_usd == 5.0
 
     def test_an_explicit_cap_too_small_for_one_act_is_rejected(self, rundown):
         with pytest.raises(ValidationError, match="cannot fit one act"):

@@ -453,6 +453,13 @@ they are easy to "simplify" away.
   translation of `*`, which is the property `compile_name_filter` relies on;
   regex-only metacharacters raise rather than fail open, because a caller on the
   old contract recovers from an error and not from an empty list.
+- **Run checkpoints are protected by their signature, not by their filename.**
+  A name-shaped rule for `<slug>_<runid>_<actid>.mp3` cannot be written without
+  false positives — eight hex characters is also what a date looks like, and it
+  rejected `interview_20250826_part1.mp3`. `write_audio_file` instead looks for
+  the act sidecar beside the target and refuses (`is_bookkeeping=True` is the
+  run's own opt-out, which `--qc-retry` needs). `reject_reserved_name` covers
+  only `simrun_*.json`, which is unambiguous.
 - **`/media` serves an allowlisted content type or `application/octet-stream`,
   always with `nosniff` + `Content-Disposition: attachment`.** The response type
   used to come from `mimetypes.guess_type()` of a caller-chosen name, which made a
@@ -474,6 +481,20 @@ they are easy to "simplify" away.
 - **The identity header must appear exactly once.** `Headers.get()` returns the
   *first* copy, and an appending proxy forwards the client's copy first — so two
   copies (or a malformed one) are a 400, never "bind the first" or "bind nobody".
+- **A resume only trusts bookkeeping written for *this* run.** `RunManifest` is the
+  resumed run's configuration (ceiling, models, filename, rundown), so `run_id` must
+  match and, when `SANZARU_RUN_SECRET` is set, the HMAC must verify. An
+  `ActCheckpoint` signs its `run_id` and a digest of its mp3 for the same reason:
+  on a shared installation the attacker can have this code mint them a validly
+  signed checkpoint, so a signature that binds neither the run nor the audio
+  proves nothing.
+- **A ceiling that cannot price a model refuses instead of proceeding** — in
+  `check_ceiling_is_enforceable`, called from the tool body, and again at
+  `charge()`. Deliberately *not* a pydantic validator: `RunManifest.brief` is a
+  `SimulationBrief`, so raising during validation made reading a manifest fail
+  and turned a missing price into an unresumable run with paid acts stranded.
+  The `charge()` copy is what covers resume, since `model_copy(update=...)` does
+  not re-run validators.
 
 ## Prompting Sora with Reference Images
 
@@ -584,6 +605,8 @@ SANZARU_REALTIME_MAX_SESSIONS=6       # concurrent realtime sessions across all 
 SANZARU_REALTIME_TURN_TIMEOUT=120     # per-turn stall bound; default 6x turn_seconds, min 60s
 SANZARU_REALTIME_ACT_BUDGET=3000      # per-act wall clock; default 3000s, under the 60-min close
 # Override stale list pricing: text_in,cached_text_in,audio_in,cached_audio_in,audio_out,text_out
+# Also the way to make an unlisted model usable *with* max_cost_usd: a ceiling
+# over a model nothing can price is refused, not silently un-enforced.
 SANZARU_REALTIME_PRICE_GPT_REALTIME_2_1=4,0.4,32,0.4,64,24
 
 # HTTP transport security (ignored on stdio). None of these load from `.env` —
@@ -602,6 +625,10 @@ SANZARU_IDENTITY_HEADER=x-forwarded-email  # opt-in: trust this proxy-injected h
                                        # a request carrying two copies is refused (400).
 SANZARU_REQUIRE_USER_CONTEXT=1         # Databricks backend: refuse (403) rather than fall back
                                        # to the shared volume root when a request has no identity
+
+# Signs simulated-podcast manifests and checkpoints so `--resume` refuses
+# bookkeeping this installation did not write. Set it on shared filesystems.
+SANZARU_RUN_SECRET="..."
 ```
 
 **For MCP servers (Claude Desktop):**

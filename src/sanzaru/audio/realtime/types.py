@@ -364,16 +364,26 @@ class RealtimeUsage(BaseModel):
     Audio and text are priced very differently (32x apart on input for
     gpt-realtime-2.1), and cached input is nearly free, so a single
     `input_tokens` number cannot be turned back into a cost.
+
+    Every field is `ge=0`, which is a safety constraint rather than tidiness.
+    This model is deserialized from two places the run does not control — the
+    per-act checkpoint sidecar on disk (replayed into the shared budget on
+    `--resume`) and `response.done` off the realtime socket — and `usage_cost`
+    multiplies these counts by positive per-token prices. One negative count
+    therefore yields a negative dollar cost, and `CostBudget.charge` adding it
+    drove the accumulator far enough below zero that `max_cost_usd` could never
+    trip again (CWE-1284). A tampered checkpoint is now unusable and gets
+    re-recorded, which is how every other corrupt checkpoint is already handled.
     """
 
-    input_tokens: int = 0
-    output_tokens: int = 0
-    input_text_tokens: int = 0
-    input_audio_tokens: int = 0
-    cached_text_tokens: int = 0
-    cached_audio_tokens: int = 0
-    output_text_tokens: int = 0
-    output_audio_tokens: int = 0
+    input_tokens: int = Field(default=0, ge=0)
+    output_tokens: int = Field(default=0, ge=0)
+    input_text_tokens: int = Field(default=0, ge=0)
+    input_audio_tokens: int = Field(default=0, ge=0)
+    cached_text_tokens: int = Field(default=0, ge=0)
+    cached_audio_tokens: int = Field(default=0, ge=0)
+    output_text_tokens: int = Field(default=0, ge=0)
+    output_audio_tokens: int = Field(default=0, ge=0)
 
     def __add__(self, other: RealtimeUsage) -> RealtimeUsage:
         return RealtimeUsage(**{k: getattr(self, k) + getattr(other, k) for k in RealtimeUsage.model_fields})
