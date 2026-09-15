@@ -64,6 +64,11 @@ dependencies = [
   # and README promises that for every install, not only `uv sync`. It used to
   # arrive transitively via pydantic-settings — a coincidence, not a contract.
   "python-dotenv>=1.0.0",
+  # server.py imports both directly (middleware types, the HTTP entrypoint).
+  # They arrive transitively via mcp today; declared so an mcp minor reshuffling
+  # its dependencies cannot break `sanzaru --transport http`. Floors match mcp's.
+  "starlette>=0.27",
+  "uvicorn>=0.31.1",
 ]
 
 [project.urls]

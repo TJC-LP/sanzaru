@@ -23,10 +23,11 @@ uv sync
 uv run sanzaru
 uv run sanzaru serve            # explicit alias
 
-# Run the MCP server (HTTP mode - stateless)
+# Run the MCP server (HTTP mode - stateless). Loopback runs open; any other bind
+# refuses to start without a bearer token (or the proxy escape hatch — see Transport Modes)
 uv run sanzaru --transport http
 uv run sanzaru --transport http --port 3000
-uv run sanzaru --transport http --host 0.0.0.0 --port 8080
+SANZARU_HTTP_TOKEN="$(openssl rand -hex 32)" uv run sanzaru --transport http --host 0.0.0.0 --port 8080
 
 # Agent CLI (same tools as shell commands — see docs/cli.md)
 uv run sanzaru capabilities
@@ -415,7 +416,27 @@ they are easy to "simplify" away.
   switch's failure mode is "every user shares one namespace", so an unrecognised
   value (`enabled`, `y`) is a configuration error, never a silent "off" — the original
   `1/true/yes` parse treated `on` as off.
-
+- **`/media` serves an allowlisted content type or `application/octet-stream`,
+  always with `nosniff` + `Content-Disposition: attachment`.** The response type
+  used to come from `mimetypes.guess_type()` of a caller-chosen name, which made a
+  stored `.html` an executable document in the server's own origin — the origin the
+  MCP SDK's rebinding allowlist trusts for `/mcp`. It also applies the same
+  Host/Origin policy as `/mcp` by hand, because FastMCP appends custom routes
+  outside that middleware.
+- **HTTP mode requires a bearer token on a non-loopback bind.** The Host allowlist
+  is not authentication — a network peer writes that header themselves.
+- **`build_http_app()` is the only HTTP artifact.** `mcp.streamable_http_app()` alone
+  carries no bearer or identity middleware; the docs used to hand that bare app out as
+  the production mount, which left `/mcp` open with the token exported. `_run_http`
+  and any embedding must both go through the seam.
+- **Off loopback, the Origin check is kept, not dropped with the Host allowlist.**
+  `SANZARU_ALLOWED_HOSTS` keeps the SDK's rebinding protection on with the real
+  hostnames; the unauthenticated hatch *requires* it, so the unauthenticated path is
+  never also the least-protected one. Only a token-protected bind without an allowlist
+  turns the check off.
+- **The identity header must appear exactly once.** `Headers.get()` returns the
+  *first* copy, and an appending proxy forwards the client's copy first — so two
+  copies (or a malformed one) are a 400, never "bind the first" or "bind nobody".
 
 ## Prompting Sora with Reference Images
 
@@ -527,6 +548,23 @@ SANZARU_REALTIME_TURN_TIMEOUT=120     # per-turn stall bound; default 6x turn_se
 SANZARU_REALTIME_ACT_BUDGET=3000      # per-act wall clock; default 3000s, under the 60-min close
 # Override stale list pricing: text_in,cached_text_in,audio_in,cached_audio_in,audio_out,text_out
 SANZARU_REALTIME_PRICE_GPT_REALTIME_2_1=4,0.4,32,0.4,64,24
+
+# HTTP transport security (ignored on stdio). None of these load from `.env` —
+# the loader is an allowlist and a planted file must not weaken transport auth;
+# export them, or inject with `npx dotenv-cli -- sanzaru ...`.
+SANZARU_HTTP_TOKEN="..."               # bearer token required on /mcp and /media
+SANZARU_ALLOW_UNAUTHENTICATED_HTTP=1   # only when a proxy already authenticates; a
+                                       # non-loopback bind refuses to start without one.
+                                       # Requires SANZARU_ALLOWED_HOSTS.
+SANZARU_ALLOWED_HOSTS=sanzaru.example.com,sanzaru.example.com:*  # Host values clients send;
+                                       # keeps DNS-rebinding (Host + Origin) checks on off loopback
+SANZARU_ALLOWED_ORIGINS=https://app.example  # optional; default is http(s):// of each host
+SANZARU_IDENTITY_HEADER=x-forwarded-email  # opt-in: trust this proxy-injected header for caller
+                                       # identity (multi-tenant). Unset = no header is trusted.
+                                       # Set only behind a proxy that strips client copies;
+                                       # a request carrying two copies is refused (400).
+SANZARU_REQUIRE_USER_CONTEXT=1         # Databricks backend: refuse (403) rather than fall back
+                                       # to the shared volume root when a request has no identity
 ```
 
 **For MCP servers (Claude Desktop):**
@@ -633,9 +671,17 @@ view_media(media_type="audio", filename="track.mp3")
 In HTTP transport mode, a direct route serves raw bytes with no base64 overhead:
 ```
 GET /media/{type}/{name}  →  raw bytes + Content-Type header
+    Authorization: Bearer <SANZARU_HTTP_TOKEN>
 ```
 
-This is preferred for large files in HTTP deployments. The `callServerTool` chunking path is the universal fallback that works over both stdio and HTTP.
+It is for **programmatic clients that can send the bearer header** — an agent
+fetching a rendered file, a proxy. A browser media element (`<video src>`, `<img src>`)
+cannot attach `Authorization`, and every response carries `Content-Disposition:
+attachment` and `nosniff`, so it is not a playback URL: in an authenticated
+deployment the `_get_media_data` chunking path (which the bundled React app already
+uses) is the only one that works in the viewer, over both stdio and HTTP. The route
+applies the same Host/Origin policy as `/mcp` and serves an allowlisted content type
+or `application/octet-stream`.
 
 ### Frontend Development
 
@@ -666,12 +712,27 @@ uv run sanzaru
 ### http (Stateless HTTP Streaming)
 HTTP streaming transport for web clients and remote access:
 ```bash
-# Local HTTP server
+# Local HTTP server (loopback: token optional, the SDK's loopback Host/Origin allowlist applies)
 uv run sanzaru --transport http
 
-# Custom host/port
+# Any other bind requires a bearer token; without one the server refuses to start (exit 3)
+export SANZARU_HTTP_TOKEN="$(openssl rand -hex 32)"
 uv run sanzaru --transport http --host 0.0.0.0 --port 3000
+# ...and clients send: Authorization: Bearer <token>   (on /mcp and /media)
+
+# Behind a proxy that already authenticates (Databricks Apps): no token, but the
+# proxy's hostnames must be named so the Host/Origin checks stay on
+SANZARU_ALLOW_UNAUTHENTICATED_HTTP=1 SANZARU_ALLOWED_HOSTS=myapp.example.com \
+  uv run sanzaru --transport http --host 0.0.0.0 --port 8000
 ```
+
+**Authentication model:** `SANZARU_HTTP_TOKEN` is checked on every request by
+`BearerTokenMiddleware` (constant-time, as bytes). Off loopback, `SANZARU_ALLOWED_HOSTS`
+keeps the SDK's DNS-rebinding protection on for the deployment's real hostnames —
+Origin included, which a browser page cannot forge; with a token and no allowlist the
+check is switched off and the token is the control. `SANZARU_ALLOW_UNAUTHENTICATED_HTTP=1`
+drops the token requirement only together with an allowlist. See `build_http_app` in
+`server.py` for the exact policy.
 
 **Use cases:**
 - Web-based MCP clients
@@ -687,16 +748,25 @@ uv run sanzaru --transport http --host 0.0.0.0 --port 3000
 - **CORS support:** Can be configured via Starlette middleware (see Python MCP SDK docs)
 
 **Production deployment:**
-For advanced deployments with CORS, multiple servers, or custom middleware, mount the server in a Starlette app. This also enables CORS for custom routes like `/media/{type}/{name}`:
+For advanced deployments with CORS or custom middleware, build the app with
+`build_http_app()` and hand it to your own ASGI server. It is the *same* app
+`sanzaru --transport http` serves — bearer auth, identity middleware, the `/media`
+route and the bind-appropriate Host/Origin policy included. Do **not** mount the bare
+`mcp.streamable_http_app()`: it carries none of the middleware, so `/mcp` is open even
+with `SANZARU_HTTP_TOKEN` exported (and a `Mount` never runs its lifespan, so the
+session manager is never started either).
 ```python
-from starlette.applications import Starlette
-from starlette.routing import Mount
 from starlette.middleware.cors import CORSMiddleware
-from sanzaru.server import mcp
+from sanzaru.server import build_http_app
 
-app = Starlette(routes=[Mount("/", mcp.streamable_http_app())])
-app = CORSMiddleware(app, allow_origins=["*"], expose_headers=["Mcp-Session-Id"])
+# Pass the address you will bind — the token requirement and Host/Origin policy
+# are derived from it. Raises ConfigurationError for an unsafe combination.
+app = build_http_app(host="0.0.0.0", port=8000)
+app = CORSMiddleware(app, allow_origins=["https://client.example"], expose_headers=["Mcp-Session-Id"])
 ```
+Call it once per process, before anything else calls `mcp.streamable_http_app()`:
+FastMCP freezes the stateless flag and security settings into its session manager on
+the first call.
 
 **Note:** The `/media` route does not include CORS headers by default. If you need cross-origin access to media files (e.g., from a browser-based client), wrap with CORSMiddleware as shown above.
 
