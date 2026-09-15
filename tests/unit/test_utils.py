@@ -49,7 +49,7 @@ class TestGenerateFilename:
 
 @pytest.mark.unit
 class TestValidateResourceId:
-    """An OpenAI id is a URL path segment, so it decides which endpoint we call."""
+    """An OpenAI id is a URL path segment; the SDK encodes it, this keeps that from mattering."""
 
     @pytest.mark.parametrize(
         "value",
@@ -58,7 +58,6 @@ class TestValidateResourceId:
             "resp_abc123",
             "vid_test123",
             "vid-with-dashes",
-            "ft:gpt-41-mini:org:custom",  # ':' is in the alphabet for fine-tune-style ids
             "a",
             "z" * 128,
         ],
@@ -69,17 +68,22 @@ class TestValidateResourceId:
     @pytest.mark.parametrize(
         "value",
         [
-            "../files/file-XYZ/content?",  # the download-redirect exploit
-            "../files?",  # the org file-listing reflection
-            "../models/ft:gpt-4.1:org:custom",  # DELETE against a fine-tuned model
+            # The traversal shapes. openai>=2.53.0 percent-encodes path params so
+            # these already fail as lookups; the allowlist keeps that true
+            # independently of the SDK.
+            "../files/file-XYZ/content?",
+            "../files?",
+            "../models/ft:gpt-4.1:org:custom",
             "..",
             "vid/123",
             "vid?limit=100",
             "vid#fragment",
-            "vid%2Fabc",  # pre-encoded: httpx would not decode it, but nothing legitimate carries '%'
+            "vid%2Fabc",  # pre-encoded: a server that decodes-then-normalises would see '/'; no real id carries '%'
             "vid 123",
             "vid\n123",
             "vid.123",  # '.' is out precisely so '..' cannot be spelled
+            "ft:gpt-4.1-mini-2025-04-14:org::abc123",  # a *model* id: this is not the validator for those
+            "resp:abc",  # no video/response id carries ':'
             "",
             "   ",
             "z" * 129,
@@ -121,6 +125,31 @@ class TestReservedRunBookkeepingNames:
         ],
     )
     def test_run_manifest_names_are_refused(self, name):
+        with pytest.raises(ValueError, match="reserved"):
+            reject_reserved_name(name)
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "./simrun_victim.json",
+            "simrun_victim.json/",
+            "simrun_victim.json//",
+            "x/simrun_victim.json",
+            "x/../simrun_victim.json",
+            "./x/./simrun_victim.json",
+            "simrun_victim.json\\",
+            "x\\simrun_victim.json",
+            "/simrun_victim.json",
+        ],
+    )
+    def test_every_spelling_a_backend_reduces_to_the_manifest_is_refused(self, name):
+        """The check must see the name the way storage will write it.
+
+        Databricks reduces a name to `PurePosixPath(name).name` and the local
+        backend resolves `./x`, `x/` and `a/../x` to `<base>/x`, so a raw-string
+        match let each of these land on `simrun_victim.json` — the manifest
+        clobber the reservation exists to stop, reproduced on both backends.
+        """
         with pytest.raises(ValueError, match="reserved"):
             reject_reserved_name(name)
 
