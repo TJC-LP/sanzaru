@@ -557,8 +557,8 @@ async def test_edit_image_gpt_image_2_rejects_transparent(mocker, tmp_reference_
 
 
 @pytest.mark.integration
-async def test_edit_image_default_model_forwards_input_fidelity(mocker, tmp_reference_path):
-    """gpt-image-2.5-sunburst honours input_fidelity, so the edit default no longer strips it."""
+async def test_edit_image_default_model_strips_input_fidelity(mocker, tmp_reference_path):
+    """gpt-image-2.5-sunburst rejects input_fidelity (verified against the API), so the default strips it."""
     input_file = tmp_reference_path / "face.png"
     Image.new("RGB", (100, 100)).save(input_file, "PNG")
 
@@ -580,7 +580,7 @@ async def test_edit_image_default_model_forwards_input_fidelity(mocker, tmp_refe
 
     call_kwargs = mock_get_client.return_value.images.edit.call_args.kwargs
     assert call_kwargs["model"] == "gpt-image-2.5-sunburst"
-    assert call_kwargs["input_fidelity"] == "high"
+    assert "input_fidelity" not in call_kwargs
 
 
 # =============================================================================

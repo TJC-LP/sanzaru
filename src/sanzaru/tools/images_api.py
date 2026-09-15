@@ -168,8 +168,9 @@ async def edit_image(
         quality: Generation quality. Default: "auto"; "xhigh" and "max" are gpt-image-2.5 only
         background: Background type. Default: "auto" (transparent unsupported on gpt-image-2)
         output_format: Output format. Default: "png"
-        input_fidelity: Control fidelity to input images. Honoured by gpt-image-2.5,
-            gpt-image-1.5 and gpt-image-1; stripped for gpt-image-2 (always high).
+        input_fidelity: Control fidelity to input images. Honoured by gpt-image-1.5
+            and gpt-image-1; stripped for gpt-image-2 and gpt-image-2.5 (always high,
+            the API rejects the flag).
         filename: Custom output filename (optional, auto-generated if not provided)
 
     Returns:
@@ -248,8 +249,8 @@ async def edit_image(
     if mask_file:
         edit_kwargs["mask"] = mask_file
     if input_fidelity:
-        # gpt-image-2 always processes inputs at high fidelity and rejects the flag;
-        # every other GPT image model honours it (image_models.py is the table).
+        # gpt-image-2 and gpt-image-2.5 always process inputs at high fidelity and
+        # reject the flag; gpt-image-1/1.5 honour it (image_models.py is the table).
         if honors_input_fidelity(model):
             edit_kwargs["input_fidelity"] = input_fidelity
         else:

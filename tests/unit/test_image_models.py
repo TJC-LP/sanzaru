@@ -47,7 +47,8 @@ class TestCapabilitiesLookup:
         rows = {capabilities_for(m) for m in GPT_IMAGE_2_5_MODELS}
         assert len(rows) == 1
         (caps,) = rows
-        assert caps.transparent_background and caps.input_fidelity and caps.arbitrary_resolutions
+        assert caps.transparent_background and caps.arbitrary_resolutions
+        assert caps.input_fidelity is False  # the API 400s on it, whatever the SDK docstring says
         assert {"xhigh", "max"} <= caps.qualities
 
 
@@ -94,12 +95,14 @@ class TestQualityRule:
 
 @pytest.mark.unit
 class TestInputFidelityRule:
-    def test_gpt_image_2_strips_it(self):
-        assert honors_input_fidelity("gpt-image-2") is False
-        assert honors_input_fidelity("gpt-image-2-2026-04-21") is False
+    @pytest.mark.parametrize(
+        "model", ["gpt-image-2", "gpt-image-2-2026-04-21", "gpt-image-2.5-sunburst", "gpt-image-2.5-flare-2026-09-08"]
+    )
+    def test_gpt_image_2_and_2_5_strip_it(self, model):
+        assert honors_input_fidelity(model) is False
 
-    @pytest.mark.parametrize("model", ["gpt-image-2.5-sunburst", "gpt-image-2.5-flare", "gpt-image-1.5", "gpt-image-1"])
-    def test_other_gpt_image_models_forward_it(self, model):
+    @pytest.mark.parametrize("model", ["gpt-image-1.5", "gpt-image-1"])
+    def test_older_gpt_image_models_forward_it(self, model):
         assert honors_input_fidelity(model) is True
 
     def test_mini_never_supported_it(self):

@@ -194,6 +194,8 @@ _IMAGE_MODELS_SUMMARY = """**Image generation models:**
   "xhigh"/"max" quality levels.
 - gpt-image-2.5-sunburst: DEFAULT for edit_image — tuned for editing precision
   (face/detail preservation, masked inpainting). Same capabilities as flare.
+  Like gpt-image-2, both 2.5 variants always process inputs at high fidelity
+  (no input_fidelity knob).
 - gpt-image-2: Previous flagship — ~99% text accuracy, any valid resolution.
   Always processes inputs at high fidelity (no input_fidelity knob).
   Does not support transparent backgrounds or xhigh/max.
@@ -266,7 +268,7 @@ Parameters:
 - moderation: "auto" (default) or "low"
 - background: "auto", "opaque", or "transparent" (transparent NOT supported on gpt-image-2 — raises;
   gpt-image-2.5 and gpt-image-1.5 support it with png/webp output)
-- input_fidelity: "high" or "low" (gpt-image-2.5, gpt-image-1.5, gpt-image-1 — ignored by gpt-image-2)
+- input_fidelity: "high" or "low" (gpt-image-1.5 / gpt-image-1 only — stripped for gpt-image-2 and 2.5, which are always high)
 - output_format: "png", "jpeg", or "webp"
 - action: "auto" (default), "generate", or "edit" — force a mode when an image is in context
 - partial_images: 0-3 — stream partial images during generation
@@ -276,8 +278,8 @@ Common tool_config examples:
 Maximum quality with gpt-image-2.5:
   tool_config={"type": "image_generation", "model": "gpt-image-2.5-flare", "quality": "max"}
 
-Precision edit with gpt-image-2.5-sunburst:
-  tool_config={"type": "image_generation", "model": "gpt-image-2.5-sunburst", "input_fidelity": "high"}
+Precision edit with gpt-image-2.5-sunburst (inputs are always high fidelity):
+  tool_config={"type": "image_generation", "model": "gpt-image-2.5-sunburst", "action": "edit"}
 
 2K landscape:
   tool_config={"type": "image_generation", "size": "2560x1440"}
@@ -418,8 +420,8 @@ Parameters:
 - quality: Generation quality. Default: "auto"; "xhigh"/"max" on gpt-image-2.5 only
 - background: Background type. Default: "auto" (transparent unsupported on gpt-image-2)
 - output_format: Output format. Default: "png"
-- input_fidelity: Control fidelity to input (gpt-image-2.5, gpt-image-1.5, gpt-image-1).
-  Silently ignored for gpt-image-2 (always high).
+- input_fidelity: Control fidelity to input (gpt-image-1.5 / gpt-image-1 only).
+  Silently ignored for gpt-image-2 and gpt-image-2.5 (always high; the API rejects the flag).
   * "high" - better face/style preservation
   * "low" - more creative freedom
 - filename: Custom output filename (optional)

@@ -32,19 +32,25 @@ class ImageCapabilities:
     transparent_background: bool
     """Whether `background="transparent"` is accepted (png/webp output only)."""
     input_fidelity: bool
-    """Whether `input_fidelity` is honoured on edits. gpt-image-2 rejects the
-    flag outright (it always processes inputs at high fidelity), so the
-    wrappers strip it rather than forward it."""
+    """Whether `input_fidelity` is honoured on edits. gpt-image-2 and
+    gpt-image-2.5 reject the flag outright (`invalid_input_fidelity_model`, they
+    always process inputs at high fidelity), so the wrappers strip it rather
+    than forward it."""
     qualities: frozenset[str]
     arbitrary_resolutions: bool
     """Any WIDTHxHEIGHT with both edges multiples of 16, ratio within 3:1 and
     the model's pixel limits — as opposed to the three fixed GPT image sizes."""
 
 
+# `input_fidelity=False` is the live API's answer, not the SDK docstring's: on
+# 2026-09-15 /v1/images/edits with model=gpt-image-2.5-sunburst returned 400
+# "does not support the 'input_fidelity' parameter" (code
+# invalid_input_fidelity_model), while openai 3.14's image_edit_params.py still
+# reads "gpt-image-1.5 and later models". Trust the endpoint.
 _GPT_IMAGE_2_5 = ImageCapabilities(
     family="gpt-image-2.5",
     transparent_background=True,
-    input_fidelity=True,
+    input_fidelity=False,
     qualities=_EXTENDED_QUALITIES,
     arbitrary_resolutions=True,
 )

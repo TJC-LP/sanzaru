@@ -45,7 +45,7 @@ Both accept `background="transparent"` (with `png` or `webp` output) and two qua
 
 ### When to pick another model
 - **gpt-image-2**: the previous flagship (~99% text accuracy). It does not support `background="transparent"` or `quality="xhigh"|"max"`, and it ignores `input_fidelity` (always high) — the wrappers raise or strip accordingly.
-- **gpt-image-1.5**: older, fixed sizes; still supports transparent output and `input_fidelity`.
+- **gpt-image-1.5**: older, fixed sizes; still supports transparent output and is the only current model that honours `input_fidelity` (gpt-image-2.5 rejects the flag like gpt-image-2).
 
 ### Basic Generation
 
@@ -252,7 +252,7 @@ resp = create_image(
 - **quality**: `"auto"`, `"low"`, `"medium"`, `"high"`
 - **output_format**: `"png"`, `"jpeg"`, `"webp"`
 - **background**: `"auto"`, `"transparent"` (gpt-image-1/1.5 only), `"opaque"`
-- **input_fidelity**: `"high"`, `"low"` (gpt-image-2.5, gpt-image-1.5, gpt-image-1 — gpt-image-2 is always high)
+- **input_fidelity**: `"high"`, `"low"` (gpt-image-1/1.5 only — gpt-image-2 and 2.5 are always high)
 - **moderation**: `"auto"` (default), `"low"` (more permissive)
 - **action**: `"auto"` (default), `"generate"` (force new image), `"edit"` (force edit of in-context image)
 - **partial_images**: `0`-`3` — stream partial images during generation

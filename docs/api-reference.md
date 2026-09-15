@@ -234,7 +234,7 @@ Edit existing images using OpenAI's Images API with gpt-image-2.5-sunburst (defa
 - `quality` (string, optional): Quality - `"auto"` (default), `"low"`, `"medium"`, `"high"`
 - `background` (string, optional): Background - `"auto"` (default), `"transparent"` (NOT supported on gpt-image-2), `"opaque"`
 - `output_format` (string, optional): Format - `"png"` (default), `"jpeg"`, `"webp"`
-- `input_fidelity` (string, optional): Fidelity to input - `"high"` (preserve faces/style) or `"low"` (more creative freedom). gpt-image-1 / gpt-image-1.5 only — silently ignored for gpt-image-2 (always high).
+- `input_fidelity` (string, optional): Fidelity to input - `"high"` (preserve faces/style) or `"low"` (more creative freedom). gpt-image-1 / gpt-image-1.5 only. Silently stripped for gpt-image-2 and gpt-image-2.5 (always high fidelity; the API rejects the flag).
 - `filename` (string, optional): Custom output filename
 
 **Returns:** ImageGenerateResult with `filename`, `size`, `format`, `model`, `usage`

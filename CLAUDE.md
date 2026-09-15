@@ -918,8 +918,10 @@ Generation (`generate_image`, `create_image`) defaults to `DEFAULT_IMAGE_MODEL` 
 **Per-model rules live in `image_models.py`, not at the call sites.** `capabilities_for()` resolves a
 model (dated snapshots included) to one row; `check_background` / `check_quality` /
 `honors_input_fidelity` are what the three tools call. The rules the table encodes:
-- gpt-image-2 does NOT support `background="transparent"` (raises before the request) and ignores
-  `input_fidelity` (always high fidelity — the wrappers strip it rather than let the API reject it)
+- gpt-image-2 does NOT support `background="transparent"` (raises before the request)
+- gpt-image-2 **and gpt-image-2.5** reject `input_fidelity` (always high fidelity) — the wrappers strip it
+  rather than let the API 400. The SDK docstring claims 2.5 honours it; the endpoint said otherwise on
+  2026-09-15, and the endpoint wins
 - `quality="xhigh"` and `"max"` exist only on gpt-image-2.5; other models raise with the accepted list
 - Unknown models (dall-e-*, anything newer than the table) get no client-side rules; the API decides
 
