@@ -70,7 +70,7 @@ async def test_generate_podcast_tool_forwards_output_filename(audio_server, mock
     tools = {t.name: t for t in await audio_server.mcp.list_tools()}
     assert "generate_podcast" in tools, "audio tools should be registered with AUDIO_PATH set"
     # The parameter has to be in the schema, or an MCP caller cannot pass it.
-    assert "output_filename" in tools["generate_podcast"].inputSchema["properties"]
+    assert "output_filename" in tools["generate_podcast"].input_schema["properties"]
 
     generate = mocker.patch(
         "sanzaru.tools.podcast.generate_podcast",

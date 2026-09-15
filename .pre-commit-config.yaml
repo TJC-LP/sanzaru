@@ -31,7 +31,7 @@ repos:
           - openai
           - httpx
           - pillow
-          - mcp
+          - mcp>=2.2.0,<3  # match pyproject; an unpinned entry kept a cached 1.x env
           - dotenv
           - pydub
           - ffmpeg-python

@@ -1,22 +1,28 @@
 # SPDX-License-Identifier: MIT
 """sanzaru MCP Server - Unified MCP server for OpenAI multimodal APIs.
 
-This module initializes the FastMCP server and conditionally registers tools
+This module initializes the MCPServer instance and conditionally registers tools
 based on installed optional dependencies (video, audio, image).
 
 Business logic is organized into submodules under tools/.
 """
 
 import argparse
+import functools
+import importlib.metadata
 import importlib.resources
 import ipaddress
 import os
 import secrets
 import sys
-from typing import Literal
+from collections.abc import Awaitable, Callable
+from typing import Literal, ParamSpec, TypeVar
 
-from mcp.server.fastmcp import FastMCP
+from mcp.server.apps import Apps, ResourceCsp
+from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecurityMiddleware, TransportSecuritySettings
+from mcp.shared.exceptions import MCPError
 from mcp.types import ToolAnnotations
 from openai.types import VideoModel, VideoSeconds, VideoSize
 from openai.types.responses.tool_param import ImageGeneration
@@ -34,19 +40,115 @@ from .storage.factory import get_storage
 from .tools.media_viewer import MEDIA_TYPE_TO_PATH_TYPE
 from .user_context import UserContext, UserContextRequiredError, reset_user_context, set_user_context
 
-# Initialize FastMCP server (stateless configuration set at runtime)
-mcp = FastMCP("sanzaru")
-
 # Tool annotation presets (MCP 2025-03-26+)
-READ_ONLY_OPEN = ToolAnnotations(readOnlyHint=True, openWorldHint=True)
-READ_ONLY_CLOSED = ToolAnnotations(readOnlyHint=True, openWorldHint=False)
-WRITE_OPEN = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=True)
+READ_ONLY_OPEN = ToolAnnotations(read_only_hint=True, open_world_hint=True)
+READ_ONLY_CLOSED = ToolAnnotations(read_only_hint=True, open_world_hint=False)
+WRITE_OPEN = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=True)
 WRITE_OPEN_IDEMPOTENT = ToolAnnotations(
-    readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=True
+    read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=True
 )
-WRITE_CLOSED = ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=True, openWorldHint=False)
+WRITE_CLOSED = ToolAnnotations(
+    read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False
+)
 # delete_video: second call 404s but final state is identical (video absent) — idempotent per MCP spec
-DESTRUCTIVE_OPEN = ToolAnnotations(readOnlyHint=False, destructiveHint=True, idempotentHint=True, openWorldHint=True)
+DESTRUCTIVE_OPEN = ToolAnnotations(
+    read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=True
+)
+
+
+_P = ParamSpec("_P")
+_R = TypeVar("_R")
+
+#: Failures a tool raises on purpose, whose text is written for the model to read
+#: and act on. Anything else is a crash and is logged with its traceback here,
+#: because the SDK only logs crashes it sees as crashes.
+_ANTICIPATED_TOOL_ERRORS: tuple[type[BaseException], ...] = (ValueError, LookupError, OSError, RuntimeError)
+
+
+def _llm_facing(fn: Callable[_P, Awaitable[_R]]) -> Callable[_P, Awaitable[_R]]:
+    """Let a tool's exception text reach the model, as it did under mcp 1.x.
+
+    mcp 2.x forwards only `ToolError` messages to the client; every other
+    exception becomes the bare text "Error executing tool <name>" and its
+    message stays in the server log. sanzaru's tools raise `ValueError` for
+    the model's benefit ("File not found: x.mp4", "not a valid OpenAI resource
+    id", the path-traversal refusals), so without this the model is told a
+    tool failed and nothing about why. `MCPError` and `ToolError` pass through
+    untouched: the first is a deliberate protocol error, the second already
+    carries its message.
+    """
+
+    @functools.wraps(fn)
+    async def wrapper(*args: _P.args, **kwargs: _P.kwargs) -> _R:
+        try:
+            return await fn(*args, **kwargs)
+        except (MCPError, ToolError):
+            raise
+        except Exception as exc:
+            if not isinstance(exc, _ANTICIPATED_TOOL_ERRORS):
+                logger.exception("Tool %s crashed", fn.__name__)
+            raise ToolError(str(exc) or type(exc).__name__) from exc
+
+    return wrapper
+
+
+# ==================== MEDIA VIEWER (MCP APPS EXTENSION) ====================
+# Registered through the SDK's Apps extension rather than as a plain resource plus
+# `_meta.ui` stamps, so the server advertises `io.modelcontextprotocol/ui` in its
+# capabilities — protocol 2026-07-28 hosts negotiate the extension instead of
+# sniffing tool metadata. MCPServer consumes an extension when it is constructed,
+# which is why this block precedes `mcp` below.
+MEDIA_VIEWER_URI = "ui://sanzaru/media-viewer.html"
+
+_apps = Apps()
+_apps.add_html_resource(
+    MEDIA_VIEWER_URI,
+    importlib.resources.files("sanzaru").joinpath("app/media-viewer/dist/mcp-app.html").read_text(encoding="utf-8"),
+    name="media-viewer",
+    description="Interactive player for sanzaru's video, audio and image files.",
+    # The viewer assembles media into a Blob URL rendered by native <video>, <audio>
+    # and <img> elements; strict hosts route those through the CSP resource
+    # directive, so `blob:` has to be declared or nothing plays.
+    csp=ResourceCsp(resource_domains=["blob:"]),
+    prefers_border=True,
+)
+
+# The resource is always registered (the HTML is bundled); the tools need a media path.
+if check_video_available() or check_audio_available() or check_image_available():
+    from .descriptions import VIEW_MEDIA
+    from .tools import media_viewer
+
+    @_apps.tool(resource_uri=MEDIA_VIEWER_URI, description=VIEW_MEDIA, annotations=READ_ONLY_CLOSED)
+    @_llm_facing
+    async def view_media(
+        media_type: Literal["video", "audio", "image"],
+        filename: str,
+    ):
+        return await media_viewer.view_media(media_type, filename)
+
+    @_apps.tool(
+        resource_uri=MEDIA_VIEWER_URI,
+        visibility=["app"],
+        description="Internal tool used by the MCP App media viewer to fetch base64-encoded chunks of media data. Do not call directly — use view_media instead.",  # noqa: E501
+        annotations=READ_ONLY_CLOSED,
+    )
+    @_llm_facing
+    async def _get_media_data(
+        media_type: Literal["video", "audio", "image"],
+        filename: str,
+        offset: int = 0,
+        chunk_size: int = 2097152,
+    ):
+        return await media_viewer.get_media_data(media_type, filename, offset, chunk_size)
+
+    logger.info("Media viewer tools registered (2 tools)")
+
+
+# Transport configuration (stateless HTTP, Host/Origin policy) is not server state in
+# mcp 2.x: it is passed to `streamable_http_app()` / `run()` per call. See build_http_app.
+# `version` is stamped into every 2026-07-28 result's `_meta` serverInfo, so report the
+# installed package version rather than the SDK's empty default.
+mcp = MCPServer("sanzaru", version=importlib.metadata.version("sanzaru"), extensions=[_apps])
 
 
 # ==================== VIDEO TOOLS (CONDITIONAL) ====================
@@ -63,6 +165,7 @@ if check_video_available():
     from .tools import video
 
     @mcp.tool(description=CREATE_VIDEO, annotations=WRITE_OPEN)
+    @_llm_facing
     async def create_video(
         prompt: str,
         model: VideoModel = "sora-2",
@@ -73,10 +176,12 @@ if check_video_available():
         return await video.create_video(prompt, model, seconds, size, input_reference_filename)
 
     @mcp.tool(description=GET_VIDEO_STATUS, annotations=READ_ONLY_OPEN)
+    @_llm_facing
     async def get_video_status(video_id: str):
         return await video.get_video_status(video_id)
 
     @mcp.tool(description=DOWNLOAD_VIDEO, annotations=WRITE_OPEN_IDEMPOTENT)
+    @_llm_facing
     async def download_video(
         video_id: str,
         filename: str | None = None,
@@ -85,18 +190,22 @@ if check_video_available():
         return await video.download_video(video_id, filename, variant)
 
     @mcp.tool(description=LIST_VIDEOS, annotations=READ_ONLY_OPEN)
+    @_llm_facing
     async def list_videos(limit: int = 20, after: str | None = None, order: Literal["asc", "desc"] = "desc"):
         return await video.list_videos(limit, after, order)
 
     @mcp.tool(description=DELETE_VIDEO, annotations=DESTRUCTIVE_OPEN)
+    @_llm_facing
     async def delete_video(video_id: str):
         return await video.delete_video(video_id)
 
     @mcp.tool(description=REMIX_VIDEO, annotations=WRITE_OPEN)
+    @_llm_facing
     async def remix_video(previous_video_id: str, prompt: str):
         return await video.remix_video(previous_video_id, prompt)
 
     @mcp.tool(description=LIST_LOCAL_VIDEOS, annotations=READ_ONLY_CLOSED)
+    @_llm_facing
     async def list_local_videos(
         pattern: str | None = None,
         file_type: Literal["mp4", "webm", "mov", "all"] = "all",
@@ -124,6 +233,7 @@ if check_image_available():
     from .tools.images_api import ImageSize
 
     @mcp.tool(description=LIST_REFERENCE_IMAGES, annotations=READ_ONLY_CLOSED)
+    @_llm_facing
     async def list_reference_images(
         pattern: str | None = None,
         file_type: Literal["jpeg", "png", "webp", "all"] = "all",
@@ -134,6 +244,7 @@ if check_image_available():
         return await reference.list_reference_images(pattern, file_type, sort_by, order, limit)
 
     @mcp.tool(description=PREPARE_REFERENCE_IMAGE, annotations=WRITE_CLOSED)
+    @_llm_facing
     async def prepare_reference_image(
         input_filename: str,
         target_size: VideoSize,
@@ -143,6 +254,7 @@ if check_image_available():
         return await reference.prepare_reference_image(input_filename, target_size, output_filename, resize_mode)
 
     @mcp.tool(description=CREATE_IMAGE, annotations=WRITE_OPEN)
+    @_llm_facing
     async def create_image(
         prompt: str,
         model: str = "gpt-5.2",
@@ -154,10 +266,12 @@ if check_image_available():
         return await image.create_image(prompt, model, tool_config, previous_response_id, input_images, mask_filename)
 
     @mcp.tool(description=GET_IMAGE_STATUS, annotations=READ_ONLY_OPEN)
+    @_llm_facing
     async def get_image_status(response_id: str):
         return await image.get_image_status(response_id)
 
     @mcp.tool(description=DOWNLOAD_IMAGE, annotations=WRITE_OPEN_IDEMPOTENT)
+    @_llm_facing
     async def download_image(response_id: str, filename: str | None = None):
         return await image.download_image(response_id, filename)
 
@@ -167,6 +281,7 @@ if check_image_available():
     # source of truth in `tools/images_api.py`.
 
     @mcp.tool(description=GENERATE_IMAGE, annotations=WRITE_OPEN)
+    @_llm_facing
     async def generate_image(
         prompt: str,
         model: str = DEFAULT_IMAGE_MODEL,
@@ -182,6 +297,7 @@ if check_image_available():
         )
 
     @mcp.tool(description=EDIT_IMAGE, annotations=WRITE_OPEN)
+    @_llm_facing
     async def edit_image(
         prompt: str,
         input_images: list[str],
@@ -241,6 +357,7 @@ if check_audio_available():
     from .tools import simulate_podcast as simulate
 
     @mcp.tool(description=LIST_AUDIO_FILES, annotations=READ_ONLY_CLOSED)
+    @_llm_facing
     async def list_audio_files(
         pattern: str | None = None,
         min_size_bytes: int | None = None,
@@ -267,18 +384,22 @@ if check_audio_available():
         )
 
     @mcp.tool(description=GET_LATEST_AUDIO, annotations=READ_ONLY_CLOSED)
+    @_llm_facing
     async def get_latest_audio():
         return await audio.get_latest_audio()
 
     @mcp.tool(description=CONVERT_AUDIO, annotations=WRITE_CLOSED)
+    @_llm_facing
     async def convert_audio(input_path: str, output_format: Literal["mp3", "wav"]):
         return await audio.convert_audio(input_path, output_format)
 
     @mcp.tool(description=COMPRESS_AUDIO, annotations=WRITE_CLOSED)
+    @_llm_facing
     async def compress_audio(input_path: str, max_mb: int = 25, output_filename: str | None = None):
         return await audio.compress_audio(input_path, max_mb, output_filename)
 
     @mcp.tool(description=TRANSCRIBE_AUDIO, annotations=READ_ONLY_OPEN)
+    @_llm_facing
     async def transcribe_audio(
         file_path: str,
         model: AudioModel = "gpt-4o-mini-transcribe",
@@ -289,6 +410,7 @@ if check_audio_available():
         return await audio.transcribe_audio(file_path, model, response_format, prompt, timestamp_granularities)
 
     @mcp.tool(description=CHAT_WITH_AUDIO, annotations=READ_ONLY_OPEN)
+    @_llm_facing
     async def chat_with_audio(
         file_path: str,
         model: AudioChatModel = "gpt-4o-audio-preview",
@@ -298,6 +420,7 @@ if check_audio_available():
         return await audio.chat_with_audio(file_path, model, system_prompt, user_prompt)
 
     @mcp.tool(description=TRANSCRIBE_WITH_ENHANCEMENT, annotations=READ_ONLY_OPEN)
+    @_llm_facing
     async def transcribe_with_enhancement(
         file_path: str,
         enhancement_type: EnhancementType = "detailed",
@@ -306,6 +429,7 @@ if check_audio_available():
         return await audio.transcribe_with_enhancement(file_path, enhancement_type, model)
 
     @mcp.tool(description=CREATE_AUDIO, annotations=WRITE_OPEN)
+    @_llm_facing
     async def create_audio(
         text_prompt: str,
         # None so each provider resolves its own default — hardcoding the OpenAI
@@ -330,6 +454,7 @@ if check_audio_available():
         )
 
     @mcp.tool(description=GENERATE_PODCAST, annotations=WRITE_OPEN)
+    @_llm_facing
     async def generate_podcast(
         script: podcast.PodcastScript,
         model: SpeechModel | ElevenLabsModel = "gpt-4o-mini-tts",
@@ -345,67 +470,13 @@ if check_audio_available():
         )
 
     @mcp.tool(description=SIMULATE_PODCAST, annotations=WRITE_OPEN)
+    @_llm_facing
     async def simulate_podcast(brief: simulate.SimulationBrief):
         # No on_progress: MCP has no stderr channel to stream it to, and the
         # result already carries per-act summaries.
         return await simulate.simulate_podcast(brief)
 
     logger.info("Audio tools registered (10 tools)")
-
-
-# ==================== MEDIA VIEWER (CONDITIONAL) ====================
-# Resource is always registered (HTML is bundled); tools require at least one media path.
-@mcp.resource(
-    "ui://sanzaru/media-viewer.html",
-    mime_type="text/html;profile=mcp-app",
-    meta={
-        "ui": {
-            "prefersBorder": True,
-            # Declare the iframe's resource requirements via the MCP Apps
-            # protocol so hosts that honor `meta.ui.csp` allow the Blob URL
-            # rendered by the viewer's <video>, <audio>, and <img> elements.
-            "csp": {
-                "resourceDomains": ["blob:"],
-            },
-        }
-    },
-)
-def media_viewer_html() -> str:
-    """Serve the bundled media viewer MCP App HTML."""
-    return (
-        importlib.resources.files("sanzaru").joinpath("app/media-viewer/dist/mcp-app.html").read_text(encoding="utf-8")
-    )
-
-
-if check_video_available() or check_audio_available() or check_image_available():
-    from .descriptions import VIEW_MEDIA
-    from .tools import media_viewer
-
-    @mcp.tool(
-        description=VIEW_MEDIA,
-        annotations=READ_ONLY_CLOSED,
-        meta={"ui": {"resourceUri": "ui://sanzaru/media-viewer.html"}},
-    )
-    async def view_media(
-        media_type: Literal["video", "audio", "image"],
-        filename: str,
-    ):
-        return await media_viewer.view_media(media_type, filename)
-
-    @mcp.tool(
-        description="Internal tool used by the MCP App media viewer to fetch base64-encoded chunks of media data. Do not call directly — use view_media instead.",  # noqa: E501
-        annotations=READ_ONLY_CLOSED,
-        meta={"ui": {"visibility": ["app"]}},
-    )
-    async def _get_media_data(
-        media_type: Literal["video", "audio", "image"],
-        filename: str,
-        offset: int = 0,
-        chunk_size: int = 2097152,
-    ):
-        return await media_viewer.get_media_data(media_type, filename, offset, chunk_size)
-
-    logger.info("Media viewer tools registered (2 tools)")
 
 
 # ==================== HTTP TRANSPORT SECURITY ====================
@@ -439,10 +510,27 @@ EXIT_CONFIG = 3
 
 _TRUTHY = ("1", "true", "yes")
 
-#: The allowlist FastMCP computed at construction (loopback on every port). A
-#: loopback bind restores exactly this, so `build_http_app` is idempotent
-#: however the settings were left by an earlier call in the same process.
-_DEFAULT_TRANSPORT_SECURITY: TransportSecuritySettings | None = mcp.settings.transport_security
+#: The SDK's own loopback policy — what `streamable_http_app()` applies to /mcp
+#: when handed no policy and a loopback host. Spelled out here so `/media` can
+#: apply the identical rule in a bare mount, where nothing ever calls
+#: `build_http_app`, and so a loopback bind restores exactly this object.
+_LOOPBACK_TRANSPORT_SECURITY = TransportSecuritySettings(
+    enable_dns_rebinding_protection=True,
+    allowed_hosts=["127.0.0.1:*", "localhost:*", "[::1]:*"],
+    allowed_origins=["http://127.0.0.1:*", "http://localhost:*", "http://[::1]:*"],
+)
+
+#: The Host/Origin policy in force for this process. `build_http_app` derives it
+#: from the bind address and hands the same object to the SDK for /mcp; `/media`
+#: reads it at request time. mcp 2.x keeps no server-level copy (the policy is a
+#: `streamable_http_app()` argument), so this module holds the one both routes share.
+_transport_security: TransportSecuritySettings | None = _LOOPBACK_TRANSPORT_SECURITY
+
+
+def current_transport_security() -> TransportSecuritySettings | None:
+    """The Host/Origin policy `/mcp` and `/media` are currently enforcing."""
+    return _transport_security
+
 
 #: Content types /media is willing to emit. Anything else is served as an
 #: opaque download: the route used to hand back `mimetypes.guess_type()` of a
@@ -661,17 +749,17 @@ class UserContextMiddleware:
 def _media_guard() -> TransportSecurityMiddleware:
     """Host/Origin policy for /media — deliberately the same object /mcp uses.
 
-    FastMCP appends `custom_route` handlers straight onto the Starlette app,
+    The SDK appends `custom_route` handlers straight onto the Starlette app,
     outside the middleware that guards the streamable-HTTP endpoint, so this
     route answered requests with any Host header at all. A rebound browser page
     could read the whole media library through it while /mcp rejected the same
     request (CWE-346).
 
-    Read at *request* time on purpose: `build_http_app` replaces
-    `mcp.settings.transport_security` with the bind-appropriate policy, and a
-    module-level copy would freeze the pre-override loopback allowlist.
+    Read at *request* time on purpose: `build_http_app` replaces the module's
+    policy with the bind-appropriate one, and binding it at import would freeze
+    the loopback allowlist.
     """
-    return TransportSecurityMiddleware(mcp.settings.transport_security)
+    return TransportSecurityMiddleware(_transport_security)
 
 
 # Custom HTTP route for direct media serving (functional in HTTP mode)
@@ -778,7 +866,7 @@ def _transport_security_for(host: str, *, authenticated: bool) -> TransportSecur
     least-protected one.
     """
     if _is_loopback(host):
-        return _DEFAULT_TRANSPORT_SECURITY
+        return _LOOPBACK_TRANSPORT_SECURITY
 
     hosts = _env_list(ALLOWED_HOSTS_ENV)
     if hosts:
@@ -813,10 +901,10 @@ def build_http_app(*, host: str = "127.0.0.1", port: int = 8000) -> Starlette:
     snippet used to hand out.
 
     `host` and `port` are the address you are going to bind; the token and
-    Host/Origin policy are derived from `host`, so pass the real one. Call it
-    once per process, before anything else calls `mcp.streamable_http_app()`:
-    FastMCP creates its session manager on the first call and freezes the
-    stateless flag and security settings into it.
+    Host/Origin policy are derived from `host`, so pass the real one. Safe to
+    call more than once: mcp 2.x builds a fresh session manager per call, with
+    the stateless flag and security policy passed in rather than read from
+    server settings.
 
     Raises `ConfigurationError` when the bind would be unsafe: a non-loopback
     address with neither `SANZARU_HTTP_TOKEN` nor `SANZARU_ALLOW_UNAUTHENTICATED_HTTP`,
@@ -841,13 +929,12 @@ def build_http_app(*, host: str = "127.0.0.1", port: int = 8000) -> Starlette:
             ALLOW_UNAUTH_ENV,
         )
 
-    # Configure for stateless HTTP (no session IDs needed - all state in OpenAI cloud)
-    mcp.settings.stateless_http = True
-    mcp.settings.host = host
-    mcp.settings.port = port
-    mcp.settings.transport_security = _transport_security_for(host, authenticated=token is not None)
+    global _transport_security
+    _transport_security = _transport_security_for(host, authenticated=token is not None)
 
-    app = mcp.streamable_http_app()
+    # Stateless HTTP: no session ids, all state lives in OpenAI's cloud. The same
+    # policy object goes to the SDK for /mcp and stays in the module for /media.
+    app = mcp.streamable_http_app(stateless_http=True, transport_security=_transport_security, host=host)
 
     identity_header = identity_header_name()
     if identity_header is not None:
@@ -883,7 +970,7 @@ def _run_http(*, host: str, port: int) -> None:
         raise SystemExit(EXIT_CONFIG) from None
 
     auth_state = "bearer token required" if http_auth_token() else "UNAUTHENTICATED"
-    policy = mcp.settings.transport_security
+    policy = _transport_security
     rebinding = "on" if policy is not None and policy.enable_dns_rebinding_protection else "off"
     logger.info(
         "Starting sanzaru MCP server over HTTP at http://%s:%d/mcp (%s; Host/Origin validation %s)",

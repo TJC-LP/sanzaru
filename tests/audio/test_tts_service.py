@@ -198,7 +198,7 @@ def test_mcp_create_audio_schema_defers_to_the_provider(tmp_path):
         "import asyncio, json; from sanzaru.server import mcp; "
         "tools = asyncio.run(mcp.list_tools()); "
         "tool = next(t for t in tools if t.name == 'create_audio'); "
-        "print(json.dumps(tool.inputSchema))"
+        "print(json.dumps(tool.input_schema))"
     )
     proc = subprocess.run(
         [sys.executable, "-c", code],
