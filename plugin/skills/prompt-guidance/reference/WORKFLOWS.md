@@ -25,12 +25,10 @@ video = create_video(
     seconds="8"
 )
 
-# Step 4: Poll until complete
-status = get_video_status(video.id)
-# Repeat until status == "completed"
-
-# Step 5: Download
-download_video(video.id, filename="astronaut_walk.mp4")
+# Step 4: Wait and download in one call (no polling loop)
+wait_for([video.id], download=True)
+# -> jobs[0].status == "completed", jobs[0].download.filename is the mp4
+# If jobs[0].timed_out is true the render is still running: call wait_for again with the same id.
 ```
 
 **Resize modes:**
@@ -43,27 +41,26 @@ download_video(video.id, filename="astronaut_walk.mp4")
 Build up an image through conversational refinement using `previous_response_id`.
 
 ```python
-# Round 1: Initial concept
+# Round 1: Initial concept (mainline model defaults to gpt-6-astra; pass model="gpt-5.6-terra" to save)
 resp1 = create_image(prompt="modern minimalist logo for AI company")
-get_image_status(resp1.id)  # Wait for completion
+wait_for([resp1.id])  # each round must finish before the next builds on it
 
 # Round 2: Add details
 resp2 = create_image(
     prompt="add blue and silver color scheme",
     previous_response_id=resp1.id
 )
-get_image_status(resp2.id)
+wait_for([resp2.id])
 
-# Round 3: Refine
+# Round 3: Refine, and download the final version in the same wait
 resp3 = create_image(
     prompt="make it more geometric and abstract",
     previous_response_id=resp2.id
 )
-get_image_status(resp3.id)
-
-# Download final version
-download_image(resp3.id, filename="logo_final.png")
+wait_for([resp3.id], download=True)
 ```
+
+**Parallel variants:** fire several `create_image` calls, then one `wait_for([...ids], download=True)`.
 
 **When to use this vs generate_image:**
 - `generate_image`: One-shot generation, no refinement needed

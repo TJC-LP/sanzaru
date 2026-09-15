@@ -9,8 +9,9 @@ description: "Read the entirety of @docs/sora2-prompting-guide.md and await furt
 
 | Category | Tool | Pattern | Description |
 |----------|------|---------|-------------|
-| **Video** | `create_video` | async | Create Sora video (returns job ID, poll for completion) |
-| | `get_video_status` | poll | Check video generation progress (0-100%) |
+| **Jobs** | `wait_for` | **blocking** | Wait for any mix of `video_*`/`resp_*` ids in ONE call; `download=true` saves them too. Use this instead of polling `get_*_status` |
+| **Video** | `create_video` | async | Create Sora video (returns a `video_*` id — then `wait_for` it) |
+| | `get_video_status` | one-off | Single status check (progress 0-100%); prefer `wait_for` for waiting |
 | | `download_video` | sync | Download completed video/thumbnail/spritesheet |
 | | `list_videos` | sync | List video jobs with pagination |
 | | `list_local_videos` | sync | List downloaded video files |
@@ -18,8 +19,8 @@ description: "Read the entirety of @docs/sora2-prompting-guide.md and await furt
 | | `remix_video` | async | Create new video by remixing an existing one |
 | **Image** | `generate_image` | **sync** | Images API — returns immediately, no polling (RECOMMENDED) |
 | | `edit_image` | **sync** | Edit/compose images (up to 16 inputs) |
-| | `create_image` | async | Responses API — for iterative refinement chains |
-| | `get_image_status` | poll | Check image generation status |
+| | `create_image` | async | Responses API — refinement chains and parallel batches; `model` picks the mainline model (`gpt-6-astra` default, `gpt-5.6-sol`/`terra`/`luna`) |
+| | `get_image_status` | one-off | Single status check; prefer `wait_for` for waiting |
 | | `download_image` | sync | Download completed image |
 | **Reference** | `list_reference_images` | sync | List available images for Sora |
 | | `prepare_reference_image` | sync | Resize image to exact Sora dimensions |
@@ -93,32 +94,42 @@ Write prompts in this order for best results:
 
 **Duration tips**: 4s clips have best instruction following. Use 8s for simple scenes. 12s only for slow, ambient shots.
 
-## Async Polling Pattern
+## Waiting on Jobs — one call, not a loop
+
+`create_video`, `remix_video` and `create_image` return an id immediately. Do **not** call
+`get_video_status` / `get_image_status` in a loop. Hand the ids to `wait_for`, which blocks
+server-side, reports progress to the client on every poll, and returns every job's final
+state in one round trip:
 
 ```
-# Video: create → poll → download
+# Video: create → wait_for (downloads too) → done
 video = create_video(prompt="...", size="1280x720")
-status = get_video_status(video.id)   # Poll until "completed"
-download_video(video.id, filename="output.mp4")
+wait_for([video.id], download=True)          # returns when finished; file is on disk
 
-# Image (Responses API): create → poll → download
-resp = create_image(prompt="...")
-status = get_image_status(resp.id)    # Poll until "completed"
-download_image(resp.id, filename="output.png")
+# Several jobs at once, mixed types
+a = create_video(prompt="...")
+b = create_image(prompt="...")
+result = wait_for([a.id, b.id], download=True)
+# result.jobs[i]: status, done, timed_out, progress (video), download (filename)
 
-# Image (Images API): SYNCHRONOUS — no polling!
-result = generate_image(prompt="...")  # Returns immediately
+# Image (Images API): SYNCHRONOUS — nothing to wait for
+result = generate_image(prompt="...")  # Returns the finished image
 ```
+
+`wait_for` **returns on its deadline instead of failing**: a job still running comes back with
+`timed_out=true` and its last status. Call `wait_for` again with the same ids to keep waiting
+(default deadline 240 s, max 1800 s). A bad id fails only its own entry, never the batch.
+Use `get_*_status` only for a one-off check when you are not going to wait.
 
 ## Common Pitfalls
 
 1. **Re-describing reference images** — Describe motion only (see Golden Rule above)
-2. **Using `create_image` when `generate_image` is simpler** — Most cases don't need async polling
+2. **Using `create_image` when `generate_image` is simpler** — Most cases don't need an async job at all
 3. **Dimension mismatch** — Reference image MUST match target video size exactly. Use `prepare_reference_image` to resize.
 4. **Vague motion** — "walks around" is weak. Use beats: "takes three steps, pauses, looks up"
 5. **Integer seconds** — `seconds` must be a string: `"8"` not `8`
 6. **Complex long clips** — Shorter (4s) clips follow instructions better than 12s
-7. **Forgetting to poll** — `create_video` and `create_image` are async; always poll status before downloading
+7. **Polling by hand** — `create_video` and `create_image` are async; call `wait_for(ids, download=True)` once instead of looping over `get_*_status`, and don't `download_*` before the job is done
 
 ## Deep Reference
 
