@@ -72,6 +72,21 @@ def reset_user_context(token: contextvars.Token[UserContext | None]) -> None:
 # Slug derivation
 # ------------------------------------------------------------------
 
+
+class UserContextRequiredError(RuntimeError):
+    """A request carried no identity on a deployment that requires one.
+
+    Raised by storage backends when ``SANZARU_REQUIRE_USER_CONTEXT`` is on and
+    :func:`get_user_context` is ``None``. A ``RuntimeError`` because, from the
+    process's point of view, it is a configuration mismatch: the switch says
+    "multi-tenant" while the transport in use (stdio, the CLI) never sets an
+    identity — the CLI maps it to the ``config`` envelope (exit 3), the same as
+    a missing API key. An HTTP transport that authenticates requests should
+    catch it by name and answer 403; it is not a ``PermissionError`` so a
+    filesystem permission failure can never be mistaken for it.
+    """
+
+
 _SLUG_RE = re.compile(r"[^a-z0-9_]")
 
 # Length of the hash half. Eight hex chars puts an even-odds collision at

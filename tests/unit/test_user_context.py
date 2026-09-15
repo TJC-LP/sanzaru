@@ -57,10 +57,12 @@ class TestUserSlug:
     def test_an_unreadable_local_part_still_yields_a_slug(self, email):
         """A local part with nothing in [a-z0-9_] must not be fatal.
 
-        `UserContext` accepts these addresses, so raising here turned a
+        `UserContext` accepts the first three, so raising here turned a
         legitimate user into a failure deep in the storage layer (and, over
-        HTTP, a 500). The hash half alone is still injective, which is the
-        property isolation actually rests on.
+        HTTP, a 500). `@example.com` it refuses — `user_slug` is a plain
+        function that other callers can reach with strings `UserContext` would
+        not, so it is defensive for that one too. The hash half alone is still
+        injective, which is the property isolation actually rests on.
         """
         slug = user_slug(email)
         assert slug.startswith("user-")

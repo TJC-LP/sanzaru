@@ -20,7 +20,7 @@ from urllib.parse import quote
 import aiofiles
 import httpx
 
-from ..user_context import get_user_context, user_slug
+from ..user_context import UserContextRequiredError, get_user_context, user_slug
 from .protocol import FileInfo, PathType
 
 logger = logging.getLogger("sanzaru")
@@ -34,6 +34,34 @@ _LOG_BODY_CHARS = 500
 #: single-tenant deployments, where there is no identity to require and the
 #: shared root is the right answer.
 REQUIRE_USER_CONTEXT_ENV = "SANZARU_REQUIRE_USER_CONTEXT"
+
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_FALSY = frozenset({"", "0", "false", "no", "off"})
+
+
+def require_user_context() -> bool:
+    """Read ``SANZARU_REQUIRE_USER_CONTEXT`` as a strict boolean.
+
+    Strict because the failure mode of this switch is "every user shares one
+    namespace": a permissive parse that recognised only ``1/true/yes`` left
+    ``=on``, ``=y`` and ``=enabled`` silently *off*, which is the one outcome an
+    operator who set the variable at all cannot have meant. Anything outside
+    the two spellings sets is a configuration error, never a default.
+
+    Raises:
+        RuntimeError: For an unrecognised value — mapped by the CLI to the
+            ``config`` envelope (exit 3), like any other bad environment.
+    """
+    raw = os.environ.get(REQUIRE_USER_CONTEXT_ENV, "")
+    value = raw.strip().lower()
+    if value in _TRUTHY:
+        return True
+    if value in _FALSY:
+        return False
+    raise RuntimeError(
+        f"{REQUIRE_USER_CONTEXT_ENV}={raw!r} is not a recognised boolean; "
+        "use 1/true/yes/on to require a user identity or 0/false/no/off to allow the shared root"
+    )
 
 
 class StorageRequestError(httpx.HTTPError):
@@ -69,6 +97,14 @@ def _check_response(resp: httpx.Response, operation: str, filename: str | None =
     The success test is 2xx rather than "not 4xx/5xx" so the substitution is
     exact: ``raise_for_status()`` also refuses a redirect, and a 3xx that
     silently returned its body here would hand the caller the wrong bytes.
+
+    Scope: this closes the *error* path. ``write`` still returns
+    ``resolve_display_path()`` — ``/Volumes/{catalog}/{schema}/{volume}/…`` —
+    on success, because that display path is the tool contract callers use to
+    find their file; it names the volume topology but never the host. httpx
+    transport failures (``ConnectError``, timeouts) bypass this function, but
+    their ``str()`` is the OS-level message, not the URL, so they do not leak
+    it either.
     """
     if resp.is_success:
         return
@@ -221,11 +257,15 @@ class DatabricksVolumesBackend:
         absent (CWE-862). ``SANZARU_REQUIRE_USER_CONTEXT=1`` turns that fallback
         into a refusal, which is what a shared deployment wants — better a
         failed request than one silently served out of everybody's directory.
+
+        Raises:
+            UserContextRequiredError: No identity and the switch is on.
+            RuntimeError: The switch holds a value that is neither on nor off.
         """
         ctx = get_user_context()
         if ctx is None:
-            if os.environ.get(REQUIRE_USER_CONTEXT_ENV, "").strip().lower() in ("1", "true", "yes"):
-                raise PermissionError(
+            if require_user_context():
+                raise UserContextRequiredError(
                     f"{REQUIRE_USER_CONTEXT_ENV} is set but this request carries no user identity — "
                     "refusing to fall back to the shared volume root"
                 )
@@ -266,24 +306,29 @@ class DatabricksVolumesBackend:
     # ------------------------------------------------------------------
 
     async def read(self, path_type: PathType, filename: str) -> bytes:
+        safe = self._validate_filename(filename)
         headers = await self._headers()
         resp = await self._client.get(self._file_url(path_type, filename), headers=headers)
         if resp.status_code == 404:
             raise FileNotFoundError(f"File not found: {filename}")
-        _check_response(resp, "read", self._validate_filename(filename))
+        _check_response(resp, "read", safe)
         return resp.content
 
     async def read_range(self, path_type: PathType, filename: str, offset: int, length: int) -> bytes:
         if offset < 0:
             raise ValueError(f"offset must be non-negative, got {offset}")
+        safe = self._validate_filename(filename)
         headers = await self._headers()
         headers["Range"] = f"bytes={offset}-{offset + length - 1}"
         resp = await self._client.get(self._file_url(path_type, filename), headers=headers)
         if resp.status_code == 404:
             raise FileNotFoundError(f"File not found: {filename}")
-        # Accept both 200 (full content) and 206 (partial content)
+        # Accept both 200 (full content) and 206 (partial content). Any other
+        # 2xx (a 204, say) is not a range answer and must not be returned as
+        # one — `_check_response` lets 2xx through, so name it explicitly.
         if resp.status_code not in (200, 206):
-            _check_response(resp, "range read", self._validate_filename(filename))
+            _check_response(resp, "range read", safe)
+            raise StorageRequestError("range read", resp.status_code, safe)
         return resp.content
 
     async def write(self, path_type: PathType, filename: str, data: bytes) -> str:
@@ -368,6 +413,14 @@ class DatabricksVolumesBackend:
         )
 
     async def exists(self, path_type: PathType, filename: str) -> bool:
+        """Answer False for a bad name or a failed request, never for a refused identity.
+
+        ``UserContextRequiredError`` (a ``RuntimeError``) from ``_user_prefix``
+        is deliberately NOT swallowed: "this deployment will not resolve a
+        namespace for you" is a different answer from "no such file", and
+        collapsing the two would make a resume believe its checkpoints were
+        gone and pay to record them again.
+        """
         try:
             self._validate_filename(filename)
             headers = await self._headers()
@@ -375,10 +428,6 @@ class DatabricksVolumesBackend:
             return resp.status_code == 200
         except (ValueError, httpx.HTTPError):
             return False
-        # PermissionError from _user_prefix is deliberately NOT swallowed:
-        # "this deployment will not resolve a namespace for you" is a different
-        # answer from "no such file", and collapsing the two would make a resume
-        # believe its checkpoints were gone and pay to record them again.
 
     # ------------------------------------------------------------------
     # Local-path helpers

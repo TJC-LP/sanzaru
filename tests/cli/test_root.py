@@ -136,3 +136,36 @@ def test_classify_keeps_multi_error_groups_but_names_them():
     assert "2 parallel tasks failed" in str(error)
     assert "first" in str(error)
     assert "second" in str(error)
+
+
+@pytest.mark.unit
+def test_classify_reports_a_required_user_context_as_config_not_internal():
+    """`SANZARU_REQUIRE_USER_CONTEXT=1` with no identity is a deployment mismatch — the CLI
+    never carries one — so it belongs beside a missing API key (exit 3), not "internal" (exit 1),
+    which is where the original PermissionError landed."""
+    from sanzaru.cli._runtime import _classify
+    from sanzaru.user_context import UserContextRequiredError
+
+    error = _classify(
+        UserContextRequiredError("SANZARU_REQUIRE_USER_CONTEXT is set but this request carries no user identity")
+    )
+
+    assert error.error_type == "config"
+    assert error.exit_code == 3
+    assert "no user identity" in str(error)
+
+
+@pytest.mark.unit
+def test_classify_reports_a_garbage_require_user_context_value_as_config(monkeypatch):
+    from sanzaru.cli._runtime import _classify
+    from sanzaru.storage.databricks import REQUIRE_USER_CONTEXT_ENV, require_user_context
+
+    monkeypatch.setenv(REQUIRE_USER_CONTEXT_ENV, "enabled")
+    with pytest.raises(RuntimeError) as excinfo:
+        require_user_context()
+
+    error = _classify(excinfo.value)
+
+    assert error.error_type == "config"
+    assert error.exit_code == 3
+    assert REQUIRE_USER_CONTEXT_ENV in str(error)
