@@ -9,8 +9,10 @@ Business logic is organized into submodules under tools/.
 
 import argparse
 import importlib.resources
+import ipaddress
 import os
 import secrets
+import sys
 from typing import Literal
 
 from mcp.server.fastmcp import FastMCP
@@ -18,13 +20,15 @@ from mcp.server.transport_security import TransportSecurityMiddleware, Transport
 from mcp.types import ToolAnnotations
 from openai.types import VideoModel, VideoSeconds, VideoSize
 from openai.types.responses.tool_param import ImageGeneration
+from starlette.applications import Starlette
 from starlette.datastructures import Headers
 from starlette.requests import Request
 from starlette.responses import Response
-from starlette.types import Receive, Scope, Send
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .config import DEFAULT_IMAGE_MODEL, logger
 from .dotenv_loader import load_local_dotenv
+from .exceptions import ConfigurationError
 from .features import check_audio_available, check_image_available, check_video_available
 from .storage.factory import get_storage
 from .tools.media_viewer import MEDIA_TYPE_TO_PATH_TYPE
@@ -418,6 +422,27 @@ ALLOW_UNAUTH_ENV = "SANZARU_ALLOW_UNAUTHENTICATED_HTTP"
 #: deployments (Databricks Apps injects `x-forwarded-email`). Unset, no header
 #: is trusted at all — see `identity_header_name`.
 IDENTITY_HEADER_ENV = "SANZARU_IDENTITY_HEADER"
+#: Comma-separated Host values a non-loopback deployment answers to
+#: (`sanzaru.example.com`, `sanzaru.example.com:*`). Keeps the SDK's DNS-rebinding
+#: check *on* off-loopback, where the auto-generated allowlist would otherwise
+#: reject the deployment's real hostname. Required by the unauthenticated hatch.
+ALLOWED_HOSTS_ENV = "SANZARU_ALLOWED_HOSTS"
+#: Comma-separated Origin values, when the ones derived from the hosts
+#: (`http://` and `https://` of each) are not what the browser client sends.
+ALLOWED_ORIGINS_ENV = "SANZARU_ALLOWED_ORIGINS"
+
+#: Exit status for a refused HTTP configuration — the same code docs/cli.md
+#: reserves for configuration errors, so `sanzaru serve` fails the way every
+#: other subcommand does. Not imported from cli._output: the server must not
+#: depend on the CLI package (the dependency runs the other way, lazily).
+EXIT_CONFIG = 3
+
+_TRUTHY = ("1", "true", "yes")
+
+#: The allowlist FastMCP computed at construction (loopback on every port). A
+#: loopback bind restores exactly this, so `build_http_app` is idempotent
+#: however the settings were left by an earlier call in the same process.
+_DEFAULT_TRANSPORT_SECURITY: TransportSecuritySettings | None = mcp.settings.transport_security
 
 #: Content types /media is willing to emit. Anything else is served as an
 #: opaque download: the route used to hand back `mimetypes.guess_type()` of a
@@ -474,8 +499,29 @@ def identity_header_name() -> str | None:
     return os.environ.get(IDENTITY_HEADER_ENV, "").strip().lower() or None
 
 
+def _env_flag(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in _TRUTHY
+
+
+def _env_list(name: str) -> list[str]:
+    return [item.strip() for item in os.environ.get(name, "").split(",") if item.strip()]
+
+
 def _is_loopback(host: str) -> bool:
-    return host in ("127.0.0.1", "localhost", "::1", "[::1]")
+    """Whether `host` can only be reached from this machine.
+
+    The whole 127/8 range and every spelling of IPv6 loopback count, not just
+    the four literals a tuple would name — `127.0.0.2` is as local as
+    `127.0.0.1`. Anything unparsable (a hostname other than localhost) is
+    treated as reachable, which is the failure direction that requires a token.
+    """
+    candidate = host.strip().strip("[]")
+    if candidate.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(candidate).is_loopback
+    except ValueError:
+        return False
 
 
 def _authorized(headers: Headers, token: str) -> bool:
@@ -498,33 +544,53 @@ def _authorized(headers: Headers, token: str) -> bool:
     return secrets.compare_digest(value.strip().encode("latin-1", "replace"), token.encode("utf-8"))
 
 
+async def _refuse(
+    scope: Scope, receive: Receive, send: Send, *, status: int, reason: str, headers: dict[str, str] | None = None
+) -> None:
+    """Deliver a refusal on whatever kind of connection this is.
+
+    A websocket scope cannot carry an HTTP response; closing with 1008 (policy
+    violation) before the handshake is accepted is what makes the server answer
+    403 instead of upgrading.
+    """
+    if scope["type"] == "websocket":
+        await send({"type": "websocket.close", "code": 1008, "reason": reason})
+        return
+    await Response(content=reason, status_code=status, headers=headers)(scope, receive, send)
+
+
+def _unauthorized() -> Response:
+    return Response(content="Unauthorized", status_code=401, headers={"WWW-Authenticate": "Bearer"})
+
+
 class BearerTokenMiddleware:
-    """Require a bearer token on every HTTP request.
+    """Require a bearer token on every request that is not the lifespan.
 
     The SDK's DNS-rebinding allowlist is not authentication: a direct network
     attacker sets `Host: 127.0.0.1:8000` themselves and matches it. Once the
     port is reachable, nothing else distinguished the operator from anyone else
     — every tool, including paid generation and `delete_video`, was callable by
     a single unauthenticated POST (CWE-306).
+
+    Only `lifespan` passes through unchecked. The guard used to read
+    `!= "http"`, which also waved websocket scopes past the check — latent while
+    nothing registers a websocket route, and silently live the day something does.
     """
 
-    def __init__(self, app: object, token: str) -> None:
+    def __init__(self, app: ASGIApp, token: str) -> None:
         self._app = app
         self._token = token
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
-            await self._app(scope, receive, send)  # type: ignore[operator]
+        if scope["type"] == "lifespan":
+            await self._app(scope, receive, send)
             return
         if not _authorized(Headers(scope=scope), self._token):
-            response = Response(
-                content="Unauthorized",
-                status_code=401,
-                headers={"WWW-Authenticate": "Bearer"},
+            await _refuse(
+                scope, receive, send, status=401, reason="Unauthorized", headers={"WWW-Authenticate": "Bearer"}
             )
-            await response(scope, receive, send)
             return
-        await self._app(scope, receive, send)  # type: ignore[operator]
+        await self._app(scope, receive, send)
 
 
 class UserContextMiddleware:
@@ -541,28 +607,53 @@ class UserContextMiddleware:
     `SANZARU_IDENTITY_HEADER` is explicitly set, so trusting a header is an
     operator's statement that such a proxy exists. A header nobody strips is a
     header anyone can set.
+
+    The header must appear **exactly once**, or the request is refused with 400.
+    The common misconfiguration is a proxy that *appends* its copy instead of
+    replacing the client's, and then the two copies arrive in client-then-proxy
+    order — `Headers.get()` returns the first, so the client picked the tenant.
+    Taking the last copy instead would only hold while the proxy appends rather
+    than prepends, which is a fact about someone else's configuration; refusing
+    is the only reading that cannot be wrong. Binding no identity is not an
+    option either: without `SANZARU_REQUIRE_USER_CONTEXT` that silently drops the
+    request into the shared root, the exact failure this middleware exists to end.
+    A malformed value is refused on the same reasoning — the header is the proxy's
+    word, and a proxy that emits garbage is a broken proxy, not an anonymous caller.
     """
 
-    def __init__(self, app: object, header: str) -> None:
+    def __init__(self, app: ASGIApp, header: str) -> None:
         self._app = app
         self._header = header
 
     async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
-            await self._app(scope, receive, send)  # type: ignore[operator]
+        if scope["type"] == "lifespan":
+            await self._app(scope, receive, send)
             return
 
-        email = Headers(scope=scope).get(self._header, "").strip()
+        values = Headers(scope=scope).getlist(self._header)
+        if len(values) > 1:
+            logger.warning(
+                "Refusing a request carrying %d copies of the identity header %s — the proxy "
+                "must replace a client-supplied copy, not append to it",
+                len(values),
+                self._header,
+            )
+            await _refuse(scope, receive, send, status=400, reason="Ambiguous identity header")
+            return
+
         ctx: UserContext | None = None
+        email = values[0].strip() if values else ""
         if email:
             try:
                 ctx = UserContext(email=email)
             except ValueError:
-                logger.warning("Ignoring malformed identity header %s", self._header)
+                logger.warning("Refusing a request with a malformed identity header %s", self._header)
+                await _refuse(scope, receive, send, status=400, reason="Malformed identity header")
+                return
 
         token = set_user_context(ctx)
         try:
-            await self._app(scope, receive, send)  # type: ignore[operator]
+            await self._app(scope, receive, send)
         finally:
             reset_user_context(token)
 
@@ -575,6 +666,10 @@ def _media_guard() -> TransportSecurityMiddleware:
     route answered requests with any Host header at all. A rebound browser page
     could read the whole media library through it while /mcp rejected the same
     request (CWE-346).
+
+    Read at *request* time on purpose: `build_http_app` replaces
+    `mcp.settings.transport_security` with the bind-appropriate policy, and a
+    module-level copy would freeze the pre-override loopback allowlist.
     """
     return TransportSecurityMiddleware(mcp.settings.transport_security)
 
@@ -593,7 +688,7 @@ async def serve_media(request: Request) -> Response:
     # so it cannot rely on the token middleware that only wraps HTTP mode.
     token = http_auth_token()
     if token is not None and not _authorized(request.headers, token):
-        return Response(content="Unauthorized", status_code=401, headers={"WWW-Authenticate": "Bearer"})
+        return _unauthorized()
 
     media_type = request.path_params["media_type"]
     filename = request.path_params["filename"]  # Path traversal protection handled by storage backend
@@ -658,23 +753,79 @@ def run_server(transport: Literal["stdio", "http"] = "stdio", host: str = "127.0
         mcp.run()
 
 
-def _run_http(*, host: str, port: int) -> None:
-    """Serve the streamable-HTTP transport with sanzaru's own middleware stack.
+def _derived_origins(hosts: list[str]) -> list[str]:
+    """`http://` and `https://` of every allowed host, wildcard ports preserved."""
+    return [f"{scheme}://{host}" for host in hosts for scheme in ("http", "https")]
 
-    Built here rather than via `mcp.run(transport="streamable-http")` because
-    that helper hands the bare app straight to uvicorn, leaving no seam to
-    require a credential on. Authentication is the whole point: this transport
-    exposes `delete_video`, paid generation, and every media file to whoever
-    reaches the port.
+
+def _transport_security_for(host: str, *, authenticated: bool) -> TransportSecuritySettings | None:
+    """The Host/Origin policy for a bind address.
+
+    Loopback keeps the SDK's own allowlist (`127.0.0.1:*`, `localhost:*`,
+    `[::1]:*` — wildcard ports, so a non-default `--port` is fine).
+
+    Off loopback that allowlist would reject the deployment's real hostname, and
+    the SDK offers no wildcard host, so the operator has to name the hosts with
+    `SANZARU_ALLOWED_HOSTS` to keep the check on. When they do, Origin validation
+    stays on with it: a browser sets Origin itself and a page cannot forge it, so
+    unlike Host it is a control that holds against a rebound page. When they do
+    not, and a bearer token is configured, the token is the control and the
+    check is switched off rather than left rejecting everything. Without a
+    token, the check is all there is, so the unauthenticated hatch refuses to
+    run without an allowlist — the unauthenticated path must not also be the
+    least-protected one.
     """
-    import uvicorn
+    if _is_loopback(host):
+        return _DEFAULT_TRANSPORT_SECURITY
 
+    hosts = _env_list(ALLOWED_HOSTS_ENV)
+    if hosts:
+        origins = _env_list(ALLOWED_ORIGINS_ENV) or _derived_origins(hosts)
+        return TransportSecuritySettings(
+            enable_dns_rebinding_protection=True, allowed_hosts=hosts, allowed_origins=origins
+        )
+    if not authenticated:
+        raise ConfigurationError(
+            f"Refusing to serve {host} unauthenticated without a Host allowlist.\n"
+            f"{ALLOW_UNAUTH_ENV} turns off the bearer token, and off loopback the DNS-rebinding "
+            f"check cannot run without knowing the deployment's hostnames — set {ALLOWED_HOSTS_ENV} "
+            f"to the Host values clients send (e.g. 'sanzaru.example.com,sanzaru.example.com:*'), "
+            f"or set {HTTP_TOKEN_ENV} instead."
+        )
+    logger.info(
+        "Host/Origin validation is off for %s — the bearer token is the control. Set %s to turn it back on.",
+        host,
+        ALLOWED_HOSTS_ENV,
+    )
+    return TransportSecuritySettings(enable_dns_rebinding_protection=False)
+
+
+def build_http_app(*, host: str = "127.0.0.1", port: int = 8000) -> Starlette:
+    """The authenticated Starlette app `sanzaru --transport http` serves.
+
+    This is the one artifact to mount or hand to your own ASGI server: it
+    carries the bearer-token middleware, the identity middleware, the /media
+    route and the bind-appropriate Host/Origin policy. `mcp.streamable_http_app()`
+    alone carries none of the first two — /mcp on it is the pre-fix, wide-open
+    transport (finding 07), which is exactly what this repo's own production
+    snippet used to hand out.
+
+    `host` and `port` are the address you are going to bind; the token and
+    Host/Origin policy are derived from `host`, so pass the real one. Call it
+    once per process, before anything else calls `mcp.streamable_http_app()`:
+    FastMCP creates its session manager on the first call and freezes the
+    stateless flag and security settings into it.
+
+    Raises `ConfigurationError` when the bind would be unsafe: a non-loopback
+    address with neither `SANZARU_HTTP_TOKEN` nor `SANZARU_ALLOW_UNAUTHENTICATED_HTTP`,
+    or the hatch without `SANZARU_ALLOWED_HOSTS`.
+    """
     token = http_auth_token()
     loopback = _is_loopback(host)
 
     if token is None and not loopback:
-        if os.environ.get(ALLOW_UNAUTH_ENV, "").strip().lower() not in ("1", "true", "yes"):
-            raise SystemExit(
+        if not _env_flag(ALLOW_UNAUTH_ENV):
+            raise ConfigurationError(
                 f"Refusing to serve {host}:{port} without authentication.\n"
                 f"Set {HTTP_TOKEN_ENV} to a secret value and send it as "
                 f"'Authorization: Bearer <token>', or set {ALLOW_UNAUTH_ENV}=1 if "
@@ -692,14 +843,7 @@ def _run_http(*, host: str, port: int) -> None:
     mcp.settings.stateless_http = True
     mcp.settings.host = host
     mcp.settings.port = port
-
-    if not loopback:
-        # The auto-configured allowlist only names localhost, and it was
-        # computed from the *constructor's* host before this override. Against a
-        # network peer who writes the Host header themselves it proves nothing,
-        # and left in place it would reject the deployment's real hostname. The
-        # bearer token is the control that actually holds here.
-        mcp.settings.transport_security = TransportSecuritySettings(enable_dns_rebinding_protection=False)
+    mcp.settings.transport_security = _transport_security_for(host, authenticated=token is not None)
 
     app = mcp.streamable_http_app()
 
@@ -717,8 +861,35 @@ def _run_http(*, host: str, port: int) -> None:
         # request has proven it is allowed to be here at all.
         app.add_middleware(BearerTokenMiddleware, token=token)
 
-    auth_state = "bearer token required" if token else "UNAUTHENTICATED"
-    logger.info("Starting sanzaru MCP server over HTTP at http://%s:%d/mcp (%s)", host, port, auth_state)
+    return app
+
+
+def _run_http(*, host: str, port: int) -> None:
+    """Serve `build_http_app` with uvicorn.
+
+    Built here rather than via `mcp.run(transport="streamable-http")` because
+    that helper hands the bare app straight to uvicorn, leaving no seam to
+    require a credential on. A refused configuration exits with the CLI's
+    configuration code rather than a traceback.
+    """
+    import uvicorn
+
+    try:
+        app = build_http_app(host=host, port=port)
+    except ConfigurationError as exc:
+        print(exc, file=sys.stderr)
+        raise SystemExit(EXIT_CONFIG) from None
+
+    auth_state = "bearer token required" if http_auth_token() else "UNAUTHENTICATED"
+    policy = mcp.settings.transport_security
+    rebinding = "on" if policy is not None and policy.enable_dns_rebinding_protection else "off"
+    logger.info(
+        "Starting sanzaru MCP server over HTTP at http://%s:%d/mcp (%s; Host/Origin validation %s)",
+        host,
+        port,
+        auth_state,
+        rebinding,
+    )
 
     uvicorn.run(app, host=host, port=port, log_level=mcp.settings.log_level.lower())
 

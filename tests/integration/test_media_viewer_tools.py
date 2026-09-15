@@ -9,6 +9,25 @@ from sanzaru.storage.local import LocalStorageBackend
 from sanzaru.tools.media_viewer import get_media_data, view_media
 
 
+@pytest.fixture(autouse=True)
+def _isolated_http_env(monkeypatch):
+    """The /media route reads its policy from the environment at request time.
+
+    A developer who followed the README and exported SANZARU_HTTP_TOKEN got four
+    unexplained 401s out of this module; the identity variables would skew the
+    Databricks-shaped tests the same way. Nothing here may depend on the shell.
+    """
+    for name in (
+        "SANZARU_HTTP_TOKEN",
+        "SANZARU_ALLOW_UNAUTHENTICATED_HTTP",
+        "SANZARU_IDENTITY_HEADER",
+        "SANZARU_ALLOWED_HOSTS",
+        "SANZARU_ALLOWED_ORIGINS",
+        "SANZARU_REQUIRE_USER_CONTEXT",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
 @pytest.mark.integration
 async def test_view_media_then_get_data_roundtrip(mocker, tmp_video_path):
     """Full roundtrip: view_media returns metadata, then get_media_data returns the file."""
@@ -211,3 +230,30 @@ async def test_serve_media_requires_the_bearer_token_when_configured(mocker, tmp
     allowed = client.get("/media/video/clip.mp4", headers=_LOCAL | {"authorization": "Bearer s3cret"})
     assert allowed.status_code == 200
     assert allowed.content == b"data"
+
+
+@pytest.mark.integration
+async def test_serve_media_answers_403_when_the_backend_requires_an_identity(mocker):
+    """SANZARU_REQUIRE_USER_CONTEXT with no identity on the request is a refusal, not a crash.
+
+    The Databricks backend raises PermissionError rather than fall back to the
+    shared volume root; uncaught, that reached the error middleware as a 500
+    with a traceback. The storage side is pinned in its own tests — this pins
+    only what the route does with the exception.
+    """
+    from starlette.testclient import TestClient
+
+    storage = mocker.AsyncMock()
+    storage.read.side_effect = PermissionError(
+        "SANZARU_REQUIRE_USER_CONTEXT is set but this request carries no user identity"
+    )
+    mocker.patch("sanzaru.server.get_storage", return_value=storage)
+
+    from sanzaru.server import mcp
+
+    client = TestClient(mcp.streamable_http_app())
+
+    response = client.get("/media/video/clip.mp4", headers=_LOCAL)
+
+    assert response.status_code == 403
+    assert response.text == "Forbidden"

@@ -116,10 +116,11 @@ async def get_media_data(
 
         This reads the full file via ``storage.read()`` and slices in memory.
         For the local backend the OS page cache makes repeated reads fast.
-        For remote backends (Databricks), prefer using the HTTP route
-        ``/media/{type}/{name}`` which streams bytes directly without base64
-        overhead.  This tool exists as the universal fallback that works over
-        both stdio and HTTP transports.
+        This is the path the viewer uses over both stdio and HTTP: the HTTP
+        route ``/media/{type}/{name}`` avoids the base64 overhead, but it
+        requires the bearer header and answers ``Content-Disposition:
+        attachment``, which a browser media element can neither send nor
+        play — it is for programmatic clients, not the MCP App.
 
     Args:
         media_type: Type of media — "video", "audio", or "image"
