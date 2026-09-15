@@ -1,9 +1,18 @@
 # SPDX-License-Identifier: MIT
 """Unit tests for security utilities."""
 
+import os
+
 import pytest
 
-from sanzaru.security import check_not_symlink, safe_open_file, validate_safe_path
+from sanzaru.security import (
+    O_NOFOLLOW,
+    async_safe_open_file,
+    check_not_symlink,
+    open_nofollow,
+    safe_open_file,
+    validate_safe_path,
+)
 
 
 @pytest.mark.unit
@@ -140,17 +149,37 @@ class TestSafeOpenFile:
             with safe_open_file(link, "rb", "test file", check_symlink=True):
                 pass
 
-    def test_symlink_allowed_when_check_disabled(self, tmp_path, tmp_reference_path):
-        """Test that symlinks work when check_symlink=False."""
+    @pytest.mark.skipif(not O_NOFOLLOW, reason="O_NOFOLLOW is POSIX-only")
+    def test_symlink_still_refused_at_open_when_check_disabled(self, tmp_path, tmp_reference_path):
+        """`check_symlink=False` skips the pre-check, not the kernel's refusal.
+
+        The pre-check only ever sees the pre-swap state, so a link renamed onto
+        the name after it would be followed. The opener is what closes that
+        window, and it has to hold whether or not the caller asked for the
+        pre-check — otherwise this is the one code path that stays racy.
+        """
         target = tmp_path / "target.txt"
         target.write_bytes(b"symlink target content")
 
         link = tmp_reference_path / "link.txt"
         link.symlink_to(target)
 
-        with safe_open_file(link, "rb", "test file", check_symlink=False) as f:
-            content = f.read()
-            assert content == b"symlink target content"
+        with pytest.raises(ValueError, match="Refusing to follow a symbolic link"):
+            with safe_open_file(link, "rb", "test file", check_symlink=False):
+                pass
+        assert target.read_bytes() == b"symlink target content"
+
+    @pytest.mark.skipif(not O_NOFOLLOW, reason="O_NOFOLLOW is POSIX-only")
+    async def test_async_variant_refuses_a_symlink_at_open_too(self, tmp_path, tmp_reference_path):
+        victim = tmp_path / "victim.txt"
+        victim.write_bytes(b"original")
+        link = tmp_reference_path / "out.txt"
+        link.symlink_to(victim)
+
+        with pytest.raises(ValueError, match="Refusing to follow a symbolic link"):
+            async with async_safe_open_file(link, "wb", "test file", check_symlink=False):
+                pass
+        assert victim.read_bytes() == b"original"
 
     @pytest.mark.skip(reason="Platform-dependent: cannot reliably trigger PermissionError in tests")
     def test_permission_error_handling(self, tmp_reference_path):
@@ -194,3 +223,45 @@ class TestDanglingSymlinksAreCaught:
 
     def test_a_missing_path_passes(self, tmp_path):
         check_not_symlink(tmp_path / "nothing.mp3", "audio file")
+
+    def test_a_file_where_a_directory_was_expected_passes(self, tmp_path):
+        """NotADirectoryError is `validate_safe_path`'s to report, not this check's."""
+        (tmp_path / "real.mp3").write_bytes(b"data")
+        check_not_symlink(tmp_path / "real.mp3" / "inner.mp3", "audio file")
+
+    def test_permission_denied_is_reported_not_swallowed(self, tmp_path, mocker):
+        """`Path.is_symlink()` is `os.path.islink`, which eats every OSError and
+        answers False — so the documented RuntimeError could never fire and an
+        un-lstat-able path read as "a regular file". lstat directly so it can."""
+        mocker.patch("sanzaru.security.os.lstat", side_effect=PermissionError(13, "denied"))
+
+        with pytest.raises(RuntimeError, match="permission denied"):
+            check_not_symlink(tmp_path / "locked.mp3", "audio file")
+
+
+@pytest.mark.unit
+class TestOpenNofollow:
+    """The opener is the primitive every storage open goes through."""
+
+    def test_opens_an_ordinary_file(self, tmp_path):
+        path = tmp_path / "plain.txt"
+        path.write_bytes(b"hi")
+        fd = open_nofollow(str(path), os.O_RDONLY)
+        try:
+            assert os.read(fd, 2) == b"hi"
+        finally:
+            os.close(fd)
+
+    @pytest.mark.skipif(not O_NOFOLLOW, reason="O_NOFOLLOW is POSIX-only")
+    def test_refuses_a_symlink_as_a_value_error(self, tmp_path):
+        target = tmp_path / "target.txt"
+        target.write_bytes(b"secret")
+        link = tmp_path / "link.txt"
+        link.symlink_to(target)
+
+        with pytest.raises(ValueError, match="Refusing to follow a symbolic link while opening link.txt"):
+            open_nofollow(str(link), os.O_RDONLY)
+
+    def test_other_os_errors_pass_through_unchanged(self, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            open_nofollow(str(tmp_path / "missing.txt"), os.O_RDONLY)

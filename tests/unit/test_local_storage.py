@@ -5,6 +5,7 @@ import pathlib
 
 import pytest
 
+from sanzaru.security import O_NOFOLLOW
 from sanzaru.storage.local import LocalStorageBackend
 from sanzaru.storage.protocol import FileInfo, StorageBackend
 
@@ -416,6 +417,7 @@ async def test_list_files_stays_directory_wide(tmp_path):
 
 
 @pytest.mark.unit
+@pytest.mark.skipif(not O_NOFOLLOW, reason="the swap defence is O_NOFOLLOW; see TestPlantedSymlinksAreRefused")
 class TestSymlinkSwapCannotEscapeTheMediaDir:
     """Containment is checked, then the file is opened by name — not atomic.
 
@@ -481,3 +483,58 @@ class TestSymlinkSwapCannotEscapeTheMediaDir:
         storage = LocalStorageBackend(path_overrides={"audio": media})
         await storage.write("audio", "fine.mp3", b"hello")
         assert await storage.read("audio", "fine.mp3") == b"hello"
+
+
+@pytest.mark.unit
+class TestPlantedSymlinksAreRefusedBeforeTheOpen:
+    """The other layer, unmocked: a link already in place when the call starts.
+
+    `TestSymlinkSwapCannotEscapeTheMediaDir` mocks out both validators to show
+    what O_NOFOLLOW contributes on its own. These keep the pre-open check pinned
+    independently — it is the only defence on a platform without O_NOFOLLOW,
+    which is why `write`/`write_stream` call it and not just the readers. The
+    link's target sits *inside* the media dir so `validate_safe_path` accepts
+    it; only the symlink check can refuse.
+    """
+
+    @pytest.fixture
+    def media(self, tmp_path):
+        path = tmp_path / "audio"
+        path.mkdir()
+        return path
+
+    @pytest.fixture
+    def planted(self, media):
+        victim = media / "simrun_abcd1234.json"
+        victim.write_bytes(b'{"manifest": true}')
+        (media / "out.mp3").symlink_to(victim)
+        return victim
+
+    async def test_write_refuses_a_planted_link(self, media, planted):
+        storage = LocalStorageBackend(path_overrides={"audio": media})
+        with pytest.raises(ValueError, match="cannot be a symbolic link"):
+            await storage.write("audio", "out.mp3", b"attacker")
+        assert planted.read_bytes() == b'{"manifest": true}'
+
+    async def test_write_stream_refuses_a_planted_link(self, media, planted):
+        storage = LocalStorageBackend(path_overrides={"audio": media})
+
+        async def chunks():
+            yield b"attacker"
+
+        with pytest.raises(ValueError, match="cannot be a symbolic link"):
+            await storage.write_stream("audio", "out.mp3", chunks())
+        assert planted.read_bytes() == b'{"manifest": true}'
+
+    async def test_read_refuses_a_planted_link(self, media, planted):
+        storage = LocalStorageBackend(path_overrides={"audio": media})
+        with pytest.raises(ValueError, match="cannot be a symbolic link"):
+            await storage.read("audio", "out.mp3")
+
+    async def test_write_is_refused_even_without_o_nofollow(self, media, planted, mocker):
+        """What Windows gets: the opener is a no-op there, so the pre-check has to hold alone."""
+        mocker.patch("sanzaru.security.O_NOFOLLOW", 0)
+        storage = LocalStorageBackend(path_overrides={"audio": media})
+        with pytest.raises(ValueError, match="cannot be a symbolic link"):
+            await storage.write("audio", "out.mp3", b"attacker")
+        assert planted.read_bytes() == b'{"manifest": true}'

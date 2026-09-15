@@ -8,9 +8,7 @@ the default ``STORAGE_BACKEND=local`` setting.
 
 from __future__ import annotations
 
-import errno
 import logging
-import os
 import pathlib
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
@@ -18,39 +16,10 @@ from contextlib import asynccontextmanager
 import aiofiles
 
 from ..config import get_path
-from ..security import check_not_symlink, validate_safe_path
+from ..security import check_not_symlink, open_nofollow, validate_safe_path
 from .protocol import FileInfo, PathType
 
 logger = logging.getLogger("sanzaru")
-
-
-# POSIX-only; Windows has no symlink-following open to refuse, so the flag
-# degrades to a no-op there and the pre-open `check_not_symlink` is what remains.
-_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
-
-
-def _no_follow(path: str, flags: int) -> int:
-    """`open()` opener that refuses to traverse a final-component symlink.
-
-    Containment is checked with `validate_safe_path()` and the file is opened
-    afterwards *by name*, so the two steps are not atomic: an attacker with
-    write access inside the media directory can rename a symlink onto the
-    validated name in between and have the server read or truncate whatever it
-    points at (CWE-367). The pre-open `check_not_symlink` only ever saw the
-    pre-swap state; `O_NOFOLLOW` moves the decision into the kernel, at the
-    moment of the open, where the race has nowhere left to run.
-
-    Only the final component is protected. Directory components are the
-    configured media path itself, which is trusted — if that is attacker-
-    controlled, confinement was never meaningful.
-    """
-    try:
-        return os.open(path, flags | _NOFOLLOW)
-    except OSError as exc:
-        # FreeBSD answers EMLINK where Linux and macOS say ELOOP.
-        if exc.errno in (errno.ELOOP, errno.EMLINK):
-            raise ValueError(f"Refusing to follow a symbolic link: {os.path.basename(path)}") from exc
-        raise
 
 
 class LocalStorageBackend:
@@ -103,7 +72,7 @@ class LocalStorageBackend:
     async def read(self, path_type: PathType, filename: str) -> bytes:
         self._check_symlink(path_type, filename)
         file_path = self._safe(path_type, filename)
-        async with aiofiles.open(file_path, "rb", opener=_no_follow) as f:
+        async with aiofiles.open(file_path, "rb", opener=open_nofollow) as f:
             return await f.read()
 
     async def read_range(self, path_type: PathType, filename: str, offset: int, length: int) -> bytes:
@@ -111,19 +80,24 @@ class LocalStorageBackend:
             raise ValueError(f"offset must be non-negative, got {offset}")
         self._check_symlink(path_type, filename)
         file_path = self._safe(path_type, filename)
-        async with aiofiles.open(file_path, "rb", opener=_no_follow) as f:
+        async with aiofiles.open(file_path, "rb", opener=open_nofollow) as f:
             await f.seek(offset)
             return await f.read(length)
 
     async def write(self, path_type: PathType, filename: str, data: bytes) -> str:
+        # Pre-open check on the write side too. On POSIX `open_nofollow` would
+        # catch a planted link anyway; where O_NOFOLLOW does not exist this
+        # check is the only thing between a "wb" open and the link's target.
+        self._check_symlink(path_type, filename)
         file_path = self._safe(path_type, filename, allow_create=True)
-        async with aiofiles.open(file_path, "wb", opener=_no_follow) as f:
+        async with aiofiles.open(file_path, "wb", opener=open_nofollow) as f:
             await f.write(data)
         return str(file_path)
 
     async def write_stream(self, path_type: PathType, filename: str, chunks: AsyncIterator[bytes]) -> str:
+        self._check_symlink(path_type, filename)
         file_path = self._safe(path_type, filename, allow_create=True)
-        async with aiofiles.open(file_path, "wb", opener=_no_follow) as f:
+        async with aiofiles.open(file_path, "wb", opener=open_nofollow) as f:
             async for chunk in chunks:
                 await f.write(chunk)
         return str(file_path)
@@ -190,7 +164,7 @@ class LocalStorageBackend:
 
         The symlink check that `local_path` has is needed here more, not less:
         this is the *write* side, and the caller (pydub, `shutil.copyfile`, PIL)
-        opens the path itself, so `_no_follow` never gets a say. Without it a
+        opens the path itself, so `open_nofollow` never gets a say. Without it a
         link planted at the destination was written straight through.
 
         This closes the pre-planted case only. A link introduced between here

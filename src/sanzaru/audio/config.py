@@ -49,8 +49,9 @@ class AudioConfig(BaseSettings):
 
         resolved_path = v.resolve()
 
-        # Check for symlinks (security)
-        if v.exists() and v.is_symlink():
+        # Check for symlinks (security). `is_symlink()` alone — `exists()`
+        # follows the link and skipped this for a dangling one.
+        if v.is_symlink():
             raise ConfigurationError(f"Audio path cannot be a symbolic link: {v}")
 
         # Validate existence and type

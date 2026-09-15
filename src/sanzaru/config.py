@@ -255,10 +255,12 @@ def get_path(path_type: Literal["video", "reference", "audio"]) -> pathlib.Path:
         raise RuntimeError(f"Invalid {error_name} path '{path_str}': {e}") from e
 
     # Security: Reject symlinks in configured paths (env vars only, not user filenames)
-    # Check the original path before resolution to catch symlinks
+    # Check the original path before resolution to catch symlinks. `is_symlink()`
+    # alone: `exists()` follows the link, so a *dangling* one answered False here
+    # and the auto-create branch below then mkdir'ed its target through the link.
     original_path = pathlib.Path(path_str.strip())
     try:
-        if original_path.exists() and original_path.is_symlink():
+        if original_path.is_symlink():
             raise RuntimeError(f"{error_name} cannot be a symbolic link: {path_str}")
     except PermissionError as e:
         raise RuntimeError(f"Cannot validate {error_name}: permission denied for {path_str}") from e
