@@ -32,10 +32,11 @@ from starlette.requests import Request
 from starlette.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from .config import DEFAULT_IMAGE_MODEL, logger
+from .config import DEFAULT_IMAGE_EDIT_MODEL, DEFAULT_IMAGE_MODEL, logger
 from .dotenv_loader import load_local_dotenv
 from .exceptions import ConfigurationError
 from .features import check_audio_available, check_image_available, check_video_available
+from .image_models import ImageQuality
 from .storage.factory import get_storage
 from .tools.media_viewer import MEDIA_TYPE_TO_PATH_TYPE
 from .user_context import UserContext, UserContextRequiredError, reset_user_context, set_user_context
@@ -286,7 +287,7 @@ if check_image_available():
         prompt: str,
         model: str = DEFAULT_IMAGE_MODEL,
         size: ImageSize = "auto",
-        quality: Literal["auto", "low", "medium", "high"] = "auto",
+        quality: ImageQuality = "auto",
         background: Literal["auto", "transparent", "opaque"] = "auto",
         output_format: Literal["png", "jpeg", "webp"] = "png",
         moderation: Literal["auto", "low"] = "auto",
@@ -301,10 +302,10 @@ if check_image_available():
     async def edit_image(
         prompt: str,
         input_images: list[str],
-        model: str = DEFAULT_IMAGE_MODEL,
+        model: str = DEFAULT_IMAGE_EDIT_MODEL,
         mask_filename: str | None = None,
         size: ImageSize = "auto",
-        quality: Literal["auto", "low", "medium", "high"] = "auto",
+        quality: ImageQuality = "auto",
         background: Literal["auto", "transparent", "opaque"] = "auto",
         output_format: Literal["png", "jpeg", "webp"] = "png",
         input_fidelity: Literal["high", "low"] | None = None,
