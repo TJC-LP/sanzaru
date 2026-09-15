@@ -44,7 +44,11 @@ classifiers = [
     "Operating System :: OS Independent",
 ]
 dependencies = [
-  "openai>=2.53.0",
+  # 3.x moved the SDK onto httpx2 (OS trust store; exception `.response` is an
+  # httpx2.Response) and is the first line that knows gpt-image-2.5 and the Live
+  # API (gpt-live-1). Capped at <4 for the same reason as mcp: the import paths
+  # and parameter types below are load-bearing.
+  "openai>=3.14.0,<4",
   # 2.x renamed the high-level server (mcp.server.fastmcp -> mcp.server.mcpserver)
   # and implements protocol 2026-07-28; server.py targets that API. Capped at <3
   # because the import path is load-bearing: an uncapped major bump is how 0.8.0

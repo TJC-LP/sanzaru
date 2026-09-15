@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """Unit tests for the polling wait loops (no real sleeps — fake clock)."""
 
-import httpx
+import httpx2
 import pytest
 from openai import APIConnectionError, APIStatusError
 
@@ -40,7 +40,7 @@ def _video(mocker, status: str, progress: int = 0):
 
 
 def _api_error(status_code: int) -> APIStatusError:
-    response = httpx.Response(status_code, request=httpx.Request("GET", "https://api.test"))
+    response = httpx2.Response(status_code, request=httpx2.Request("GET", "https://api.test"))
     return APIStatusError("boom", response=response, body=None)
 
 
@@ -142,7 +142,7 @@ async def test_wait_for_video_retries_transient_errors(mocker, fake_clock):
         "sanzaru.tools.video.get_video_status",
         mocker.AsyncMock(
             side_effect=[
-                APIConnectionError(request=httpx.Request("GET", "https://api.test")),
+                APIConnectionError(request=httpx2.Request("GET", "https://api.test")),
                 _api_error(500),
                 _api_error(429),
                 done,
