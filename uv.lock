@@ -1777,6 +1777,8 @@ requires-dist = [
     { name = "pydub", marker = "extra == 'audio'" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
     { name = "sanzaru", extras = ["video", "audio", "image", "elevenlabs"], marker = "extra == 'all'" },
+    { name = "starlette", specifier = ">=0.27" },
+    { name = "uvicorn", specifier = ">=0.31.1" },
 ]
 provides-extras = ["video", "audio", "image", "elevenlabs", "databricks", "all"]
 

@@ -334,10 +334,32 @@ uv run sanzaru --transport http --host 0.0.0.0
 ```
 
 Binding to anything other than loopback **requires** the token: sanzaru refuses
-to start otherwise. Set `SANZARU_ALLOW_UNAUTHENTICATED_HTTP=1` only when
-something in front of it already authenticates every request. On a loopback
-bind the token is optional but still recommended — it is what stops a page in
-the user's browser from reaching the server through DNS rebinding.
+to start otherwise (exit 3). Set `SANZARU_ALLOW_UNAUTHENTICATED_HTTP=1` only when
+something in front of it already authenticates every request — and name that
+proxy's hostnames in `SANZARU_ALLOWED_HOSTS` (comma-separated, `host` or `host:*`),
+which the hatch requires: it keeps the SDK's DNS-rebinding check on, Origin
+included, so the unauthenticated path is never also the least-protected one. With
+a token and no allowlist the Host/Origin check is switched off and the token is the
+control. On a loopback bind the token is optional but still recommended.
+
+**Databricks Apps** authenticates in front of the app, so run it with
+`SANZARU_ALLOW_UNAUTHENTICATED_HTTP=1` and `SANZARU_ALLOWED_HOSTS` set to the Host
+value the platform proxy forwards (include whatever its health probe sends). Include
+the loopback names too if the probe uses them, e.g.
+`SANZARU_ALLOWED_HOSTS=myapp.example.com,localhost:*`.
+
+**Upgrading from 0.10.x:** `sanzaru --transport http --host 0.0.0.0` used to start
+with no credential. It now refuses unless `SANZARU_HTTP_TOKEN` or the hatch above
+is set — deliberate, and worth a line in your deployment notes.
+
+`/media/{type}/{name}` requires the same `Authorization` header, and every response
+is `Content-Disposition: attachment`, so it is for programmatic clients; a browser
+media element cannot send the header and should use the viewer's `_get_media_data`
+path (the bundled MCP App already does).
+
+Embedding the server in your own ASGI stack? Use `sanzaru.server.build_http_app()` —
+the same authenticated app the CLI serves — never the bare `mcp.streamable_http_app()`,
+which carries none of the middleware. See CLAUDE.md, *Transport Modes*.
 
 ### What a `.env` file can (and cannot) configure
 
@@ -354,10 +376,12 @@ transport security, or change what a run is allowed to cost:
   storage backend credentials, tuning knobs), matched exactly and
   case-sensitively. Everything else in the file is ignored with a warning naming
   the keys. Notably ignored on purpose: `DATABRICKS_HOST` and any
-  `*_BASE_URL`/proxy variable (they decide *where* credentials are sent);
-  `SANZARU_HTTP_TOKEN` and `SANZARU_ALLOW_UNAUTHENTICATED_HTTP` (a planted file
-  must not weaken or satisfy transport auth); `SANZARU_RUN_SECRET` (the signing
-  key); `SANZARU_REALTIME_PRICE_*` (the price table is what `--max-cost` is
+  `*_BASE_URL`/proxy variable (they decide *where* credentials are sent); every
+  HTTP-security variable — `SANZARU_HTTP_TOKEN`, `SANZARU_ALLOW_UNAUTHENTICATED_HTTP`,
+  `SANZARU_ALLOWED_HOSTS`, `SANZARU_ALLOWED_ORIGINS`, `SANZARU_IDENTITY_HEADER`,
+  `SANZARU_REQUIRE_USER_CONTEXT` (a planted file must not weaken or satisfy
+  transport auth, nor pick whose identity is trusted); `SANZARU_RUN_SECRET` (the
+  signing key); `SANZARU_REALTIME_PRICE_*` (the price table is what `--max-cost` is
   enforced against — a planted `0,0,0,0,0,0` would make every turn free); and
   `DATABRICKS_VIDEO_DIR`/`_IMAGE_DIR`/`_AUDIO_DIR` (joined into the volume path
   unsanitized, so `..` in one walks into another tenant's files).
@@ -373,7 +397,7 @@ operator actions rather than a file discovered on disk.
 | **Local** (default) | `SANZARU_MEDIA_PATH=/path/to/media` | Development, local deployments |
 | **Databricks** | `STORAGE_BACKEND=databricks` | Databricks Apps with Unity Catalog Volumes |
 
-The Databricks backend supports per-user storage isolation via the `user_context` module, enabling multi-tenant deployments where each user's media is stored under their own volume prefix (`<local-part>-<hash>`, injective over email addresses; the prefix format changed after 0.10.0 — see CLAUDE.md for the migration note). Set `SANZARU_REQUIRE_USER_CONTEXT=1` on a shared deployment so a request with no identity is refused instead of served from the shared root. In HTTP mode the identity comes from a proxy-injected header, and trusting one is **opt-in**: set `SANZARU_IDENTITY_HEADER` (e.g. `x-forwarded-email` on Databricks Apps) only when a proxy in front of sanzaru both injects that header and **strips** any client-supplied copy. When it is unset, no header is trusted and every request resolves to the shared volume root.
+The Databricks backend supports per-user storage isolation via the `user_context` module, enabling multi-tenant deployments where each user's media is stored under their own volume prefix (`<local-part>-<hash>`, injective over email addresses; the prefix format changed after 0.10.0 — see CLAUDE.md for the migration note). In HTTP mode the identity comes from a proxy-injected header, and trusting one is **opt-in**: set `SANZARU_IDENTITY_HEADER` (e.g. `x-forwarded-email` on Databricks Apps) only when a proxy in front of sanzaru both injects that header and **strips** any client-supplied copy. When it is unset, no header is trusted and every request resolves to the shared volume root. A request carrying the header twice (an appending proxy forwards the client's copy first) or malformed is refused with 400 rather than binding either copy. Set `SANZARU_REQUIRE_USER_CONTEXT=1` on a shared deployment so a request with no identity is refused (403 on `/media`) instead of silently served out of the shared root.
 
 See [CLAUDE.md](CLAUDE.md) for full configuration details.
 
