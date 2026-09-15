@@ -149,30 +149,30 @@ Two APIs are available for image generation:
 
 | Tool | API | Best For |
 |------|-----|----------|
-| `generate_image` | Images API | New generation with gpt-image-2 (RECOMMENDED) |
+| `generate_image` | Images API | New generation with gpt-image-2.5 (RECOMMENDED) |
 | `edit_image` | Images API | Editing existing images |
 | `create_image` | Responses API | Iterative refinement with `previous_response_id` |
 
-**Images API** (gpt-image-2 default): Synchronous, returns immediately, no polling required, up to 4K output
-**Responses API** (GPT-5.2): Async polling pattern, supports iterative refinement chains + `action` field, gpt-image-2 via tool_config
+**Images API** (gpt-image-2.5 default): Synchronous, returns immediately, no polling required, up to 4K output
+**Responses API** (GPT-5.2): Async polling pattern, supports iterative refinement chains + `action` field, gpt-image-2.5 (or gpt-image-2) via tool_config
 
 ---
 
 ### `generate_image`
-Generate images using OpenAI's Images API with gpt-image-2 (default). **RECOMMENDED** for new image generation.
+Generate images using OpenAI's Images API with gpt-image-2.5-flare (default). **RECOMMENDED** for new image generation.
 
 **Key advantages:**
 - Synchronous - returns immediately (no polling)
-- gpt-image-2 - state-of-the-art quality, ~99% text accuracy, up to 4K output
+- gpt-image-2.5-flare / gpt-image-2.5-sunburst - state-of-the-art, transparent backgrounds, `xhigh`/`max` quality, up to 4K output; gpt-image-2 - previous flagship (~99% text accuracy)
 - Token usage tracking for cost monitoring
 - Accepts thousands of valid resolutions (not just the documented presets)
 
 **Parameters:**
 - `prompt` (string, required): Text description of the image (max 32k chars)
-- `model` (string, optional): Model - `"gpt-image-2"` (default, recommended), `"gpt-image-1.5"`, `"gpt-image-1"`, `"gpt-image-1-mini"`, `"dall-e-3"`, `"dall-e-2"`
-- `size` (string, optional): Dimensions - `"auto"` (default), `"1024x1024"`, `"1536x1024"`, `"1024x1536"`, plus gpt-image-2 sizes `"2048x2048"`, `"2048x1152"`, `"3840x2160"`, `"2160x3840"`
+- `model` (string, optional): Model - `"gpt-image-2.5-flare"` (default, recommended), `"gpt-image-2.5-sunburst"`, `"gpt-image-2"`, `"gpt-image-1.5"`, `"gpt-image-1"`, `"gpt-image-1-mini"`, `"dall-e-3"`, `"dall-e-2"`
+- `size` (string, optional): Dimensions - `"auto"` (default), `"1024x1024"`, `"1536x1024"`, `"1024x1536"`, plus gpt-image-2.5/gpt-image-2 sizes `"2048x2048"`, `"2048x1152"`, `"3840x2160"`, `"2160x3840"`
 - `quality` (string, optional): Quality - `"auto"` (default), `"low"`, `"medium"`, `"high"`
-- `background` (string, optional): Background - `"auto"` (default), `"transparent"` (NOT supported on gpt-image-2 — use gpt-image-1.5), `"opaque"`
+- `background` (string, optional): Background - `"auto"` (default), `"transparent"` (NOT supported on gpt-image-2; fine on gpt-image-2.5 — use gpt-image-1.5), `"opaque"`
 - `output_format` (string, optional): Format - `"png"` (default), `"jpeg"`, `"webp"`
 - `moderation` (string, optional): Content moderation - `"auto"` (default), `"low"`
 - `filename` (string, optional): Custom output filename (auto-generated if omitted)
@@ -199,7 +199,7 @@ result = generate_image(
     quality="high"
 )
 
-# Transparent background for icons (falls back to gpt-image-1.5)
+# Transparent background for icons (the default gpt-image-2.5 model supports it)
 result = generate_image(
     prompt="product icon, clean design",
     model="gpt-image-1.5",
@@ -217,7 +217,7 @@ result = generate_image(
 ---
 
 ### `edit_image`
-Edit existing images using OpenAI's Images API with gpt-image-2 (default).
+Edit existing images using OpenAI's Images API with gpt-image-2.5-sunburst (default).
 
 **Key features:**
 - Synchronous - returns immediately (no polling)
@@ -228,9 +228,9 @@ Edit existing images using OpenAI's Images API with gpt-image-2 (default).
 **Parameters:**
 - `prompt` (string, required): Description of desired edits (max 32k chars)
 - `input_images` (array, required): List of image filenames from `IMAGE_PATH` (1-16 images)
-- `model` (string, optional): Model - `"gpt-image-2"` (default), `"gpt-image-1.5"`, `"gpt-image-1"`, `"gpt-image-1-mini"`
+- `model` (string, optional): Model - `"gpt-image-2.5-sunburst"` (default), `"gpt-image-2.5-flare"`, `"gpt-image-2"`, `"gpt-image-1.5"`, `"gpt-image-1"`, `"gpt-image-1-mini"`
 - `mask_filename` (string, optional): PNG mask with alpha channel for inpainting (transparent = edit, opaque = keep)
-- `size` (string, optional): Output dimensions - `"auto"` (default), `"1024x1024"`, `"1536x1024"`, `"1024x1536"`, plus gpt-image-2 sizes `"2048x2048"`, `"2048x1152"`, `"3840x2160"`, `"2160x3840"`
+- `size` (string, optional): Output dimensions - `"auto"` (default), `"1024x1024"`, `"1536x1024"`, `"1024x1536"`, plus gpt-image-2.5/gpt-image-2 sizes `"2048x2048"`, `"2048x1152"`, `"3840x2160"`, `"2160x3840"`
 - `quality` (string, optional): Quality - `"auto"` (default), `"low"`, `"medium"`, `"high"`
 - `background` (string, optional): Background - `"auto"` (default), `"transparent"` (NOT supported on gpt-image-2), `"opaque"`
 - `output_format` (string, optional): Format - `"png"` (default), `"jpeg"`, `"webp"`
@@ -274,7 +274,7 @@ result = edit_image(
 ### `create_image`
 Generate images using OpenAI's Responses API. Use for iterative refinement with `previous_response_id`.
 
-**Tip:** Use `tool_config={"type": "image_generation", "model": "gpt-image-2"}` for best quality. Use `"gpt-image-1.5"` when you need transparent backgrounds. You can also pass `action: "generate"` / `"edit"` to force a mode when an image is in context (default `"auto"`).
+**Tip:** The image model defaults to gpt-image-2.5-flare; pin `"gpt-image-2.5-sunburst"` for precision edits. Use `"gpt-image-1.5"` when you need transparent backgrounds. You can also pass `action: "generate"` / `"edit"` to force a mode when an image is in context (default `"auto"`).
 
 **Parameters:**
 - `prompt` (string, required): Text description of image to generate

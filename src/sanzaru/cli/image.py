@@ -58,7 +58,7 @@ _GENERATE_SIZES = [
     "3840x2160",
     "2160x3840",
 ]
-_QUALITIES = ["auto", "low", "medium", "high"]
+_QUALITIES = ["auto", "low", "medium", "high", "xhigh", "max"]  # xhigh/max: gpt-image-2.5 only
 _BACKGROUNDS = ["auto", "transparent", "opaque"]
 _FORMATS = ["png", "jpeg", "webp"]
 _VIDEO_SIZES = ["720x1280", "1280x720", "1024x1792", "1792x1024"]
@@ -75,7 +75,7 @@ GenerateSize = Literal[
     "3840x2160",
     "2160x3840",
 ]
-Quality = Literal["auto", "low", "medium", "high"]
+Quality = Literal["auto", "low", "medium", "high", "xhigh", "max"]
 Background = Literal["auto", "transparent", "opaque"]
 OutputFormat = Literal["png", "jpeg", "webp"]
 
@@ -187,13 +187,18 @@ async def wait_one_image(
 @image.command("create")
 @click.argument("prompt")
 @click.option("--model", default="gpt-5.2", show_default=True, help="Mainline model driving the image tool.")
-@click.option("--image-model", default=None, help="Image model in the tool config (default gpt-image-2).")
-@click.option("--size", default=None, help="e.g. 1536x1024 (gpt-image-2 allows most 16-multiples).")
+@click.option("--image-model", default=None, help="Image model in the tool config (default gpt-image-2.5-flare).")
+@click.option("--size", default=None, help="e.g. 1536x1024 (gpt-image-2.5/2 allow most 16-multiples).")
 @click.option("--quality", type=click.Choice(_QUALITIES), default=None)
 @click.option("--background", type=click.Choice(_BACKGROUNDS), default=None)
 @click.option("--output-format", type=click.Choice(_FORMATS), default=None)
 @click.option("--moderation", type=click.Choice(["auto", "low"]), default=None)
-@click.option("--input-fidelity", type=click.Choice(["high", "low"]), default=None, help="gpt-image-1.5 only.")
+@click.option(
+    "--input-fidelity",
+    type=click.Choice(["high", "low"]),
+    default=None,
+    help="Ignored by gpt-image-2 (always high); honoured elsewhere.",
+)
 @click.option("--previous-id", default=None, help="Refine a previous response (iterative chains).")
 @click.option("--input-image", "input_images", multiple=True, help="Reference image (path or media-dir filename).")
 @click.option("--mask", default=None, help="PNG mask with alpha channel (requires --input-image).")
@@ -400,7 +405,7 @@ async def image_download(ctx: click.Context, response_id: str, output: str | Non
 
 @image.command("generate")
 @click.argument("prompts", nargs=-1, required=True)
-@click.option("--model", default=None, help="Image model (default gpt-image-2).")
+@click.option("--model", default=None, help="Image model (default gpt-image-2.5-flare).")
 @click.option("--size", type=click.Choice(_GENERATE_SIZES), default="auto", show_default=True)
 @click.option("--quality", type=click.Choice(_QUALITIES), default="auto", show_default=True)
 @click.option("--background", type=click.Choice(_BACKGROUNDS), default="auto", show_default=True)
@@ -509,12 +514,17 @@ async def image_generate(
 @click.argument("prompt")
 @click.option("--input-image", "input_images", multiple=True, required=True, help="Image(s) to edit/compose.")
 @click.option("--mask", default=None, help="PNG mask with alpha channel.")
-@click.option("--model", default=None, help="Image model (default gpt-image-2).")
+@click.option("--model", default=None, help="Image model (default gpt-image-2.5-sunburst).")
 @click.option("--size", type=click.Choice(_GENERATE_SIZES), default="auto", show_default=True)
 @click.option("--quality", type=click.Choice(_QUALITIES), default="auto", show_default=True)
 @click.option("--background", type=click.Choice(_BACKGROUNDS), default="auto", show_default=True)
 @click.option("--output-format", type=click.Choice(_FORMATS), default="png", show_default=True)
-@click.option("--input-fidelity", type=click.Choice(["high", "low"]), default=None, help="gpt-image-1.5 only.")
+@click.option(
+    "--input-fidelity",
+    type=click.Choice(["high", "low"]),
+    default=None,
+    help="Ignored by gpt-image-2 (always high); honoured elsewhere.",
+)
 @click.option("-o", "--output", default=None, help="Output file or directory.")
 @click.pass_context
 @run_async("image.edit")
@@ -532,7 +542,7 @@ async def image_edit(
     output: str | None,
 ) -> int:
     """Edit/compose existing images synchronously (Images API)."""
-    from ..config import DEFAULT_IMAGE_MODEL
+    from ..config import DEFAULT_IMAGE_EDIT_MODEL
     from ..tools import images_api
 
     state = get_state(ctx)
@@ -547,7 +557,7 @@ async def image_edit(
     result = await images_api.edit_image(
         prompt=prompt_text,
         input_images=ref_names,
-        model=model or DEFAULT_IMAGE_MODEL,
+        model=model or DEFAULT_IMAGE_EDIT_MODEL,
         mask_filename=mask_name,
         size=cast(GenerateSize, size),
         quality=cast(Quality, quality),

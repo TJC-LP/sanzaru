@@ -17,15 +17,16 @@ from typing import Literal
 import anyio
 from PIL import Image
 
-from ..config import DEFAULT_IMAGE_MODEL, get_client, logger
+from ..config import DEFAULT_IMAGE_EDIT_MODEL, DEFAULT_IMAGE_MODEL, get_client, logger
+from ..image_models import ImageQuality, check_background, check_quality, honors_input_fidelity
 from ..storage import get_storage
 from ..types import ImageGenerateResult
 from ..utils import generate_filename
 
 # Public size alias. Covers the "popular sizes" documented in OpenAI's
-# gpt-image-2 cookbook (April 2026). The API actually accepts any resolution
-# that satisfies: max edge 3840px, multiples of 16px, ratio ≤3:1,
-# 655,360 ≤ pixels ≤ 8,294,400.
+# gpt-image-2 cookbook (April 2026); gpt-image-2.5 keeps the same rules. The API
+# actually accepts any resolution that satisfies: max edge 3840px, multiples of
+# 16px, ratio ≤3:1, 655,360 ≤ pixels ≤ 8,294,400.
 #
 # OpenAI's own guidance: 2560x1440 is the reliability ceiling; anything above
 # that (3840x2160 and friends) should be treated as experimental — results
@@ -42,7 +43,6 @@ ImageSize = Literal[
     "3840x2160",
     "2160x3840",
 ]
-ImageQuality = Literal["auto", "low", "medium", "high"]
 ImageBackground = Literal["auto", "transparent", "opaque"]
 ImageOutputFormat = Literal["png", "jpeg", "webp"]
 
@@ -64,9 +64,9 @@ async def generate_image(
 
     Args:
         prompt: Text description of the image to generate (max 32k chars for GPT models)
-        model: Image generation model. Default: "gpt-image-2" (state-of-the-art)
+        model: Image generation model. Default: "gpt-image-2.5-flare"
         size: Image dimensions. Default: "auto"
-        quality: Generation quality. Default: "auto"
+        quality: Generation quality. Default: "auto"; "xhigh" and "max" are gpt-image-2.5 only
         background: Background type. Default: "auto" (transparent unsupported on gpt-image-2)
         output_format: Output format. Default: "png"
         moderation: Content moderation level. Default: "auto"
@@ -77,13 +77,11 @@ async def generate_image(
 
     Raises:
         RuntimeError: If OPENAI_API_KEY not set or IMAGE_PATH not configured
-        ValueError: If API returns error, invalid filename, or transparent background
-            is requested with gpt-image-2 (unsupported — use gpt-image-1.5)
+        ValueError: If API returns error, invalid filename, or the model cannot honour
+            the requested background/quality (see image_models.py)
     """
-    if model == DEFAULT_IMAGE_MODEL and background == "transparent":
-        raise ValueError(
-            "gpt-image-2 does not support transparent backgrounds. Use gpt-image-1.5 for transparent output."
-        )
+    check_background(model, background)
+    check_quality(model, quality)
 
     client = get_client()
     storage = get_storage()
@@ -147,7 +145,7 @@ async def generate_image(
 async def edit_image(
     prompt: str,
     input_images: list[str],
-    model: str = DEFAULT_IMAGE_MODEL,
+    model: str = DEFAULT_IMAGE_EDIT_MODEL,
     mask_filename: str | None = None,
     size: ImageSize = "auto",
     quality: ImageQuality = "auto",
@@ -164,14 +162,14 @@ async def edit_image(
     Args:
         prompt: Text description of desired edits (max 32k chars for GPT models)
         input_images: List of image filenames in IMAGE_PATH (up to 16 images)
-        model: Image generation model. Default: "gpt-image-2" (state-of-the-art)
+        model: Image generation model. Default: "gpt-image-2.5-sunburst" (tuned for editing precision)
         mask_filename: Optional PNG mask with alpha channel for inpainting
         size: Output image dimensions. Default: "auto"
-        quality: Generation quality. Default: "auto"
+        quality: Generation quality. Default: "auto"; "xhigh" and "max" are gpt-image-2.5 only
         background: Background type. Default: "auto" (transparent unsupported on gpt-image-2)
         output_format: Output format. Default: "png"
-        input_fidelity: Control fidelity to input images. Only supported on
-            gpt-image-1 / gpt-image-1.5; ignored for gpt-image-2 (always high).
+        input_fidelity: Control fidelity to input images. Honoured by gpt-image-2.5,
+            gpt-image-1.5 and gpt-image-1; stripped for gpt-image-2 (always high).
         filename: Custom output filename (optional, auto-generated if not provided)
 
     Returns:
@@ -179,13 +177,11 @@ async def edit_image(
 
     Raises:
         RuntimeError: If OPENAI_API_KEY not set or IMAGE_PATH not configured
-        ValueError: If API returns error, invalid filename, image not found, or
-            transparent background is requested with gpt-image-2.
+        ValueError: If API returns error, invalid filename, image not found, or the
+            model cannot honour the requested background/quality (see image_models.py).
     """
-    if model == DEFAULT_IMAGE_MODEL and background == "transparent":
-        raise ValueError(
-            "gpt-image-2 does not support transparent backgrounds. Use gpt-image-1.5 for transparent output."
-        )
+    check_background(model, background)
+    check_quality(model, quality)
 
     client = get_client()
     storage = get_storage()
@@ -252,11 +248,12 @@ async def edit_image(
     if mask_file:
         edit_kwargs["mask"] = mask_file
     if input_fidelity:
-        # gpt-image-2 always processes inputs at high fidelity and rejects the flag.
-        if model == DEFAULT_IMAGE_MODEL:
-            logger.debug("Ignoring input_fidelity=%s for gpt-image-2 (always high)", input_fidelity)
-        else:
+        # gpt-image-2 always processes inputs at high fidelity and rejects the flag;
+        # every other GPT image model honours it (image_models.py is the table).
+        if honors_input_fidelity(model):
             edit_kwargs["input_fidelity"] = input_fidelity
+        else:
+            logger.debug("Ignoring input_fidelity=%s for %s (always high)", input_fidelity, model)
 
     # Call Images API edit endpoint
     response = await client.images.edit(**edit_kwargs)

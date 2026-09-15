@@ -189,15 +189,19 @@ Example workflow:
 # below to avoid repeating the same model list and size guidance three times.
 
 _IMAGE_MODELS_SUMMARY = """**Image generation models:**
-- gpt-image-2: STATE-OF-THE-ART (default) — best quality, ~99% text accuracy.
+- gpt-image-2.5-flare: DEFAULT for generation — fast, high-quality everyday
+  images. Same price as gpt-image-2; adds transparent backgrounds and the
+  "xhigh"/"max" quality levels.
+- gpt-image-2.5-sunburst: DEFAULT for edit_image — tuned for editing precision
+  (face/detail preservation, masked inpainting). Same capabilities as flare.
+- gpt-image-2: Previous flagship — ~99% text accuracy, any valid resolution.
   Always processes inputs at high fidelity (no input_fidelity knob).
-  Does not support transparent backgrounds.
-- gpt-image-1.5: Previous gen — use when you need transparent backgrounds or
-  explicit input_fidelity control.
+  Does not support transparent backgrounds or xhigh/max.
+- gpt-image-1.5: Older gen — transparent backgrounds and input_fidelity, fixed sizes.
 - gpt-image-1: High quality (legacy).
 - gpt-image-1-mini: Fast, cost-effective drafts."""
 
-_IMAGE_SIZE_GUIDANCE = """**Sizes (gpt-image-2):**
+_IMAGE_SIZE_GUIDANCE = """**Sizes (gpt-image-2.5 and gpt-image-2):**
 Recommended (reliable results): "1024x1024", "1024x1536" / "1536x1024"
 (portrait / landscape), "2048x2048", "2560x1440" / "1440x2560" (2K — OpenAI's
 upper reliability ceiling).
@@ -205,13 +209,13 @@ Experimental: "3840x2160" / "2160x3840" (4K). Results more variable and the
 client memory / decode cost climbs fast. Prefer 2K or smaller unless the user
 explicitly asks for 4K.
 
-gpt-image-2 also accepts any resolution that satisfies all of: max edge
+Both families also accept any resolution that satisfies all of: max edge
 ≤ 3840px, both edges multiples of 16, long:short ratio ≤ 3:1, and
 655,360 ≤ total pixels ≤ 8,294,400. Pass "auto" to let the model pick."""
 
 
 CREATE_IMAGE = (
-    """Non-blocking async image generation (gpt-image-2 by default).
+    """Non-blocking async image generation (gpt-image-2.5-flare by default).
 
 Creates images from text prompts OR edits existing images by providing reference images.
 Returns immediately with a response_id - use get_image_status() to poll for completion.
@@ -236,7 +240,7 @@ Parameters:
   * With input_images: Describe what changes to make
 - model: Mainline model - "gpt-5.2" (default), "gpt-5.1", "gpt-5", etc.
 - tool_config: Optional ImageGeneration configuration object (optional)
-  * Image model defaults to gpt-image-2 when "model" is omitted
+  * Image model defaults to gpt-image-2.5-flare when "model" is omitted
   * Supports all fields: model, size, quality, moderation, input_fidelity, action, etc.
   * MCP library handles serialization automatically
   * See examples below for common configurations
@@ -257,24 +261,29 @@ Parameters:
     + """
 
 **Other tool_config fields (all optional):**
-- quality: "low", "medium", "high", or "auto"
+- quality: "low", "medium", "high", or "auto"; gpt-image-2.5 also accepts "xhigh" and "max"
+  (raises on other models)
 - moderation: "auto" (default) or "low"
-- background: "auto", "opaque", or "transparent" (transparent NOT supported on gpt-image-2 — raises; use gpt-image-1.5)
-- input_fidelity: "high" or "low" (gpt-image-1/1.5 only — ignored by gpt-image-2)
+- background: "auto", "opaque", or "transparent" (transparent NOT supported on gpt-image-2 — raises;
+  gpt-image-2.5 and gpt-image-1.5 support it with png/webp output)
+- input_fidelity: "high" or "low" (gpt-image-2.5, gpt-image-1.5, gpt-image-1 — ignored by gpt-image-2)
 - output_format: "png", "jpeg", or "webp"
 - action: "auto" (default), "generate", or "edit" — force a mode when an image is in context
 - partial_images: 0-3 — stream partial images during generation
 
 Common tool_config examples:
 
-Best quality with gpt-image-2:
-  tool_config={"type": "image_generation", "model": "gpt-image-2", "quality": "high"}
+Maximum quality with gpt-image-2.5:
+  tool_config={"type": "image_generation", "model": "gpt-image-2.5-flare", "quality": "max"}
+
+Precision edit with gpt-image-2.5-sunburst:
+  tool_config={"type": "image_generation", "model": "gpt-image-2.5-sunburst", "input_fidelity": "high"}
 
 2K landscape:
-  tool_config={"type": "image_generation", "model": "gpt-image-2", "size": "2560x1440"}
+  tool_config={"type": "image_generation", "size": "2560x1440"}
 
-Transparent PNG (falls back to gpt-image-1.5):
-  tool_config={"type": "image_generation", "model": "gpt-image-1.5", "background": "transparent"}
+Transparent PNG (default model supports it):
+  tool_config={"type": "image_generation", "background": "transparent", "output_format": "png"}
 
 Fast draft with mini model:
   tool_config={"type": "image_generation", "model": "gpt-image-1-mini", "quality": "low"}
@@ -288,7 +297,7 @@ Force a fresh image even when one is in context:
 Workflows:
 
 1. Text-only generation (recommended):
-   create_image("sunset over mountains", tool_config={"type": "image_generation", "model": "gpt-image-2"})
+   create_image("sunset over mountains")  # gpt-image-2.5-flare
 
 2. Single image editing:
    create_image("add a flamingo to the pool", input_images=["lounge.png"])
@@ -353,14 +362,16 @@ use create_image instead (async with previous_response_id support).
 
 Parameters:
 - prompt: Text description of the image (required, max 32k chars)
-- model: Image model to use. Default: "gpt-image-2". Also accepts legacy
+- model: Image model to use. Default: "gpt-image-2.5-flare". Also accepts legacy
   "dall-e-3" and "dall-e-2". See model summary below.
 - size: Image dimensions. Default: "auto". See size guidance below.
 - quality: Generation quality. Default: "auto"
-  * "auto", "low", "medium", "high"
+  * "auto", "low", "medium", "high" on every GPT image model
+  * "xhigh", "max" on gpt-image-2.5 only (raises on other models)
 - background: Background type. Default: "auto"
   * "auto", "transparent", "opaque"
-  * NOTE: gpt-image-2 does NOT support transparent — use gpt-image-1.5 for that
+  * NOTE: gpt-image-2 does NOT support transparent (raises); gpt-image-2.5 and
+    gpt-image-1.5 do, with png or webp output
 - output_format: Output format. Default: "png"
   * "png", "jpeg", "webp"
 - moderation: Content moderation. Default: "auto"
@@ -377,21 +388,21 @@ Returns ImageGenerateResult with: filename, size, format, model, usage
 
 Example workflows:
 
-1. Basic generation (gpt-image-2):
+1. Basic generation (gpt-image-2.5-flare):
    generate_image("a sunset over mountains")
 
-2. High quality 2K landscape:
-   generate_image("mountain vista at golden hour", size="2560x1440", quality="high")
+2. Maximum quality 2K landscape:
+   generate_image("mountain vista at golden hour", size="2560x1440", quality="max")
 
-3. Transparent background (falls back to gpt-image-1.5):
-   generate_image("product icon", model="gpt-image-1.5", background="transparent")
+3. Transparent background (supported by the default model):
+   generate_image("product icon", background="transparent", output_format="png")
 
 4. Fast draft:
    generate_image("quick sketch", quality="low")"""
 )
 
 EDIT_IMAGE = (
-    """Edit images using OpenAI's Images API with gpt-image-2 (default).
+    """Edit images using OpenAI's Images API with gpt-image-2.5-sunburst (default).
 
 Modify existing images based on a prompt. Supports up to 16 input images.
 Returns immediately with the edited image (no polling required).
@@ -399,15 +410,15 @@ Returns immediately with the edited image (no polling required).
 Parameters:
 - prompt: Text description of desired edits (required, max 32k chars)
 - input_images: List of image filenames from IMAGE_PATH (required, max 16 images)
-- model: Image model. Default: "gpt-image-2". See model summary below.
+- model: Image model. Default: "gpt-image-2.5-sunburst" (tuned for editing precision). See model summary below.
 - mask_filename: PNG mask with alpha channel for inpainting (optional)
   * Transparent areas = edit these regions
   * Opaque areas = preserve original
 - size: Output dimensions. Default: "auto". See size guidance below.
-- quality: Generation quality. Default: "auto"
+- quality: Generation quality. Default: "auto"; "xhigh"/"max" on gpt-image-2.5 only
 - background: Background type. Default: "auto" (transparent unsupported on gpt-image-2)
 - output_format: Output format. Default: "png"
-- input_fidelity: Control fidelity to input (gpt-image-1/gpt-image-1.5 only).
+- input_fidelity: Control fidelity to input (gpt-image-2.5, gpt-image-1.5, gpt-image-1).
   Silently ignored for gpt-image-2 (always high).
   * "high" - better face/style preservation
   * "low" - more creative freedom
@@ -423,7 +434,7 @@ Returns ImageGenerateResult with: filename, size, format, model, usage
 
 Example workflows:
 
-1. Simple edit (gpt-image-2):
+1. Simple edit (gpt-image-2.5-sunburst):
    edit_image("add a hat", input_images=["person.png"])
 
 2. Multi-image composition:

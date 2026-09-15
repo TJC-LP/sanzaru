@@ -113,7 +113,7 @@ src/sanzaru/
 │   ├── video.py        # 7 video tools
 │   ├── reference.py    # 2 reference image tools
 │   ├── image.py        # 3 image generation tools (Responses API)
-│   ├── images_api.py   # 2 image tools (Images API, gpt-image-2)
+│   ├── images_api.py   # 2 image tools (Images API, gpt-image-2.5 by default)
 │   ├── audio.py        # 9 audio tools (list, transcribe, TTS, chat)
 │   ├── podcast.py      # 1 podcast generation tool (scripted TTS)
 │   ├── simulate_podcast.py # 1 simulated podcast tool (realtime agents, parallel acts)
@@ -897,24 +897,31 @@ arguments rather than read from server settings (`mcp.settings.stateless_http` a
 | `create_image` | Responses API | Parallel generation, iterative refinement chains |
 | `edit_image` | Images API | Editing existing images |
 
-All three default to gpt-image-2 via model selection.
+Generation (`generate_image`, `create_image`) defaults to `DEFAULT_IMAGE_MODEL` (gpt-image-2.5-flare);
+`edit_image` defaults to `DEFAULT_IMAGE_EDIT_MODEL` (gpt-image-2.5-sunburst). Both live in `config.py`.
 
 **Image generation models:**
-- **gpt-image-2**: STATE-OF-THE-ART (RECOMMENDED, DEFAULT) — ~99% text accuracy, up to 4K output, any valid resolution
-- **gpt-image-1.5**: Previous gen — needed for transparent backgrounds or explicit `input_fidelity`
+- **gpt-image-2.5-flare**: DEFAULT for generation — OpenAI's pick for fast, high-quality everyday images
+- **gpt-image-2.5-sunburst**: DEFAULT for edits — tuned for editing precision. Both 2.5 variants (snapshot
+  `2026-09-08`) are priced like gpt-image-2 and add transparent backgrounds plus `quality="xhigh"|"max"`
+- **gpt-image-2**: Previous flagship — ~99% text accuracy, up to 4K output, any valid resolution
+- **gpt-image-1.5**: Older gen — transparent backgrounds and `input_fidelity`, fixed sizes only
 - **gpt-image-1**: High quality
 - **gpt-image-1-mini**: Fast, cost-effective
-- **dall-e-3**: Legacy DALL-E 3
-- **dall-e-2**: Legacy DALL-E 2
+- **dall-e-3** / **dall-e-2**: Legacy
 
 **Supported image sizes:**
 - Common: `1024x1024`, `1024x1536`, `1536x1024`, `auto`
-- gpt-image-2 also: `2048x2048`, `2048x1152`, `3840x2160`, `2160x3840`, plus any resolution with
-  max edge ≤3840px, multiples of 16, ratio ≤3:1, and 655,360 ≤ pixels ≤ 8,294,400.
+- gpt-image-2.5 and gpt-image-2 also: `2048x2048`, `2048x1152`, `3840x2160`, `2160x3840`, plus any
+  resolution with max edge ≤3840px, multiples of 16, ratio ≤3:1, and 655,360 ≤ pixels ≤ 8,294,400.
 
-**gpt-image-2 quirks:**
-- Does NOT support `background="transparent"` — use gpt-image-1.5 for transparent output
-- Ignores `input_fidelity` (always high fidelity on inputs) — silently stripped by our wrappers
+**Per-model rules live in `image_models.py`, not at the call sites.** `capabilities_for()` resolves a
+model (dated snapshots included) to one row; `check_background` / `check_quality` /
+`honors_input_fidelity` are what the three tools call. The rules the table encodes:
+- gpt-image-2 does NOT support `background="transparent"` (raises before the request) and ignores
+  `input_fidelity` (always high fidelity — the wrappers strip it rather than let the API reject it)
+- `quality="xhigh"` and `"max"` exist only on gpt-image-2.5; other models raise with the accepted list
+- Unknown models (dall-e-*, anything newer than the table) get no client-side rules; the API decides
 
 **Example with generate_image (recommended default — synchronous):**
 ```python
@@ -923,7 +930,7 @@ generate_image(
     prompt="a futuristic cityscape at sunset",
     size="1536x1024",
     quality="high",
-)  # defaults to model="gpt-image-2"
+)  # defaults to model="gpt-image-2.5-flare"
 ```
 
 **Example with create_image (parallel/refinement workflows):**
@@ -933,8 +940,8 @@ resp = create_image(
     prompt="a futuristic cityscape at sunset",
     tool_config={
         "type": "image_generation",
-        "model": "gpt-image-2",
-        "quality": "high",
+        "model": "gpt-image-2.5-flare",
+        "quality": "max",
         "size": "1536x1024",
     },
 )

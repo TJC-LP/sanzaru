@@ -42,8 +42,8 @@ async def test_image_create(mocker, tmp_reference_path):
 
 
 @pytest.mark.integration
-async def test_image_create_defaults_to_gpt_image_2(mocker, tmp_reference_path):
-    """create_image injects model=gpt-image-2 into the tool config when the caller omits it."""
+async def test_image_create_defaults_to_the_generation_model(mocker, tmp_reference_path):
+    """create_image injects DEFAULT_IMAGE_MODEL (gpt-image-2.5-flare) into the tool config when the caller omits it."""
     mock_response = mocker.MagicMock()
     mock_response.id = "resp_default"
     mock_response.status = "queued"
@@ -58,7 +58,7 @@ async def test_image_create_defaults_to_gpt_image_2(mocker, tmp_reference_path):
 
     tools = mock_get_client.return_value.responses.create.call_args.kwargs["tools"]
     assert tools[0]["type"] == "image_generation"
-    assert tools[0]["model"] == "gpt-image-2"
+    assert tools[0]["model"] == "gpt-image-2.5-flare"
 
 
 @pytest.mark.integration
@@ -84,20 +84,45 @@ async def test_image_create_preserves_explicit_model(mocker, tmp_reference_path)
 
 
 @pytest.mark.integration
-async def test_image_create_transparent_without_model_raises(mocker, tmp_reference_path):
-    """create_image rejects transparent background when gpt-image-2 is the injected default."""
+async def test_image_create_transparent_with_default_model_is_allowed(mocker, tmp_reference_path):
+    """The injected default is gpt-image-2.5, which supports transparent output, so no guard fires."""
+    mock_response = mocker.MagicMock()
+    mock_response.id = "resp_t"
+    mock_response.status = "queued"
+    mock_response.created_at = 1234567890.0
     storage = LocalStorageBackend(path_overrides={"reference": tmp_reference_path})
     mocker.patch("sanzaru.tools.image.get_storage", return_value=storage)
     mock_get_client = mocker.patch("sanzaru.tools.image.get_client")
-    mock_get_client.return_value.responses.create = mocker.AsyncMock()
+    mock_get_client.return_value.responses.create = mocker.AsyncMock(return_value=mock_response)
 
-    with pytest.raises(ValueError, match="gpt-image-1.5"):
+    await create_image(prompt="a logo", tool_config={"type": "image_generation", "background": "transparent"})
+
+    tools = mock_get_client.return_value.responses.create.call_args.kwargs["tools"]
+    assert tools[0]["model"] == "gpt-image-2.5-flare"
+    assert tools[0]["background"] == "transparent"
+
+
+@pytest.mark.integration
+async def test_image_create_extended_quality_is_model_checked(mocker, tmp_reference_path):
+    """quality="max" is a gpt-image-2.5 feature: forwarded for the default, refused for gpt-image-2."""
+    mock_response = mocker.MagicMock()
+    mock_response.id = "resp_q"
+    mock_response.status = "queued"
+    mock_response.created_at = 1234567890.0
+    storage = LocalStorageBackend(path_overrides={"reference": tmp_reference_path})
+    mocker.patch("sanzaru.tools.image.get_storage", return_value=storage)
+    mock_get_client = mocker.patch("sanzaru.tools.image.get_client")
+    mock_get_client.return_value.responses.create = mocker.AsyncMock(return_value=mock_response)
+
+    await create_image(prompt="a cat", tool_config={"type": "image_generation", "quality": "max"})
+    tools = mock_get_client.return_value.responses.create.call_args.kwargs["tools"]
+    assert tools[0]["quality"] == "max"
+
+    with pytest.raises(ValueError, match="gpt-image-2 does not support quality='max'"):
         await create_image(
-            prompt="a logo",
-            tool_config={"type": "image_generation", "background": "transparent"},
+            prompt="a cat", tool_config={"type": "image_generation", "model": "gpt-image-2", "quality": "max"}
         )
-
-    mock_get_client.return_value.responses.create.assert_not_called()
+    assert mock_get_client.return_value.responses.create.call_count == 1
 
 
 @pytest.mark.integration
@@ -156,7 +181,7 @@ async def test_image_create_does_not_mutate_caller_tool_config(mocker, tmp_refer
 
     assert "model" not in caller_config  # caller's dict stays clean
     tools = mock_get_client.return_value.responses.create.call_args.kwargs["tools"]
-    assert tools[0]["model"] == "gpt-image-2"
+    assert tools[0]["model"] == "gpt-image-2.5-flare"
 
 
 @pytest.mark.integration

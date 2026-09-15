@@ -169,7 +169,7 @@ and style (see `docs/sora-prompting-guide.md`).
 |---------|---------|
 | `generate PROMPT...` | **Synchronous** Images API — returns file + token usage. RECOMMENDED for one-off images. Multi-prompt × `--count` fan-out with `--concurrency` |
 | `edit PROMPT` | Synchronous edit/composition of existing images (`--input-image`, `--mask`) |
-| `create PROMPT` | **Async** Responses job — for refinement chains (`--previous-id`) and parallel jobs. `--image-model` (default gpt-image-2), `--input-image`, `--mask`, one-shot flags |
+| `create PROMPT` | **Async** Responses job — for refinement chains (`--previous-id`) and parallel jobs. `--image-model` (default gpt-image-2.5-flare), `--input-image`, `--mask`, one-shot flags |
 | `status ID` / `wait ID...` / `download ID` | The async job trio |
 | `prepare INPUT` | Resize to Sora dimensions (`--size`, `--mode crop\|pad\|rescale`) |
 | `files` | Images in the media dir |
@@ -181,8 +181,9 @@ R1=$(sanzaru image create "a cyberpunk courier, full body" --size 1024x1536 --wa
 sanzaru image create "add neon rain and a cityscape" --previous-id "$R1" -o ./art/courier_v2.png
 ```
 
-gpt-image-2 (the default) does not support `--background transparent` — the guard raises a clear
-usage error pointing to gpt-image-1.5.
+`generate`/`create` default to gpt-image-2.5-flare and `edit` to gpt-image-2.5-sunburst; both accept
+`--background transparent` (png/webp output) and the extra `--quality xhigh|max` levels. Passing
+`--model gpt-image-2` with either raises a clear usage error before any request is made.
 
 ### `sanzaru audio` — synchronous audio ops (requires `sanzaru[audio]`)
 | Command | Purpose |
