@@ -236,15 +236,17 @@ async def test_serve_media_requires_the_bearer_token_when_configured(mocker, tmp
 async def test_serve_media_answers_403_when_the_backend_requires_an_identity(mocker):
     """SANZARU_REQUIRE_USER_CONTEXT with no identity on the request is a refusal, not a crash.
 
-    The Databricks backend raises PermissionError rather than fall back to the
-    shared volume root; uncaught, that reached the error middleware as a 500
-    with a traceback. The storage side is pinned in its own tests — this pins
-    only what the route does with the exception.
+    The Databricks backend raises UserContextRequiredError rather than fall
+    back to the shared volume root; uncaught, that reached the error middleware
+    as a 500 with a traceback. The storage side is pinned in its own tests —
+    this pins only what the route does with the exception.
     """
     from starlette.testclient import TestClient
 
+    from sanzaru.user_context import UserContextRequiredError
+
     storage = mocker.AsyncMock()
-    storage.read.side_effect = PermissionError(
+    storage.read.side_effect = UserContextRequiredError(
         "SANZARU_REQUIRE_USER_CONTEXT is set but this request carries no user identity"
     )
     mocker.patch("sanzaru.server.get_storage", return_value=storage)

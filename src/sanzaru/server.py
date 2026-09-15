@@ -32,7 +32,7 @@ from .exceptions import ConfigurationError
 from .features import check_audio_available, check_image_available, check_video_available
 from .storage.factory import get_storage
 from .tools.media_viewer import MEDIA_TYPE_TO_PATH_TYPE
-from .user_context import UserContext, reset_user_context, set_user_context
+from .user_context import UserContext, UserContextRequiredError, reset_user_context, set_user_context
 
 # Initialize FastMCP server (stateless configuration set at runtime)
 mcp = FastMCP("sanzaru")
@@ -702,10 +702,12 @@ async def serve_media(request: Request) -> Response:
         data = await storage.read(path_type, filename)
     except (FileNotFoundError, ValueError):
         return Response(content="Not found", status_code=404)
-    except PermissionError:
+    except UserContextRequiredError:
         # SANZARU_REQUIRE_USER_CONTEXT with no identity on the request. A refusal
         # to resolve a namespace is a 403, not a crash — uncaught it reached the
-        # error middleware as a 500 with a traceback.
+        # error middleware as a 500 with a traceback. Caught by name, not as
+        # PermissionError: the backend raises a RuntimeError subclass precisely
+        # so a filesystem EACCES is never mistaken for the identity refusal.
         return Response(content="Forbidden", status_code=403)
 
     suffix = os.path.splitext(filename)[1].lower()
