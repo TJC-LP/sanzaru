@@ -2,6 +2,7 @@
 """Integration tests for image generation tools with mocked OpenAI client."""
 
 import base64
+from collections.abc import Awaitable, Callable
 
 import pytest
 
@@ -213,3 +214,61 @@ async def test_image_download(mocker, tmp_reference_path):
     # Verify file was written
     output_file = tmp_reference_path / "test.png"
     assert output_file.exists()
+
+
+# ==================== Resource ID Validation ====================
+
+# GET /responses/{response_id} takes the id as a path segment. The pinned SDK
+# percent-encodes it; the guard is defence in depth so that stays true without
+# the SDK, and these tests pin that it fires before any client or storage is
+# built. create_image sends the id in the body, not the path — it is here
+# because a caller-minted id fails the same way at every entry point. Keyed by
+# name so a failure names the unguarded sink.
+_ID_SINKS: dict[str, Callable[[str], Awaitable[object]]] = {
+    "get_image_status": get_image_status,
+    "download_image": lambda response_id: download_image(response_id, filename="loot.bin"),
+    "create_image": lambda response_id: create_image("a cat", previous_response_id=response_id),
+}
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("sink", list(_ID_SINKS), ids=list(_ID_SINKS))
+@pytest.mark.parametrize(
+    "response_id",
+    [
+        "../files/file-XYZ/content?",
+        "../files?",
+        "resp_123/input_items",
+        "resp_123?limit=100",
+        "resp_123#frag",
+        "resp%2F123",
+        "..",
+        "",
+    ],
+)
+async def test_hostile_response_id_raises_before_any_request(mocker, sink, response_id):
+    """The id must be rejected before the client is even constructed."""
+    mock_get_client = mocker.patch("sanzaru.tools.image.get_client")
+    mock_get_storage = mocker.patch("sanzaru.tools.image.get_storage")
+
+    with pytest.raises(ValueError, match="not a valid OpenAI resource id"):
+        await _ID_SINKS[sink](response_id)
+
+    mock_get_client.assert_not_called()
+    mock_get_storage.assert_not_called()
+
+
+@pytest.mark.integration
+async def test_real_response_id_still_works(mocker):
+    """A production-shaped id is unaffected by the guard."""
+    mock_response = mocker.MagicMock()
+    mock_response.id = "resp_68d9f7a1b2c34d56789abcdef0123456"
+    mock_response.status = "completed"
+    mock_response.created_at = 1234567890.0
+
+    mock_get_client = mocker.patch("sanzaru.tools.image.get_client")
+    mock_get_client.return_value.responses.retrieve = mocker.AsyncMock(return_value=mock_response)
+
+    result = await get_image_status("resp_68d9f7a1b2c34d56789abcdef0123456")
+
+    assert result["id"] == "resp_68d9f7a1b2c34d56789abcdef0123456"

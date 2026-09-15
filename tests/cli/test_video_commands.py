@@ -165,3 +165,44 @@ def test_video_create_rejects_unknown_size():
     result = CliRunner().invoke(cli, ["video", "create", "a cat", "--size", "999x999"])
 
     assert result.exit_code == 2
+
+
+# ==================== Resource id guard, end to end ====================
+
+# A traversing id, as an agent might pass one. Rejected by the tool-layer guard
+# (validate_resource_id), which the rest of this file never exercises because it
+# mocks the tool functions away.
+_HOSTILE_ID = "../files/file-XYZ/content?"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["video", "status", _HOSTILE_ID],
+        ["video", "delete", _HOSTILE_ID],
+        ["video", "remix", _HOSTILE_ID, "new prompt"],
+        ["video", "download", _HOSTILE_ID],
+        ["video", "wait", _HOSTILE_ID],
+        ["wait", "--type", "video", _HOSTILE_ID],
+    ],
+    ids=["status", "delete", "remix", "download", "wait", "top-level-wait"],
+)
+def test_hostile_video_id_is_a_usage_error(mocker, argv):
+    """The guard's ValueError reaches the shell as exit 2 and a `usage` envelope.
+
+    The tool function runs for real here: mocking it would let a change that
+    wraps the ValueError (in polling, or in _classify's ordering) shift the exit
+    code with no failing test. `wait` goes through _wait_one's per-job path,
+    which must classify the error the same way the one-shot commands do.
+    """
+    mock_get_client = mocker.patch("sanzaru.tools.video.get_client")
+
+    result = CliRunner().invoke(cli, argv)
+
+    assert result.exit_code == 2, result.stdout
+    parsed = json.loads(result.stdout)
+    assert parsed["ok"] is False
+    assert parsed["error"]["type"] == "usage"
+    assert "not a valid OpenAI resource id" in parsed["error"]["message"]
+    mock_get_client.assert_not_called()

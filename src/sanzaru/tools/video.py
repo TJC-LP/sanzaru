@@ -17,7 +17,7 @@ from openai.types import Video, VideoDeleteResponse, VideoModel, VideoSeconds, V
 from ..config import get_client, logger
 from ..storage import get_storage
 from ..types import DownloadResult, ListResult, VideoFile, VideoSummary
-from ..utils import generate_filename, suffix_for_variant
+from ..utils import generate_filename, suffix_for_variant, validate_resource_id
 
 
 async def create_video(
@@ -102,7 +102,13 @@ async def get_video_status(video_id: str) -> Video:
 
     Raises:
         RuntimeError: If OPENAI_API_KEY not set
+        ValueError: If video_id is not a plain resource id
     """
+    # Defence in depth: the id becomes the path segment of GET /videos/{video_id}.
+    # The pinned SDK percent-encodes it, so "../files?" is a failed lookup rather
+    # than a different endpoint; this guard keeps that property from resting on
+    # an SDK detail. See validate_resource_id.
+    video_id = validate_resource_id(video_id, "video_id")
     client = get_client()
     video = await client.videos.retrieve(video_id)
     return video
@@ -125,8 +131,15 @@ async def download_video(
 
     Raises:
         RuntimeError: If VIDEO_PATH not configured or OPENAI_API_KEY not set
-        ValueError: If invalid filename or path traversal detected
+        ValueError: If video_id is not a plain resource id, or invalid filename / path traversal detected
     """
+    # Two sinks, one check: the id is a path segment of
+    # GET /videos/{video_id}/content, and it is also the basename we write to
+    # when the caller passes no filename. Each sink already has its own cover —
+    # the pinned SDK percent-encodes the segment, the storage backend sanitizes
+    # the basename — so this is defence in depth: were either of those to
+    # change, a traversing id is still refused here before anything is built.
+    video_id = validate_resource_id(video_id, "video_id")
     storage = get_storage()
     client = get_client()
     suffix = suffix_for_variant(variant)
@@ -157,6 +170,11 @@ async def list_videos(limit: int = 20, after: str | None = None, order: Literal[
     Raises:
         RuntimeError: If OPENAI_API_KEY not set
     """
+    # `after` deliberately skips validate_resource_id. It is a query parameter
+    # (SDK-encoded, and unable to move the path either way), and it is a
+    # pagination cursor the API minted — the caller only echoes it back, so
+    # pinning it to the id alphabet would add a way for paging to break and
+    # protect nothing. Every caller-minted id in this module is validated.
     client = get_client()
     # Convert None to omit for OpenAI SDK (omit = field not sent in API request)
     after_param: str | Omit = omit if after is None else after
@@ -188,7 +206,13 @@ async def delete_video(video_id: str) -> VideoDeleteResponse:
 
     Raises:
         RuntimeError: If OPENAI_API_KEY not set
+        ValueError: If video_id is not a plain resource id
     """
+    # Highest-stakes sink in this module: were the id ever to reach the path
+    # raw, "../files/{id}" would turn this into DELETE /v1/files/{id}. The
+    # pinned SDK percent-encodes it, so today it cannot; the guard makes that
+    # independent of the SDK.
+    video_id = validate_resource_id(video_id, "video_id")
     client = get_client()
     resp = await client.videos.delete(video_id)
     logger.info("Deleted %s", video_id)
@@ -207,7 +231,11 @@ async def remix_video(previous_video_id: str, prompt: str) -> Video:
 
     Raises:
         RuntimeError: If OPENAI_API_KEY not set
+        ValueError: If previous_video_id is not a plain resource id
     """
+    # POST /videos/{previous_video_id}/remix — defence in depth for the path
+    # segment, same reasoning as get_video_status.
+    previous_video_id = validate_resource_id(previous_video_id, "previous_video_id")
     client = get_client()
     video = await client.videos.remix(previous_video_id, prompt=prompt)
     logger.info("Started remix %s (from %s)", video.id, previous_video_id)
