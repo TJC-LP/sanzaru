@@ -4,15 +4,20 @@ Migrated from mcp-server-whisper v1.1.0 by Richie Caputo (MIT license).
 """
 
 import shutil
+import tempfile
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 import anyio.to_thread
 
 from ...config import logger
+from ...infrastructure import FileSystemRepository
 from ...storage import get_storage
 from ...utils import reject_reserved_name
 from .. import AudioProcessor
 from ..constants import (
+    DECODABLE_AUDIO_EXTENSIONS,
     DEFAULT_MAX_FILE_SIZE_MB,
     SAFE_AUDIO_EXTENSIONS,
     SupportedChatWithAudioFormat,
@@ -21,31 +26,72 @@ from ..constants import (
 from ..models import AudioProcessingResult
 
 
-def _require_audio_name(filename: str, role: str, *, is_output: bool = False) -> None:
-    """Refuse a convert/compress path whose extension is not a real audio format.
+def require_audio_name(filename: str, role: str, *, is_output: bool = False) -> None:
+    """Refuse an audio filename whose extension is not a real audio format.
 
-    The no-compression branch (and format conversion) ultimately does a plain
-    byte copy for same-size inputs; without this a caller could duplicate any
-    audio-directory file (e.g. a run manifest ``simrun_*.json``) under an
-    arbitrary name/extension — minting a ``.json``/``.html`` artifact served by
-    the ``/media`` route (CWE-79). Both the input and any caller-chosen output
-    are constrained to audio extensions.
+    Shared by convert/compress (both roles) and `TTSService.create_speech`
+    (outputs). The no-compression branch of `compress_audio` is a plain byte
+    copy that never decodes its input; without this a caller could duplicate
+    any audio-directory file — a run manifest, say — under an arbitrary name
+    and extension, minting a ``.json``/``.html`` artifact for the ``/media``
+    route to serve (CWE-73, CWE-79).
 
-    Outputs are additionally refused the run-bookkeeping namespace: an act
-    checkpoint *is* an mp3, so the extension rule alone would still let one be
-    overwritten (CWE-73). Inputs are not — reading your own checkpoint back is
-    legitimate, and only the write destroys anything.
+    Inputs need only be a container ffmpeg can decode without dereferencing a
+    path out of its contents (`DECODABLE_AUDIO_EXTENSIONS`), which is what
+    keeps `convert_audio` able to do its actual job (.aac, .opus, ...).
+    Outputs are held to the narrower `SAFE_AUDIO_EXTENSIONS`: this server is
+    creating that file. A real dotted extension is required in both roles —
+    `safe_audio_format` accepts ``"mp3"`` as a *format*, but as a *filename*
+    that would write a file literally named ``mp3``.
+
+    What this does not do, stated because an earlier docstring claimed it: it
+    does not protect simulated-podcast act checkpoints. Those are ordinary
+    ``.mp3`` names, and `reject_reserved_name` deliberately matches only run
+    manifests (``simrun_<id>.json``) — see its comment in `utils.py` for why a
+    name rule for checkpoints cannot be written without rejecting date-stamped
+    recordings. Checkpoint protection belongs to the write path
+    (`FileSystemRepository.write_audio_file`), which is why every output this
+    module produces goes through that one method rather than straight to
+    storage. The manifest check on outputs is forward-looking defense: today
+    the extension rule already subsumes it (``.json`` is never an audio
+    extension), so the branch is unreachable from here.
+
+    Raises:
+    ------
+        ValueError: If the name has no extension, or its extension is outside
+            the set for its role, or (outputs) it names run bookkeeping.
+
     """
+    allowed = SAFE_AUDIO_EXTENSIONS if is_output else DECODABLE_AUDIO_EXTENSIONS
+    stem, dot, _ext = filename.rpartition(".")
+    if not dot or not stem:
+        raise ValueError(
+            f"{role} {filename!r:.80} has no audio extension; name it with one of: {', '.join(sorted(allowed))}"
+        )
     try:
-        # Outputs are held to the narrower set — this server is creating that
-        # file. Inputs only need to be a container ffmpeg can decode without
-        # dereferencing a path out of its contents, which is what keeps
-        # `convert_audio` able to do its actual job (.aac, .opus, ...).
-        safe_audio_format(filename, allowed=SAFE_AUDIO_EXTENSIONS if is_output else None)
+        safe_audio_format(filename, allowed=allowed)
     except ValueError as exc:
-        raise ValueError(f"{role} {filename!r}: {exc}") from exc
+        raise ValueError(f"{role} {filename!r:.80}: {exc}") from exc
     if is_output:
         reject_reserved_name(filename, role)
+
+
+@asynccontextmanager
+async def _scratch_export_path(filename: str) -> AsyncIterator[Path]:
+    """A private temp path for pydub to export into, removed on exit.
+
+    pydub opens the export path itself, so exporting straight into the audio
+    directory (via `storage.local_tempfile`) bypassed
+    `FileSystemRepository.write_audio_file` — the one write path every
+    audio-producing tool shares, and the place any write-time policy lives.
+    The processor already reads its export back into memory to return bytes,
+    so routing those bytes through the repository costs nothing extra.
+    """
+    tmp_dir = await anyio.to_thread.run_sync(lambda: tempfile.mkdtemp(prefix="sanzaru_audio_"))
+    try:
+        yield Path(tmp_dir) / Path(filename).name
+    finally:
+        await anyio.to_thread.run_sync(lambda: shutil.rmtree(tmp_dir, ignore_errors=True))
 
 
 class AudioService:
@@ -73,47 +119,51 @@ class AudioService:
         -------
             AudioProcessingResult: Result with name of the converted audio file.
 
+        Raises:
+        ------
+            ValueError: If the input is not a decodable audio container, or the
+                output name (given or derived) is not a safe audio filename.
+                Raised before any I/O.
+            AudioConversionError: If decoding or encoding fails.
+
         """
-        _require_audio_name(input_filename, "input file")
+        require_audio_name(input_filename, "input file")
         output_name = output_filename or f"{Path(input_filename).stem}.{target_format}"
-        # Check the name that is actually written, not the argument. Guarding
-        # only an explicit `output_filename` left the derived one unchecked, and
-        # since inputs are deliberately *not* reserved-checked, converting
-        # `<slug>_<runid>_act1.wav` produced `<slug>_<runid>_act1.mp3` — the
-        # victim's checkpoint audio, overwritten, through the guard.
-        _require_audio_name(output_name, "output file", is_output=True)
+        # Check the name that is actually written, not the argument: guarding
+        # only an explicit `output_filename` left the derived one unchecked.
+        require_audio_name(output_name, "output file", is_output=True)
         storage = get_storage()
 
         async with (
             storage.local_path("audio", input_filename) as input_path,
-            storage.local_tempfile("audio", output_name) as output_path,
+            _scratch_export_path(output_name) as scratch,
         ):
             # Load audio from local path (pydub needs filesystem access)
             audio_data = await self.processor.load_audio_from_path(input_path)
-
-            # Convert format — writes to output_path via pydub
-            await self.processor.convert_audio_format(
+            converted = await self.processor.convert_audio_format(
                 audio_data=audio_data,
                 target_format=target_format,
-                output_path=output_path,
+                output_path=scratch,
             )
-            # local_tempfile uploads to storage on context exit
 
+        await FileSystemRepository(storage).write_audio_file(output_name, converted)
         return AudioProcessingResult(output_file=output_name)
 
     async def _copy(self, input_filename: str, output_filename: str) -> None:
         """Copy one audio file to another name within the audio path type.
 
-        Goes through `local_path`/`local_tempfile` rather than `read`+`write`
-        so the local backend does a plain filesystem copy instead of holding
-        the whole file in memory; the Databricks backend still round-trips.
+        Reads the file and writes it back through
+        `FileSystemRepository.write_audio_file`, so the copy is subject to the
+        same write path as every other audio output. This used to be a
+        `shutil.copyfile` between `local_path` and `local_tempfile`, which the
+        local backend did without holding the file in memory; the branch only
+        runs for files already under `max_mb`, so the footprint is bounded by
+        the caller's own size budget (the Databricks backend round-tripped the
+        bytes either way).
         """
         storage = get_storage()
-        async with (
-            storage.local_path("audio", input_filename) as source,
-            storage.local_tempfile("audio", output_filename) as destination,
-        ):
-            await anyio.to_thread.run_sync(shutil.copyfile, source, destination)
+        data = await storage.read("audio", input_filename)
+        await FileSystemRepository(storage).write_audio_file(output_filename, data)
 
     async def compress_audio(
         self,
@@ -135,10 +185,18 @@ class AudioService:
             compression was needed, that is `output_filename` if one was asked for, and the
             input's own name otherwise.
 
+        Raises:
+        ------
+            ValueError: If the input is not a decodable audio container, or the
+                output name (given or derived) is not a safe audio filename.
+                Raised before any I/O.
+            AudioConversionError: If a non-mp3 input fails to convert first.
+            AudioCompressionError: If the mp3 re-encode fails.
+
         """
-        _require_audio_name(input_filename, "input file")
+        require_audio_name(input_filename, "input file")
         if output_filename is not None:
-            _require_audio_name(output_filename, "output file", is_output=True)
+            require_audio_name(output_filename, "output file", is_output=True)
         storage = get_storage()
 
         # Check if compression is needed
@@ -169,19 +227,20 @@ class AudioService:
         # would leave it unchecked (the same gap convert_audio had).
         stem = Path(input_filename).stem
         output_name = output_filename or f"compressed_{stem}.mp3"
-        _require_audio_name(output_name, "output file", is_output=True)
+        require_audio_name(output_name, "output file", is_output=True)
 
         logger.debug(f"Original file: {input_filename}")
         logger.debug(f"Output file: {output_name}")
 
         async with (
             storage.local_path("audio", input_filename) as input_path,
-            storage.local_tempfile("audio", output_name) as output_path,
+            _scratch_export_path(output_name) as scratch,
         ):
             # Load and compress via pydub (needs local filesystem)
             audio_data = await self.processor.load_audio_from_path(input_path)
-            await self.processor.compress_mp3(audio_data, output_path)
-            # local_tempfile uploads to storage on context exit
+            compressed = await self.processor.compress_mp3(audio_data, scratch)
+
+        await FileSystemRepository(storage).write_audio_file(output_name, compressed)
 
         # Get compressed size for logging
         compressed_info = await storage.stat("audio", output_name)

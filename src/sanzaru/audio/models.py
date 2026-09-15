@@ -89,7 +89,10 @@ class ListAudioFilesInputParams(BaseModel):
 
     pattern: str | None = Field(
         default=None,
-        description="Optional case-insensitive filter: a substring, or a glob like '*.mp3' when it contains * ? or [",
+        description=(
+            "Optional case-insensitive filter: a substring, or a glob like '*.mp3' when it contains * ? or [. "
+            "Not a regex — ^ $ | ( ) + and backslash are rejected with an error"
+        ),
     )
     min_size_bytes: int | None = Field(default=None, description="Minimum file size in bytes")
     max_size_bytes: int | None = Field(default=None, description="Maximum file size in bytes")

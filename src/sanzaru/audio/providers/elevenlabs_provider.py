@@ -51,8 +51,9 @@ _OMIT_SETTINGS = cast("VoiceSettings", ...)
 _OMIT_MODEL_SETTINGS = cast("ModelSettingsResponseModel", ...)
 
 # The voice id is a URL *path segment*: the Fern-generated SDK interpolates it
-# into f"v1/text-to-speech/{voice_id}" and resolves that with urljoin, so dot
-# segments collapse and nothing is percent-encoded. A voice of
+# into f"v1/text-to-speech/{voice_id}" and string-concatenates that onto the
+# base URL unencoded (its `_build_url` explicitly avoids urljoin), and httpx
+# then collapses the dot segments when it builds the request. A voice of
 # "../../v1/voices/VICTIM/settings/edit?" therefore retargets an authenticated
 # POST carrying the operator's xi-api-key, and the non-2xx body comes back to
 # the caller through _as_tts_error. Real ids are 20-character alphanumeric
@@ -115,6 +116,13 @@ class ElevenLabsTTSProvider:
             raise ValueError("provider='elevenlabs' requires an explicit voice id")
         # Backstop for a SpeechRequest assembled without resolve_voice: validate()
         # is the last thing synthesize_speech runs before the URL is built.
+        # resolve_voice strips, so whitespace reaching here means the request
+        # skipped it; say so rather than reporting a valid id as a bad one.
+        if request.voice != request.voice.strip():
+            raise ValueError(
+                f"voice={request.voice!r:.80} has surrounding whitespace; pass the bare voice id "
+                "(resolve_voice strips it)"
+            )
         _validate_voice_id(request.voice)
 
         settings = request.voice_settings or {}

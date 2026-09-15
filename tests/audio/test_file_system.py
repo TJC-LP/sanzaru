@@ -1,5 +1,6 @@
 """Test file system repository for audio file operations."""
 
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -362,14 +363,83 @@ class TestFileSystemRepository:
         assert result[0].name == "test.mp3"
 
     @pytest.mark.anyio
-    async def test_list_audio_files_pathological_pattern_is_bounded(
+    async def test_list_audio_files_pathological_glob_is_bounded(
         self, repo: FileSystemRepository, audio_dir: Path
     ) -> None:
-        """A pattern that would cause catastrophic regex backtracking returns promptly (CWE-1333)."""
+        """A glob shaped to backtrack returns promptly (CWE-1333).
+
+        This is the branch that can regress: fnmatch compiles to `re`, and is
+        only safe because `fnmatch.translate` emits `*` as an atomic group. A
+        substring pattern never reaches `re` at all, so it pins nothing.
+        """
         (audio_dir / ("a" * 60 + ".mp3")).write_bytes(b"data")
 
-        # Under the old re.search this spun indefinitely; now it is a linear
-        # substring test and simply does not match.
-        result = await repo.list_audio_files(pattern="(a+)+$")
+        started = time.monotonic()
+        result = await repo.list_audio_files(pattern="*a" * 30 + "*b")
 
         assert result == []
+        assert time.monotonic() - started < 2.0
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize("pattern", [r"meeting.*\.mp3", r"test\.mp3$", "^ep", "ep01|ep02", "(a+)+$"])
+    async def test_list_audio_files_refuses_regex_syntax_instead_of_matching_nothing(
+        self, repo: FileSystemRepository, audio_dir: Path, pattern: str
+    ) -> None:
+        """The filter used to be a regex; a saved one must error, not return []."""
+        (audio_dir / "meeting_notes.mp3").write_bytes(b"data")
+        (audio_dir / "test.mp3").write_bytes(b"data")
+        (audio_dir / "ep01.mp3").write_bytes(b"data")
+
+        with pytest.raises(ValueError, match="regex syntax") as excinfo:
+            await repo.list_audio_files(pattern=pattern)
+
+        # The error teaches the new contract rather than just refusing.
+        assert "glob" in str(excinfo.value) and "*.mp3" in str(excinfo.value)
+
+    @pytest.mark.anyio
+    async def test_list_audio_files_refuses_an_over_long_pattern(
+        self, repo: FileSystemRepository, audio_dir: Path
+    ) -> None:
+        """Truncating would turn a substring into a prefix and match *more*; refuse instead."""
+        (audio_dir / ("a" * 200 + ".mp3")).write_bytes(b"data")
+
+        with pytest.raises(ValueError, match="limit is 256"):
+            await repo.list_audio_files(pattern="a" * 257)
+
+    @pytest.mark.anyio
+    async def test_list_audio_files_substring_is_case_insensitive(
+        self, repo: FileSystemRepository, audio_dir: Path
+    ) -> None:
+        (audio_dir / "Meeting_Notes.mp3").write_bytes(b"data")
+        (audio_dir / "other.mp3").write_bytes(b"data")
+
+        result = await repo.list_audio_files(pattern="meeting")
+
+        assert [info.name for info in result] == ["Meeting_Notes.mp3"]
+
+    @pytest.mark.anyio
+    async def test_list_audio_files_literal_bracket_is_spelled_as_a_class(
+        self, repo: FileSystemRepository, audio_dir: Path
+    ) -> None:
+        """`[` is glob syntax, so a name containing one is matched with `[[]` (documented)."""
+        (audio_dir / "recording [1].mp3").write_bytes(b"data")
+        (audio_dir / "recording 1.mp3").write_bytes(b"data")
+
+        result = await repo.list_audio_files(pattern="recording [[]1].mp3")
+
+        assert [info.name for info in result] == ["recording [1].mp3"]
+
+    @pytest.mark.anyio
+    async def test_get_audio_file_support_hands_ffmpeg_a_real_demuxer_name(
+        self, repo: FileSystemRepository, audio_dir: Path
+    ) -> None:
+        """`.opus` is not an ffmpeg demuxer; the duration probe must ask for `ogg`."""
+        (audio_dir / "clip.opus").write_bytes(b"data")
+        segment = MagicMock()
+        segment.__len__ = MagicMock(return_value=1500)
+
+        with patch("sanzaru.infrastructure.file_system.AudioSegment.from_file", return_value=segment) as from_file:
+            result = await repo.get_audio_file_support("clip.opus")
+
+        assert from_file.call_args.kwargs["format"] == "ogg"
+        assert result.duration_seconds == 1.5

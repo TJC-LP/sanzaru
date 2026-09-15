@@ -450,7 +450,9 @@ Supported formats:
 - Chat (GPT-4o audio): mp3, wav
 
 Parameters:
-- pattern: Optional case-insensitive filter — a substring, or a glob like "*.mp3" when it contains * ? or [
+- pattern: Optional case-insensitive filter — a substring, or a glob like "*.mp3" when it contains * ? or [.
+  NOT a regex: ^ $ | ( ) + and backslash are rejected with an error (use ? for one arbitrary character;
+  match a literal [ as [[])
 - min_size_bytes: Minimum file size in bytes (optional)
 - max_size_bytes: Maximum file size in bytes (useful for API limits like 25MB)
 - min_duration_seconds: Minimum audio duration in seconds (optional)
@@ -498,7 +500,11 @@ This tool ensures compatibility.
 Parameters:
 - input_file_name: Name of the input audio file to convert (required)
 - target_format: Target format - "mp3" (smaller, lossy) or "wav" (larger, lossless). Default: "mp3"
-- output_filename: Optional custom name for output file (defaults to input name with new extension)
+- output_filename: Optional custom name for output file (defaults to input name with new extension).
+  Must carry an audio extension (mp3, wav, flac, m4a, ogg, ...) — this tool cannot mint a .json or .html.
+
+The input must be a self-contained audio container (mp3, wav, flac, aac, ogg/oga/opus, m4a/m4b/mp4/mov,
+aiff/aif/aifc, wma, mka/webm, amr, au, caf, mpeg/mpga). Playlist formats (hls, m3u8, concat, dash) are refused.
 
 Returns AudioProcessingResult with:
 - output_file: Name of the converted file
@@ -525,7 +531,8 @@ copied rather than re-encoded, so the input is never consumed.
 Parameters:
 - input_file_name: Name of the input audio file to compress (required)
 - max_mb: Maximum target size in MB. Default: 25 (API limit)
-- output_filename: Optional custom name for compressed file (defaults to input name with _compressed suffix)
+- output_filename: Optional custom name for compressed file (defaults to input name with _compressed suffix).
+  Must carry an audio extension; the same input-container rule as convert_audio applies.
 
 Returns AudioProcessingResult with:
 - output_file: Name of the file that now exists — output_filename when you gave one,
@@ -704,7 +711,8 @@ Parameters:
   in the text itself with eleven_v3: "[whispers] this is the secret. [laughs] Got you."
 - speed: Speech speed. openai: 0.25 (very slow) to 4.0 (very fast). elevenlabs: 0.7-1.2, and
   eleven_v3 rejects any value other than 1.0. Default: 1.0
-- output_filename: Optional custom filename (defaults to "speech_<timestamp>.mp3")
+- output_filename: Optional custom filename (defaults to "speech_<timestamp>.mp3"). Must carry an audio
+  extension (mp3, wav, flac, m4a, ogg, ...); this tool cannot mint a .json or .html
 - provider: "openai" (default) or "elevenlabs"
 - voice_settings: ELEVENLABS ONLY. Object with any of: stability (0-1), similarity_boost (0-1),
   style (0-1), use_speaker_boost (bool), speed (0.7-1.2, overrides the `speed` param).

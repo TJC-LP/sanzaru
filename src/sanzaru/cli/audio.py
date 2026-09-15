@@ -8,6 +8,8 @@ for async jobs. Requires the [audio] extra (pydub, ffmpeg).
 
 from __future__ import annotations
 
+import dataclasses
+import pathlib
 import time
 from typing import Literal, cast
 
@@ -15,6 +17,7 @@ import anyio
 import click
 
 from ._io import (
+    OutputPlan,
     PathSession,
     finalize_output,
     install_overrides,
@@ -40,6 +43,49 @@ _ENHANCEMENTS = ["detailed", "storytelling", "professional", "analytical"]
 
 def _audio_dep_error(exc: ImportError) -> CLIError:
     return CLIError("config", f"{_AUDIO_DEP_MESSAGE} ({exc})", exit_code=EXIT_CONFIG)
+
+
+def _with_audio_suffix(plan: OutputPlan, output: str | None, produces: str | None) -> OutputPlan:
+    """Reconcile a `-o FILE` with the rule that audio outputs carry an audio extension.
+
+    The tool layer refuses a caller-named output without one — the rule that
+    keeps convert/compress/speak from minting a `.json` or `.html` — so
+    `-o ./out/episode`, which used to write mp3 bytes to a file called
+    `episode`, would otherwise fail as a usage error that names the staging
+    file rather than the flag. Where the command knows what it will produce
+    (`produces`, e.g. "mp3"), a suffix-less target simply gets that extension;
+    where it does not (compress keeps the input's format when nothing needs
+    compressing), the caller is told to choose. A wrong extension is reported
+    against `-o` here, before any work is billed.
+    """
+    final = plan.final_name if plan.final_name is not None else plan.filename
+    if final is None:  # directory target: the tool names the file itself
+        return plan
+    from ..audio.constants import SAFE_AUDIO_EXTENSIONS
+
+    suffix = pathlib.PurePath(final).suffix
+    if not suffix:
+        if produces is None:
+            raise CLIError(
+                "usage",
+                f"-o {output!r}: name the output with an audio extension (e.g. {final}.mp3) or pass a directory. "
+                "compress writes mp3 when it re-encodes but keeps the input's own format when the file is "
+                "already under --max-mb, so the extension is yours to choose",
+                exit_code=EXIT_USAGE,
+            )
+        suffix = f".{produces}"
+        plan = dataclasses.replace(
+            plan,
+            filename=None if plan.filename is None else plan.filename + suffix,
+            final_name=None if plan.final_name is None else plan.final_name + suffix,
+        )
+    if suffix.lstrip(".").lower() not in SAFE_AUDIO_EXTENSIONS:
+        raise CLIError(
+            "usage",
+            f"-o {output!r}: {suffix!r} is not an audio extension; allowed: {', '.join(sorted(SAFE_AUDIO_EXTENSIONS))}",
+            exit_code=EXIT_USAGE,
+        )
+    return plan
 
 
 def resolve_tts_model(provider: str, model: str | None) -> str:
@@ -257,7 +303,12 @@ async def audio_chat(file: str, model: str, system_prompt: str | None, user_prom
     default=None,
     help='ElevenLabs voice tuning as JSON, e.g. \'{"stability":0.5,"similarity_boost":0.8}\'.',
 )
-@click.option("-o", "--output", default=None, help="Output file or directory (default: media dir).")
+@click.option(
+    "-o",
+    "--output",
+    default=None,
+    help="Output file or directory (default: media dir). A FILE without an extension gets .mp3.",
+)
 @click.pass_context
 @run_async("audio.speak")
 async def audio_speak(
@@ -294,7 +345,7 @@ async def audio_speak(
     state = get_state(ctx)
     text_content = read_content_arg(text, "TEXT")
     session = PathSession()
-    plan = plan_output(session, output, "audio", quiet=state.quiet)
+    plan = _with_audio_suffix(plan_output(session, output, "audio", quiet=state.quiet), output, "mp3")
     install_overrides(session)
 
     started = time.monotonic()
@@ -319,7 +370,12 @@ async def audio_speak(
 @audio.command("convert")
 @click.argument("file")
 @click.option("--to", "target_format", type=click.Choice(["mp3", "wav"]), default="mp3", show_default=True)
-@click.option("-o", "--output", default=None, help="Output file or directory (default: alongside input).")
+@click.option(
+    "-o",
+    "--output",
+    default=None,
+    help="Output file or directory (default: alongside input). A FILE without an extension gets .<to>.",
+)
 @click.pass_context
 @run_async("audio.convert")
 async def audio_convert(ctx: click.Context, file: str, target_format: str, output: str | None) -> int:
@@ -332,7 +388,7 @@ async def audio_convert(ctx: click.Context, file: str, target_format: str, outpu
     state = get_state(ctx)
     session = PathSession()
     name = resolve_input(session, file, "audio", "FILE")
-    plan = plan_output(session, output, "audio", quiet=state.quiet)
+    plan = _with_audio_suffix(plan_output(session, output, "audio", quiet=state.quiet), output, target_format)
     install_overrides(session)
 
     result = await audio_tools.convert_audio(
@@ -351,7 +407,12 @@ async def audio_convert(ctx: click.Context, file: str, target_format: str, outpu
 @audio.command("compress")
 @click.argument("file")
 @click.option("--max-mb", type=click.IntRange(1, 1000), default=25, show_default=True)
-@click.option("-o", "--output", default=None, help="Output file or directory (default: alongside input).")
+@click.option(
+    "-o",
+    "--output",
+    default=None,
+    help="Output file or directory (default: alongside input). A FILE must carry an audio extension.",
+)
 @click.pass_context
 @run_async("audio.compress")
 async def audio_compress(ctx: click.Context, file: str, max_mb: int, output: str | None) -> int:
@@ -364,7 +425,7 @@ async def audio_compress(ctx: click.Context, file: str, max_mb: int, output: str
     state = get_state(ctx)
     session = PathSession()
     name = resolve_input(session, file, "audio", "FILE")
-    plan = plan_output(session, output, "audio", quiet=state.quiet)
+    plan = _with_audio_suffix(plan_output(session, output, "audio", quiet=state.quiet), output, None)
     install_overrides(session)
 
     result = await audio_tools.compress_audio(input_file_name=name, max_mb=max_mb, output_file_name=plan.filename)
@@ -377,7 +438,11 @@ async def audio_compress(ctx: click.Context, file: str, max_mb: int, output: str
 
 
 @audio.command("files")
-@click.option("--pattern", default=None, help="Regex filter on file names.")
+@click.option(
+    "--pattern",
+    default=None,
+    help='Case-insensitive substring or glob filter on file names, e.g. "*.mp3" (not a regex).',
+)
 @click.option("--format", "format_filter", default=None, help='Filter by format, e.g. "mp3".')
 @click.option("--min-size", type=int, default=None, help="Minimum size in bytes.")
 @click.option("--max-size", type=int, default=None, help="Maximum size in bytes.")

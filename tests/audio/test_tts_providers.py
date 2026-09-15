@@ -203,8 +203,9 @@ class TestElevenLabsValidation:
 
 @pytest.mark.unit
 class TestElevenLabsVoiceIdIsAPathSegment:
-    """The voice id lands in f"v1/text-to-speech/{voice_id}" unencoded, and the
-    SDK resolves that with urljoin — so a traversing voice retargets an
+    """The voice id lands in f"v1/text-to-speech/{voice_id}" unencoded — the SDK
+    string-concatenates it onto the base URL, and httpx collapses the dot
+    segments when it builds the request — so a traversing voice retargets an
     authenticated POST that carries the operator's xi-api-key."""
 
     @pytest.mark.parametrize(
@@ -235,6 +236,12 @@ class TestElevenLabsVoiceIdIsAPathSegment:
         # is the last thing to run before the URL exists.
         with pytest.raises(ValueError, match="not a valid ElevenLabs voice id"):
             get_provider("elevenlabs").validate(elevenlabs_request(voice="../../v1/user?"))
+
+    def test_validate_names_stray_whitespace_rather_than_calling_a_good_id_bad(self):
+        # resolve_voice strips; a padded voice in a hand-built request skipped it.
+        # The diagnostic must say so instead of "not a valid voice id".
+        with pytest.raises(ValueError, match="surrounding whitespace"):
+            get_provider("elevenlabs").validate(elevenlabs_request(voice="  21m00Tcm4TlvDq8ikWAM  "))
 
 
 # ---------- synthesis ----------

@@ -5,6 +5,7 @@ Migrated from mcp-server-whisper v1.1.0 by Richie Caputo (MIT license).
 """
 
 import fnmatch
+from collections.abc import Callable
 
 import anyio
 from openai.types import AudioModel
@@ -19,25 +20,53 @@ from ..audio.constants import (
     AudioChatModel,
 )
 from ..audio.models import FilePathSupportParams
+from ..audio.processor import demuxer_for
 from ..exceptions import AudioFileError, AudioFileNotFoundError
 from ..storage import get_storage
 from ..storage.protocol import FileInfo, StorageBackend
 
-# Names are matched with a linear-time matcher, never a backtracking regex: a
-# client-supplied pattern like ``(a+)+$`` against a long filename made Python's
-# ``re`` engine spin indefinitely on the event loop, freezing the whole server
-# (CWE-1333). A pattern is capped in length and interpreted as a case-insensitive
-# substring, or, when it carries glob metacharacters, an fnmatch glob.
+# Names are filtered by substring or fnmatch glob, never by a caller-supplied
+# regex: a pattern like ``(a+)+$`` against a long filename made Python's ``re``
+# engine backtrack indefinitely on the event loop, freezing the whole server
+# (CWE-1333). fnmatch *is* regex-backed — ``fnmatch.translate`` compiles to
+# ``re`` — but since Python 3.9 (bpo-40480) it emits ``*`` as an atomic group
+# (``(?>.*?x)``), so a glob cannot backtrack exponentially. That translation,
+# not "no regex", is the property this leans on; a hand-rolled ``re.compile`` of
+# a translated glob would not have it.
 _MAX_PATTERN_LEN = 256
+_GLOB_METACHARACTERS = frozenset("*?[")
+# Regex syntax with no glob meaning. This filter used to *be* a regex, so these
+# still arrive from saved scripts and old tool descriptions; a pattern carrying
+# one is refused rather than quietly matching nothing — an agent recovers from
+# an error, not from a plausible empty list.
+_REGEX_ONLY_METACHARACTERS = frozenset("\\^$()|+")
 
 
-def _name_matches(pattern: str, name: str) -> bool:
-    """Linear-time filename filter: glob when the pattern has ``*?[`` else substring."""
-    pattern = pattern[:_MAX_PATTERN_LEN]
-    lowered = name.lower()
-    if any(ch in pattern for ch in "*?["):
-        return fnmatch.fnmatch(lowered, pattern.lower())
-    return pattern.lower() in lowered
+def compile_name_filter(pattern: str) -> Callable[[str], bool]:
+    """Turn a caller-supplied name filter into a linear-time predicate.
+
+    The pattern is a case-insensitive substring, or an fnmatch glob when it
+    contains ``*``, ``?`` or ``[`` (a literal ``[`` is spelled ``[[]``).
+    Raises ValueError for an over-long pattern — truncating one would turn a
+    substring into a prefix and match *more* files than asked — and for
+    regex-only syntax, so a caller working from the old regex contract learns
+    the new one instead of receiving an empty result.
+    """
+    if len(pattern) > _MAX_PATTERN_LEN:
+        raise ValueError(f"pattern is {len(pattern)} characters long; the limit is {_MAX_PATTERN_LEN}")
+    stray = sorted(set(pattern) & _REGEX_ONLY_METACHARACTERS)
+    if stray:
+        raise ValueError(
+            f"pattern {pattern!r:.80} uses regex syntax ({' '.join(stray)}), which is not supported: a pattern is a "
+            "case-insensitive substring, or a glob using * ? [ ] (e.g. '*.mp3'). Stand in for such a character "
+            "with ?, and match a literal [ as [[]"
+        )
+    lowered_pattern = pattern.lower()
+    if _GLOB_METACHARACTERS & set(pattern):
+        # fnmatchcase: both sides are lowercased here already, and fnmatch's
+        # extra os.path.normcase would rewrite slashes on Windows.
+        return lambda name: fnmatch.fnmatchcase(name.lower(), lowered_pattern)
+    return lambda name: lowered_pattern in name.lower()
 
 
 class FileSystemRepository:
@@ -82,14 +111,15 @@ class FileSystemRepository:
         # decode allowlisted audio containers — the demuxer is chosen from the
         # untrusted extension, and a playlist demuxer (hls/concat/dash) would
         # read other local files (CWE-610). A non-audio extension simply yields
-        # no duration rather than invoking ffmpeg.
+        # no duration rather than invoking ffmpeg. `demuxer_for` also maps the
+        # extensions ffmpeg does not know by name (.opus → ogg) onto the demuxer
+        # that reads them, so those files get a duration instead of a silent None.
         duration_seconds = None
         if audio_format in DECODABLE_AUDIO_EXTENSIONS:
+            demuxer = demuxer_for(audio_format)
             try:
                 async with self._storage.local_path("audio", filename) as local:
-                    audio = await anyio.to_thread.run_sync(
-                        lambda: AudioSegment.from_file(str(local), format=audio_format)
-                    )
+                    audio = await anyio.to_thread.run_sync(lambda: AudioSegment.from_file(str(local), format=demuxer))
                     duration_seconds = len(audio) / 1000.0
             except Exception:
                 pass
@@ -144,14 +174,22 @@ class FileSystemRepository:
 
         Args:
             pattern: Optional case-insensitive filter — a substring, or a glob
-                (e.g. ``*.mp3``) when it contains ``*``, ``?`` or ``[``.
+                (e.g. ``*.mp3``) when it contains ``*``, ``?`` or ``[``. Not a
+                regex: see :func:`compile_name_filter`.
             min_size_bytes: Minimum file size in bytes.
             max_size_bytes: Maximum file size in bytes.
             format_filter: Specific audio format to filter by (e.g., 'mp3', 'wav').
 
         Returns:
             list[FileInfo]: List of file info objects matching the criteria.
+
+        Raises:
+            ValueError: If `pattern` is over-long or uses regex syntax.
         """
+        # Compiled once, before any I/O: a bad pattern is a usage error and
+        # should not cost a directory listing to discover.
+        matches = compile_name_filter(pattern) if pattern else None
+
         audio_extensions = TRANSCRIBE_AUDIO_FORMATS | CHAT_WITH_AUDIO_FORMATS
         file_infos = await self._storage.list_files("audio", extensions=audio_extensions)
 
@@ -159,8 +197,8 @@ class FileSystemRepository:
         for info in file_infos:
             file_ext = ("." + info.name.rsplit(".", 1)[-1].lower()) if "." in info.name else ""
 
-            # Apply pattern filtering if provided (linear-time; never a regex)
-            if pattern and not _name_matches(pattern, info.name):
+            # Apply pattern filtering if provided (linear-time; see compile_name_filter)
+            if matches is not None and not matches(info.name):
                 continue
 
             # Apply format filtering if provided

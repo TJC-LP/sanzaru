@@ -189,10 +189,17 @@ usage error pointing to gpt-image-1.5.
 |---------|---------|
 | `transcribe FILE...` | Whisper/GPT-4o transcription; `--enhance detailed\|storytelling\|professional\|analytical`, `--format`, `--timestamps`; multi-file fan-out; files over 8 min are auto-windowed (`result.chunked`) |
 | `chat FILE` | Ask questions about audio content (`--prompt`, `--system`) |
-| `speak TEXT` | TTS (`--provider`, `--model`, `--voice`, `--instructions`, `--speed`, `--voice-settings`); long text auto-chunks |
-| `convert FILE` | To mp3/wav (`--to`) |
-| `compress FILE` | Fit a size budget (`--max-mb`, default 25) |
-| `files` | List with filters (`--pattern/--format/--min-duration/...`); `--latest` prints only the newest |
+| `speak TEXT` | TTS (`--provider`, `--model`, `--voice`, `--instructions`, `--speed`, `--voice-settings`); long text auto-chunks; `-o FILE` without an extension gets `.mp3` |
+| `convert FILE` | To mp3/wav (`--to`); `-o FILE` without an extension gets `.<to>` |
+| `compress FILE` | Fit a size budget (`--max-mb`, default 25); `-o FILE` must carry an audio extension — the result is mp3 when re-encoded but keeps the input's format when it was already small enough |
+| `files` | List with filters (`--pattern/--format/--min-duration/...`); `--latest` prints only the newest. `--pattern` is a case-insensitive substring or glob (`"*.mp3"`, `"ep0?"`), **not a regex** — `^ $ | ( ) + \` are a usage error |
+
+Audio names are checked before any work is done. An input to `convert`/`compress` must be a
+self-contained audio container (`mp3 wav flac aac ogg oga opus m4a m4b mp4 mov aiff aif aifc wma mka
+webm amr au caf mpeg mpga`); playlist formats such as `hls`, `m3u8`, `concat` and `dash` are refused
+because their *content* names other local files for ffmpeg to read. A caller-named output of
+`convert`, `compress` or `speak` must carry one of the narrower output extensions (`flac m4a mp3 mp4
+mpeg mpga ogg wav webm`) — none of these commands can create a `.json` or `.html`.
 
 ### TTS providers
 

@@ -20,6 +20,40 @@ from .constants import (
     safe_audio_format,
 )
 
+# pydub hands `format` to ffmpeg verbatim as `-f <format>` (its only aliases are
+# m4a→mp4 and wave→wav), and these container extensions are not demuxer names:
+# `ffmpeg -f opus` is "Unknown format". Verified with `ffmpeg -h demuxer=<name>`
+# against ffmpeg 8.0.1. Every target is itself a self-contained container
+# demuxer — none reads other files — so this table cannot reintroduce the
+# playlist class that `safe_audio_format` exists to keep out.
+_DEMUXER_FOR_EXTENSION: dict[str, str] = {
+    "aif": "aiff",
+    "aifc": "aiff",
+    "m4b": "mp4",
+    "mka": "matroska",
+    "mpga": "mp3",
+    "oga": "ogg",
+    "opus": "ogg",
+    "wma": "asf",
+}
+
+
+def demuxer_for(name_or_suffix: str) -> str:
+    """Return the ffmpeg demuxer for an allowlisted audio filename or suffix.
+
+    Runs :func:`safe_audio_format` first, so a playlist extension (`.hls`,
+    `.concat`, `.m3u8`) is refused here and never reaches
+    ``AudioSegment.from_file``; then maps the extensions ffmpeg does not know
+    by that name onto the demuxer that actually reads them.
+
+    Raises:
+    ------
+        ValueError: If the extension is outside `DECODABLE_AUDIO_EXTENSIONS`.
+
+    """
+    ext = safe_audio_format(name_or_suffix)
+    return _DEMUXER_FOR_EXTENSION.get(ext, ext)
+
 
 class AudioProcessor:
     """Domain logic for audio processing operations.
@@ -124,15 +158,18 @@ class AudioProcessor:
 
         Raises:
         ------
+            ValueError: If the file's extension is not an allowlisted audio
+                container. Raised before ffmpeg is involved and deliberately
+                *not* wrapped in AudioConversionError — it is a usage error
+                about the name, not a decode failure.
             AudioConversionError: If loading fails.
 
         """
         # Validate the extension against the audio allowlist *before* invoking
         # ffmpeg. The demuxer is chosen from this suffix, and a playlist demuxer
         # (hls/concat/dash) selected from a planted file's extension would read
-        # other local files as "segments" (CWE-610). Raises ValueError for
-        # anything that is not a real audio container.
-        format_str = safe_audio_format(file_path.suffix)
+        # other local files as "segments" (CWE-610).
+        format_str = demuxer_for(file_path.suffix)
         try:
             return await anyio.to_thread.run_sync(lambda: AudioSegment.from_file(str(file_path), format=format_str))
         except Exception as e:

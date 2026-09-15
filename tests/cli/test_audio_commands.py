@@ -614,3 +614,104 @@ def test_podcast_generate_rejects_cross_provider_model():
 
     assert result.exit_code == 2
     assert "not valid for --provider elevenlabs" in json.loads(result.stdout)["error"]["message"]
+
+
+@pytest.mark.integration
+def test_convert_appends_the_target_extension_to_a_suffix_less_output(mocker, tmp_path):
+    """`-o ./out/episode` used to write mp3 bytes to a file called `episode`.
+
+    The tool layer now insists on an audio extension; the CLI knows what
+    `--to` will produce, so it supplies it rather than failing with a usage
+    error that names the staging file.
+    """
+    in_dir, out_dir = tmp_path / "in", tmp_path / "out"
+    in_dir.mkdir()
+    src = in_dir / "raw.wav"
+    src.write_bytes(b"wav")
+
+    async def fake_convert(input_file_name, target_format, output_file_name):
+        (in_dir / output_file_name).write_bytes(b"converted")
+        return AudioProcessingResult(output_file=output_file_name)
+
+    convert = mocker.patch("sanzaru.tools.audio.convert_audio", mocker.AsyncMock(side_effect=fake_convert))
+
+    result = CliRunner().invoke(cli, ["audio", "convert", str(src), "--to", "wav", "-o", str(out_dir / "episode")])
+
+    assert result.exit_code == 0, result.stderr
+    assert convert.call_args.kwargs["output_file_name"].endswith(".wav")  # staging name carries the suffix too
+    parsed = json.loads(result.stdout)
+    assert parsed["result"]["output_file"] == "episode.wav"
+    assert parsed["result"]["file"]["path"] == str(out_dir / "episode.wav")
+    assert (out_dir / "episode.wav").read_bytes() == b"converted"
+
+
+@pytest.mark.integration
+def test_convert_reports_a_non_audio_output_extension_against_the_flag(mocker, tmp_path):
+    src = tmp_path / "raw.wav"
+    src.write_bytes(b"wav")
+    convert = mocker.patch("sanzaru.tools.audio.convert_audio", mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, ["audio", "convert", str(src), "-o", str(tmp_path / "notes.json")])
+
+    assert result.exit_code == 2
+    error = json.loads(result.stdout)["error"]
+    assert error["type"] == "usage"
+    assert "-o" in error["message"] and "'.json'" in error["message"]
+    convert.assert_not_called()
+
+
+@pytest.mark.integration
+def test_compress_refuses_a_suffix_less_output_and_says_why(mocker, tmp_path):
+    """compress cannot guess: it re-encodes to mp3 but copies an already-small input verbatim."""
+    src = tmp_path / "small.mp3"
+    src.write_bytes(b"tiny")
+    compress = mocker.patch("sanzaru.tools.audio.compress_audio", mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, ["audio", "compress", str(src), "-o", str(tmp_path / "episode")])
+
+    assert result.exit_code == 2
+    error = json.loads(result.stdout)["error"]
+    assert error["type"] == "usage"
+    assert "episode.mp3" in error["message"] and "--max-mb" in error["message"]
+    compress.assert_not_called()
+    assert [p.name for p in tmp_path.iterdir()] == ["small.mp3"]
+
+
+@pytest.mark.integration
+def test_speak_appends_mp3_to_a_suffix_less_output(mocker, tmp_path):
+    async def fake_create(**kwargs):
+        (tmp_path / kwargs["output_file_name"]).write_bytes(b"speech")
+        return TTSResult(output_file=kwargs["output_file_name"], provider="openai", model="gpt-4o-mini-tts")
+
+    mocker.patch("sanzaru.tools.audio.create_audio", mocker.AsyncMock(side_effect=fake_create))
+
+    result = CliRunner().invoke(cli, ["audio", "speak", "hello", "-o", str(tmp_path / "greeting")])
+
+    assert result.exit_code == 0, result.stderr
+    assert json.loads(result.stdout)["result"]["output_file"] == "greeting.mp3"
+    assert (tmp_path / "greeting.mp3").read_bytes() == b"speech"
+
+
+@pytest.mark.integration
+def test_audio_files_pattern_is_documented_as_glob_not_regex():
+    """The last user-facing "regex" string; the matcher stopped being one."""
+    result = CliRunner().invoke(cli, ["audio", "files", "--help"])
+
+    assert result.exit_code == 0
+    assert "Regex" not in result.output and "regex" in result.output.lower()
+    assert "glob" in result.output
+
+
+@pytest.mark.integration
+def test_audio_files_regex_pattern_is_a_usage_error(mocker):
+    """The repository raises ValueError for regex syntax; the CLI contract for that is exit 2."""
+    mocker.patch(
+        "sanzaru.tools.audio.list_audio_files",
+        mocker.AsyncMock(side_effect=ValueError("pattern '^ep' uses regex syntax (^), which is not supported")),
+    )
+
+    result = CliRunner().invoke(cli, ["audio", "files", "--pattern", "^ep"])
+
+    assert result.exit_code == 2
+    error = json.loads(result.stdout)["error"]
+    assert error["type"] == "usage" and "regex syntax" in error["message"]

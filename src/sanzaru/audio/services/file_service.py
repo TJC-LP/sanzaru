@@ -48,7 +48,7 @@ class FileService:
 
         Args:
         ----
-            pattern: Optional case-insensitive filter — a substring, or a glob (e.g. '*.mp3').
+            pattern: Optional case-insensitive filter — a substring, or a glob (e.g. '*.mp3'); not a regex.
             min_size_bytes: Minimum file size in bytes.
             max_size_bytes: Maximum file size in bytes.
             min_duration_seconds: Minimum audio duration in seconds.
