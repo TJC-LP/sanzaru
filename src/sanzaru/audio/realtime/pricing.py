@@ -21,7 +21,7 @@ import logging
 import os
 from dataclasses import dataclass
 
-from .types import RealtimeUsage
+from .types import RealtimeUsage, is_live_model
 
 logger = logging.getLogger("sanzaru")
 
@@ -58,7 +58,7 @@ CACHE_HIT_RATE = 0.66
 
 @dataclass(frozen=True, slots=True)
 class ModelPrices:
-    """USD per 1M tokens."""
+    """USD per 1M tokens, plus a per-minute rate for models billed by duration."""
 
     text_input: float
     cached_text_input: float
@@ -66,6 +66,10 @@ class ModelPrices:
     cached_audio_input: float
     audio_output: float
     text_output: float
+    per_minute: float = 0.0
+    """USD per session-minute. The Live API (`gpt-live-*`) bills only this —
+    every token rate above is zero for it — and every realtime model bills
+    only tokens, so the two halves of `usage_cost` never both apply."""
 
 
 # List prices per 1M tokens, captured 2026-08-05 from OpenAI's pricing page.
@@ -88,6 +92,10 @@ PRICES: dict[str, ModelPrices] = {
     ),
 }
 
+# The Live API is duration-billed: $0.05 per session-minute, metered per second,
+# for every host's session across the whole act (listening included). No tokens.
+PRICES["gpt-live-1"] = ModelPrices(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, per_minute=0.05)
+
 # Older aliases bill like the generation they belong to.
 PRICES["gpt-realtime-2"] = PRICES["gpt-realtime-2.1"]
 PRICES["gpt-realtime"] = PRICES["gpt-realtime-2.1"]
@@ -106,13 +114,20 @@ def price_env_name(model: str) -> str:
     return "SANZARU_REALTIME_PRICE_" + model.upper().replace("-", "_").replace(".", "_")
 
 
+PRICE_ENV_FIELDS = "text_in,cached_text_in,audio_in,cached_audio_in,audio_out,text_out[,per_minute]"
+"""The value shape every message about `SANZARU_REALTIME_PRICE_<MODEL>` quotes."""
+
+
 def _env_override(model: str) -> ModelPrices | None:
-    """Read `SANZARU_REALTIME_PRICE_<MODEL>` — six comma-separated USD/1M values.
+    """Read `SANZARU_REALTIME_PRICE_<MODEL>` — six or seven comma-separated values.
 
     Order matches ModelPrices:
-    text_in,cached_text_in,audio_in,cached_audio_in,audio_out,text_out.
-    The model name is upper-cased with `-`/`.` becoming `_`, e.g.
-    `SANZARU_REALTIME_PRICE_GPT_REALTIME_2_1=4,0.4,32,0.4,64,24`.
+    text_in,cached_text_in,audio_in,cached_audio_in,audio_out,text_out — USD per
+    1M tokens — with an optional seventh, per_minute, in USD per session-minute
+    for a duration-billed model. The six-value form is unchanged and leaves
+    per_minute at 0. The model name is upper-cased with `-`/`.` becoming `_`,
+    e.g. `SANZARU_REALTIME_PRICE_GPT_REALTIME_2_1=4,0.4,32,0.4,64,24` or
+    `SANZARU_REALTIME_PRICE_GPT_LIVE_1=0,0,0,0,0,0,0.05`.
 
     A malformed value warns and falls through to the table: someone who set this
     variable wanted it to take effect, and silently billing them at list price is
@@ -124,17 +139,17 @@ def _env_override(model: str) -> ModelPrices | None:
         return None
     parts = [p.strip() for p in raw.split(",")]
     try:
-        if len(parts) != 6:
-            raise ValueError(f"expected 6 comma-separated values, got {len(parts)}")
+        if len(parts) not in (6, 7):
+            raise ValueError(f"expected 6 or 7 comma-separated values, got {len(parts)}")
         values = [float(p) for p in parts]
     except ValueError as exc:
         logger.warning(
-            "%s=%r is not usable (%s) - falling back to table prices for %r. Expected "
-            "text_in,cached_text_in,audio_in,cached_audio_in,audio_out,text_out",
+            "%s=%r is not usable (%s) - falling back to table prices for %r. Expected %s",
             key,
             raw,
             exc,
             model,
+            PRICE_ENV_FIELDS,
         )
         return None
     return ModelPrices(*values)
@@ -161,7 +176,7 @@ def usage_cost(usage: RealtimeUsage, model: str) -> float | None:
     prices = prices_for(model)
     if prices is None:
         return None
-    return (
+    tokens = (
         usage.uncached_text_tokens * prices.text_input
         + usage.cached_text_tokens * prices.cached_text_input
         + usage.uncached_audio_tokens * prices.audio_input
@@ -169,14 +184,24 @@ def usage_cost(usage: RealtimeUsage, model: str) -> float | None:
         + usage.output_audio_tokens * prices.audio_output
         + usage.output_text_tokens * prices.text_output
     ) / 1_000_000
+    return tokens + usage.live_seconds / 60.0 * prices.per_minute
 
 
-def project_usage(*, seconds: float, turns: int, hosts: int) -> RealtimeUsage:
+def project_usage(*, seconds: float, turns: int, hosts: int, model: str | None = None) -> RealtimeUsage:
     """Project one act's usage from its target duration and turn count.
 
     Each agent hears everything *except* its own turns, so audio input scales
     with (hosts - 1) speakers' worth of the act rather than with hosts.
+
+    A Live model (`is_live_model`) is projected on the other axis entirely: no
+    tokens, and every host's session is open — and billed — for the whole act,
+    listening included, so billable seconds are `seconds * hosts`. Wall clock
+    runs longer than the audio it produces (each turn is generated before the
+    others hear it), so this is a floor, which is why the dry-run output calls
+    it an estimate.
     """
+    if model is not None and is_live_model(model):
+        return RealtimeUsage(live_seconds=seconds * hosts)
     audio_out = seconds * AUDIO_OUTPUT_TOKENS_PER_SECOND
     text_out = seconds * TEXT_OUTPUT_TOKENS_PER_SECOND
     listeners = max(0, hosts - 1)

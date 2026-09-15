@@ -270,7 +270,7 @@ class TestPricing:
         monkeypatch.setenv("SANZARU_REALTIME_PRICE_GPT_REALTIME_2_1", "not,a,price")
         assert prices_for("gpt-realtime-2.1") == ModelPrices(4.0, 0.40, 32.0, 0.40, 64.0, 24.0)
 
-    @pytest.mark.parametrize("raw", ["not,a,price", "1,2,3,4,5", "1,2,3,4,5,6,7", "4,0.4,32,0.4,64,cheap"])
+    @pytest.mark.parametrize("raw", ["not,a,price", "1,2,3,4,5", "1,2,3,4,5,6,7,8", "4,0.4,32,0.4,64,cheap"])
     def test_a_malformed_env_override_says_so(self, monkeypatch, caplog, raw):
         # Someone who set this variable wanted it to take effect; billing them at
         # list price without a word is the outcome they were trying to avoid.

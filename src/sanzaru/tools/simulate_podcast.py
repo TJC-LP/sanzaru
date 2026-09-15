@@ -345,12 +345,16 @@ def _signature_ok(payload: str, signature: str | None) -> bool:
     return hmac.compare_digest(expected.encode(), signature.encode())
 
 
-SIGNATURE_VERSION = 1
+SIGNATURE_VERSION = 2
 """Which fields a signature covers, and in what shape.
 
 Bump when the signed tuple changes meaning; a record carrying another version
 cannot be verified by this code and is refused under a secret. Adding a field
-to any of the models below does *not* need a bump — that is the point."""
+to any of the models below does *not* need a bump — that is the point.
+
+v2 added `live_seconds` to the usage tuple: it is the one counter a Live-model
+checkpoint's cost rests on, so leaving it unsigned would have let an edited
+sidecar replay a `gpt-live` act into the ceiling for free."""
 
 _SIGNED_USAGE_FIELDS: tuple[str, ...] = (
     "input_tokens",
@@ -361,6 +365,7 @@ _SIGNED_USAGE_FIELDS: tuple[str, ...] = (
     "cached_audio_tokens",
     "output_text_tokens",
     "output_audio_tokens",
+    "live_seconds",
 )
 """The counters `usage_cost` multiplies — spelled out rather than taken from
 `RealtimeUsage.model_fields`, so a counter added later is not silently pulled
@@ -791,7 +796,7 @@ def annotate_upcoming(rundown: Rundown) -> Rundown:
     return rundown.model_copy(update={"acts": updated})
 
 
-def _projected_usage(rundown: Rundown, acts: Sequence[ActBrief]) -> RealtimeUsage:
+def _projected_usage(rundown: Rundown, acts: Sequence[ActBrief], model: str) -> RealtimeUsage:
     """Expected usage for some of a rundown's acts, at its host count.
 
     Turns are the *extended* ceiling, not `max_turns` (#50): an act runs to
@@ -800,6 +805,10 @@ def _projected_usage(rundown: Rundown, acts: Sequence[ActBrief]) -> RealtimeUsag
     exceed. Audio terms scale with `target_seconds` and are unaffected, which
     is why the difference is small — but a projection that reads low is worse
     than one that reads high, since the resume refusal projects from this too.
+
+    `model` decides the axis: a Live model projects session-seconds per host
+    and no tokens (see `project_usage`). Projected at the episode model even
+    when hosts override it — the projection is priced there too.
     """
     total = RealtimeUsage()
     for act in acts:
@@ -807,6 +816,7 @@ def _projected_usage(rundown: Rundown, acts: Sequence[ActBrief]) -> RealtimeUsag
             seconds=act.target_seconds,
             turns=extension_cap(act.max_turns),
             hosts=len(rundown.hosts),
+            model=model,
         )
     return total
 
@@ -820,7 +830,7 @@ def project_run(rundown: Rundown, brief: SimulationBrief) -> CostReport:
     count those turns at all. Any unpriced billable model now empties the
     dollar figure and is named, which is what a dry run is for.
     """
-    total = _projected_usage(rundown, rundown.acts)
+    total = _projected_usage(rundown, rundown.acts, brief.model)
     unpriced = _unpriced(_billable_models(brief, rundown))
     cost = None if unpriced else usage_cost(total, brief.model)
     return CostReport(
@@ -1429,7 +1439,7 @@ async def simulate_podcast(
         act_id: _replay_model(act.result.usage, billable, effective.model) for act_id, act in reuse.items()
     }
     replayed = sum(usage_cost(act.result.usage, replay_models[act_id]) or 0.0 for act_id, act in reuse.items())
-    remaining = usage_cost(_projected_usage(rundown, todo), effective.model)
+    remaining = usage_cost(_projected_usage(rundown, todo, effective.model), effective.model)
     budget = CostBudget(
         effective.max_cost_usd,
         projected_usd=None if remaining is None else replayed + remaining,
