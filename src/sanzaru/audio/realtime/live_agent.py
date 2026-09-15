@@ -649,8 +649,16 @@ class LiveAgent:
 
     # ---------- the agent surface ----------
 
-    async def configure(self, instructions: str) -> None:
-        """Start the session with the persona, voice and PCM format for this act, then start the clock."""
+    async def configure(self, instructions: str, *, start_clock: bool = True) -> None:
+        """Start the session with the persona, voice and PCM format for this act.
+
+        By default the input clock starts as soon as `session.started` arrives,
+        which is what the cued loop wants. A duplex table passes
+        `start_clock=False` and calls `start_clock()` itself once *every* host
+        is up and wired: the model's timeline only moves with input audio, so
+        holding the clocks is what keeps the opener from speaking into a room
+        where the slower host is not yet listening and nobody is recording.
+        """
         if self._tg is None:
             raise RuntimeError(f"{self.name}: enter the LiveAgent (async with) before configure()")
         audio: dict[str, object] = {"format": {"type": "audio/pcm", "rate": self._sample_rate}}
@@ -667,8 +675,21 @@ class LiveAgent:
         await self._send({"type": "session.start", "session": session})
         if not await self._wait_until(lambda: self._started, SESSION_START_TIMEOUT_S):
             raise RealtimeAPIError(f"{self.name}: no session.started within {SESSION_START_TIMEOUT_S:.0f}s")
+        if start_clock:
+            self.start_clock()
+
+    def start_clock(self) -> None:
+        """Begin streaming input frames; the model's timeline starts here."""
+        if self._tg is None or not self._started:
+            raise RuntimeError(f"{self.name}: start_clock() needs an entered, started session")
+        if self._clock_running:
+            return
         self._clock_running = True
         self._tg.start_soon(self._run_clock)
+
+    def check_alive(self) -> None:
+        """Raise the session's fault, or RealtimeAPIError if it has closed."""
+        self._check_alive()
 
     async def steer(self, note: str) -> None:
         """Inject a producer note the audience never hears — on the silent channel."""

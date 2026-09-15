@@ -497,9 +497,18 @@ class ActCheckpoint(_SignedRecord):
     mode: str = "turns"
     """`turns`: the mp3 is the turns concatenated and slices back into them by
     duration. `duplex`: the mp3 is a live mix of overlapping hosts; the turns
-    describe it but cannot be cut from it, so a resumed duplex act carries the
-    mix whole and no per-host stems."""
+    describe it but cannot be cut from it, so the per-host streams are
+    checkpointed as their own files (`stems`) and the mix is carried whole."""
     collision_seconds: float = 0.0
+    stems: dict[str, str] = Field(default_factory=dict)
+    """Duplex only: host id → checkpointed stem file beside the mix. Empty on a
+    duplex checkpoint written before stems were kept; such an act resumes with
+    its mix but cannot render stems, and `_write_stems` refuses to overwrite a
+    stem file the first run exported with the silence that would result."""
+    stem_sha256: dict[str, str] = Field(default_factory=dict)
+    """host id → digest of that stem file, checked on load like `audio_sha256`
+    and inside the signature, so a swapped stem is caught rather than mixed
+    into somebody's episode."""
 
     def signed_fields(self) -> list[object]:
         return [
@@ -508,6 +517,7 @@ class ActCheckpoint(_SignedRecord):
             self.audio_sha256,
             self.stop_reason,
             self.mode,
+            [[host, self.stems[host], self.stem_sha256.get(host, "")] for host in sorted(self.stems)],
             [getattr(self.usage, name) for name in _SIGNED_USAGE_FIELDS],
             [
                 [model, [getattr(usage, name) for name in _SIGNED_USAGE_FIELDS]]
@@ -688,6 +698,11 @@ def _act_audio_name(slug: str, run_id: str, act_id: str) -> str:
 
 def _act_meta_name(slug: str, run_id: str, act_id: str) -> str:
     return f"{slug}_{run_id}_{act_id}.json"
+
+
+def _act_stem_name(slug: str, run_id: str, act_id: str, host_id: str) -> str:
+    """A duplex act's per-host stream, checkpointed beside its mix."""
+    return f"{slug}_{run_id}_{act_id}_stem_{host_id}.mp3"
 
 
 _MAX_PRESERVED_TAKES = 50
@@ -992,10 +1007,23 @@ async def _load_checkpoint(
         # reachable — and a zero-audio act both fail here rather than at the
         # read, and one bad act must not make every later --resume exit 1.
         pcm = await anyio.to_thread.run_sync(decode_to_pcm, mp3, "mp3")
+        stems: dict[str, bytes] = {}
         if meta.mode == "duplex":
             if not pcm:
                 raise ValueError("duplex checkpoint decoded to no audio")
             parts = [b"" for _ in meta.turns]
+            for host_id, stem_name in meta.stems.items():
+                # Bound to the sidecar the same way the mix is: a stem that is
+                # missing or does not match its digest is a swapped or damaged
+                # file, and the act is re-recorded rather than shipped with it.
+                if not await storage.exists("audio", stem_name):
+                    raise ValueError(f"checkpoint stem {stem_name!r} is missing")
+                stem_mp3 = await storage.read("audio", stem_name)
+                expected = meta.stem_sha256.get(host_id, "")
+                if expected and expected != hashlib.sha256(stem_mp3).hexdigest():
+                    raise ValueError(f"checkpoint stem {stem_name!r} does not match the digest in its sidecar")
+                stem_pcm = await anyio.to_thread.run_sync(decode_to_pcm, stem_mp3, "mp3")
+                stems[host_id] = stem_pcm[: len(pcm)].ljust(len(pcm), b"\x00")
         else:
             parts = await anyio.to_thread.run_sync(slice_pcm_by_durations, pcm, [t.seconds for t in meta.turns])
     except Exception as exc:  # noqa: BLE001 — a corrupt checkpoint just means re-record
@@ -1009,6 +1037,7 @@ async def _load_checkpoint(
         usage_by_model=dict(meta.usage_by_model),
         stop_reason=meta.stop_reason,
         mixed_pcm=pcm if meta.mode == "duplex" else None,
+        stems=stems,
         collision_seconds=meta.collision_seconds,
     )
     return _RecordedAct(
@@ -1058,6 +1087,13 @@ async def _record_act(
 
     turn_pcm = [] if result.is_mixed else [ta.pcm for ta in result.audio]
     mp3 = await anyio.to_thread.run_sync(encode_pcm, result.join_pcm(), "mp3", brief.output_bitrate)
+    # A duplex act's per-host streams cannot be recovered from its mix, so
+    # they are checkpointed as files of their own — otherwise a resume can only
+    # render silence where the first run rendered speech.
+    stem_files: dict[str, tuple[str, bytes]] = {}
+    for host_id, stem_pcm in result.stems.items():
+        stem_mp3 = await anyio.to_thread.run_sync(encode_pcm, stem_pcm, "mp3", brief.output_bitrate)
+        stem_files[host_id] = (_act_stem_name(slug, run_id, act.id, host_id), stem_mp3)
 
     audio_name = _act_audio_name(slug, run_id, act.id)
     meta = ActCheckpoint(
@@ -1071,6 +1107,8 @@ async def _record_act(
         audio_sha256=hashlib.sha256(mp3).hexdigest(),
         mode="duplex" if result.is_mixed else "turns",
         collision_seconds=result.collision_seconds,
+        stems={host_id: name for host_id, (name, _) in stem_files.items()},
+        stem_sha256={host_id: hashlib.sha256(data).hexdigest() for host_id, (_, data) in stem_files.items()},
     )
     # A checkpoint is two files, and `_load_checkpoint` requires both. A sibling
     # act failing — the cost ceiling, a stalled turn — cancels this task group at
@@ -1080,6 +1118,11 @@ async def _record_act(
     # pair (and the bookkeeping that says they are there) instead.
     with anyio.CancelScope(shield=True):
         await checkpoints.write_audio_file(audio_name, mp3, is_bookkeeping=True)
+        for name, data in stem_files.values():
+            # This run's own bookkeeping, like the mix: the clobber guard is
+            # for other tools writing over a checkpoint, not for the run
+            # re-recording its own act (`--qc-retry`).
+            await checkpoints.write_audio_file(name, data, is_bookkeeping=True)
         await checkpoints.write_audio_file(
             _act_meta_name(slug, run_id, act.id), _signed_json(meta).encode(), is_bookkeeping=True
         )
@@ -1218,11 +1261,13 @@ def _build_timeline(
     for index, act in enumerate(recorded):
         if act.result.is_mixed:
             # Overlapping hosts: one block, each stem aligned to the mix. A
-            # resumed duplex act has no stems on disk, so its block is silence
-            # on every stem — the master still lines up.
-            if act.reused:
+            # duplex act resumed from a checkpoint written before stems were
+            # kept has none, so its block is silence on every stem — the
+            # master still lines up, and `_write_stems` refuses to overwrite a
+            # previously exported stem with it.
+            if act.reused and not act.result.stems:
                 logger.warning(
-                    "act %s was resumed from a duplex checkpoint: its stems are silent (only the mix is on disk)",
+                    "act %s was resumed from a duplex checkpoint without stems: its block is silent on every stem",
                     act.result.act_id,
                 )
             timeline.append(MixedBlock(len(act.result.mixed_pcm or b""), dict(act.result.stems)))
@@ -1282,10 +1327,26 @@ async def _write_stems(
         intro_ms=brief.intro_silence_ms,
         outro_ms=brief.outro_silence_ms,
     )
+    # Hosts whose track would carry silence where a recorded act should be —
+    # a duplex act resumed from a checkpoint that kept no stems. A stem file
+    # the first run exported for such a host is left alone: overwriting 40KB
+    # of recorded speech with silence is worse than a stale file.
+    incomplete = {
+        host.id for act in recorded if act.result.is_mixed for host in rundown.hosts if host.id not in act.result.stems
+    }
+    storage = get_storage()
     stems: dict[str, str] = {}
     for host in rundown.hosts:
-        data = await anyio.to_thread.run_sync(render_stem, timeline, host.id, brief.output_format, brief.output_bitrate)
         name = f"{slug}_{run_id}_stem_{host.id}.{brief.output_format}"
+        if host.id in incomplete and await storage.exists("audio", name):
+            logger.warning(
+                "stem %r already exists and this run can only render it with silence for a resumed duplex act - "
+                "keeping the existing file",
+                name,
+            )
+            stems[host.id] = name
+            continue
+        data = await anyio.to_thread.run_sync(render_stem, timeline, host.id, brief.output_format, brief.output_bitrate)
         await repo.write_audio_file(name, data)
         stems[host.id] = name
     return stems

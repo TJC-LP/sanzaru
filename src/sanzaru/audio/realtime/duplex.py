@@ -71,6 +71,11 @@ UTTERANCE_GAP_S = 1.2
 
 TICK_S = 0.1
 
+NOTE_SEND_TIMEOUT_S = 5.0
+"""Bound on sending one producer note. A stalled `thinking.append` must not
+hold the loop: the hard cap, the health check and the budget charge all live
+there. A lost note is logged and the act goes on without it."""
+
 
 def build_duplex_rules(host: HostSpec, others: Sequence[HostSpec], opener: HostSpec, turn_seconds: float) -> str:
     """The turn-taking contract for a duplex table, appended to the act instructions."""
@@ -281,20 +286,41 @@ async def run_duplex_act(
             agents.append(agent)
         by_id = {agent.id: agent for agent in agents}
 
-        for agent in agents:
+        async def _configure(agent: LiveAgent) -> None:
             others = [h for h in hosts if h.id != agent.id]
             base = _producer.build_instructions(
                 brief, agent.spec, others, settings, is_first_act=is_first_act, is_last_act=is_last_act
             )
-            await agent.configure(base + build_duplex_rules(agent.spec, others, opener, settings.turn_seconds))
+            await agent.configure(
+                base + build_duplex_rules(agent.spec, others, opener, settings.turn_seconds), start_clock=False
+            )
 
-        # Everyone hears everyone, from now until the close. Recording starts
-        # for all hosts in the same instant, so the streams share one zero.
+        # All sessions come up together, and nobody's timeline moves until
+        # everyone is up, wired to everyone else, and recording. Configured one
+        # by one with clocks running, the opener spoke while a slower peer was
+        # still starting — frames that nobody heard and nobody recorded.
+        async with anyio.create_task_group() as setup:
+            for agent in agents:
+                setup.start_soon(_configure, agent)
         for agent in agents:
             agent.set_listeners(agents, always=True)
         for agent in agents:
             agent.start_recording()
         t0 = time.monotonic()
+        for agent in agents:
+            agent.start_clock()
+
+        async def _note(agent: LiveAgent, text: str, label: str) -> None:
+            """Send a producer note, bounded so a stalled send cannot hold the loop."""
+            remaining = hard_cap - (time.monotonic() - t0)
+            bound = max(TICK_S, min(NOTE_SEND_TIMEOUT_S, remaining))
+            try:
+                with anyio.fail_after(bound):
+                    await agent.think(text, label=label)
+            except TimeoutError:
+                logger.warning(
+                    "%s: producer note %r to %s did not send within %.1fs - dropped", brief.id, label, agent.name, bound
+                )
 
         notes = plan_notes(brief, hosts, order, is_first_act=is_first_act, is_last_act=is_last_act)
         pending = list(notes)
@@ -312,11 +338,18 @@ async def run_duplex_act(
             while True:
                 now = time.monotonic()
                 elapsed = now - t0
+                # A dead session must never read as a quiet one: "everyone went
+                # silent after the close" is also what two dropped connections
+                # look like, and a finished act with a hole in it would then be
+                # checkpointed as complete. Same rule as the cued loop's
+                # `speak()` requiring a real end of turn.
+                for agent in agents:
+                    agent.check_alive()
 
                 while pending and pending[0].at_s <= elapsed:
                     note = pending.pop(0)
                     for host_id in note.host_ids:
-                        await by_id[host_id].think(note.text, label=note.label)
+                        await _note(by_id[host_id], note.text, note.label)
                     if note.kind == "point":
                         current_point = note.text
                     elif note.kind == "close":
@@ -332,9 +365,10 @@ async def run_duplex_act(
                     if now - overlap_since >= COLLISION_S and now - last_collision_note >= COLLISION_COOLDOWN_S:
                         interrupter = max(speaking, key=lambda a: a.speech_onset_at or 0.0)
                         other = next(a for a in speaking if a is not interrupter)
-                        await interrupter.think(
+                        await _note(
+                            interrupter,
                             f"You are talking over {other.name}. Stop now, let them finish, then respond.",
-                            label="yield",
+                            "yield",
                         )
                         last_collision_note = now
                         logger.info(
@@ -354,14 +388,17 @@ async def run_duplex_act(
                 if close_sent_at is not None:
                     closer_landed = (by_id[closer_id].last_speech_at or 0.0) >= close_sent_at
                     if anyone_spoke and quiet_for >= end_silence and (closer_landed or wrap_sent_at is not None):
+                        for agent in agents:
+                            agent.check_alive()
                         stop_reason = "target_seconds"
                         break
                 elif anyone_spoke and quiet_for >= STALL_S and now - last_stall_note >= STALL_COOLDOWN_S:
                     nudged = agents[order[stall_rotation % len(order)]]
                     stall_rotation += 1
-                    await nudged.think(
+                    await _note(
+                        nudged,
                         f"The conversation has stalled. Pick it up now with a fresh thought on: {current_point}",
-                        label="stall nudge",
+                        "stall nudge",
                     )
                     last_stall_note = now
 
@@ -378,7 +415,7 @@ async def run_duplex_act(
                 if budget is not None and now - last_charge >= 15.0:
                     for agent in agents:
                         spent = agent.take_usage()
-                        result.usage = result.usage + spent
+                        result.add_usage(agent.model, spent)
                         budget.charge(spent, agent.model)
                     last_charge = now
 
@@ -390,7 +427,7 @@ async def run_duplex_act(
             agent.stop_recording()
         for agent in agents:
             tail = await agent.finish()
-            result.usage = result.usage + tail
+            result.add_usage(agent.model, tail)
             if budget is not None:
                 budget.charge(tail, agent.model)
 

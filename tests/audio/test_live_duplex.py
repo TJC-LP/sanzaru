@@ -6,7 +6,10 @@ alignment, transcript grouping, silent steering, collisions and checkpointing
 are covered without a socket or a cent of spend.
 """
 
+import contextlib
+import hashlib
 import json
+from io import BytesIO
 
 import anyio
 import pytest
@@ -22,6 +25,7 @@ from sanzaru.audio.realtime.live_agent import (
 )
 from sanzaru.audio.realtime.producer import SimulationSettings, run_act
 from sanzaru.audio.realtime.types import ActBrief, ActResult, HostSpec, RealtimeUsage, Turn, TurnAudio
+from sanzaru.exceptions import RealtimeAPIError
 from sanzaru.tools import simulate_podcast as sim
 
 pytestmark = pytest.mark.audio
@@ -294,6 +298,65 @@ class TestDuplexAct:
         await run_act(brief, mixed, _settings(model="gpt-realtime-2.1", live_mode="duplex"), connect=factory)
         assert spy.call_count == 1
 
+    async def test_hard_cap_interrupts_stalled_steering(self, fake_live, connect_factory, brief, hosts):
+        """Finding 4: a `thinking.append` that never returns must not hold the loop past the cap."""
+
+        class StalledSteer(fake_live.Connection):  # type: ignore[misc,name-defined]
+            async def send(self, event):  # type: ignore[no-untyped-def]
+                if event.get("type") == "session.thinking.append":
+                    await anyio.sleep_forever()
+                await super().send(event)
+
+        a = StalledSteer(timeline=[(0.2, 0.4)])
+        b = fake_live.Connection(reply_seconds=0.3)
+        factory, _ = connect_factory(a, b)
+
+        with anyio.move_on_after(1.0) as watchdog:
+            with contextlib.suppress(RealtimeAPIError):
+                await run_duplex_act(brief, hosts, _settings(act_budget_s=0.2), connect=factory)
+        assert not watchdog.cancel_called, "the 0.2-second act cap never interrupted the blocked send"
+
+    async def test_the_opening_is_kept_while_a_slower_peer_starts(self, fake_live, connect_factory, brief, hosts):
+        """Finding 5: no host's timeline moves until every host is up, wired, and recording."""
+
+        class SlowStart(fake_live.Connection):  # type: ignore[misc,name-defined]
+            async def send(self, event):  # type: ignore[no-untyped-def]
+                if event.get("type") == "session.start":
+                    await anyio.sleep(1.0)
+                await super().send(event)
+
+        a = fake_live.Connection(timeline=[(0.2, 0.4)], transcripts=["Opening words."])
+        b = SlowStart(reply_seconds=0.3)
+        factory, _ = connect_factory(a, b)
+
+        result = await run_duplex_act(brief, hosts, _settings(), connect=factory)
+
+        assert result.turns[0].text == "Opening words."
+        assert any(result.mixed_pcm or b""), "the returned act contains only silence despite an opening transcript"
+        assert b.heard_speech_bytes > 0, "the co-host never heard the opening"
+        # Nobody streamed a frame before the slow host was ready.
+        assert a.input_frames <= b.input_frames + 2
+
+    async def test_a_disconnect_during_the_close_is_an_error(self, fake_live, connect_factory, brief, hosts):
+        """Finding 6: two sessions dying during the wrap look exactly like "everyone went quiet"."""
+
+        class DropAfterWrap(fake_live.Connection):  # type: ignore[misc,name-defined]
+            drop_next = False
+
+            async def send(self, event):  # type: ignore[no-untyped-def]
+                await super().send(event)
+                if event.get("type") == "session.thinking.append" and "segment is over" in str(event.get("content")):
+                    self.drop_next = True
+                elif event.get("type") == "session.input_audio.append" and self.drop_next:
+                    self._end_stream()
+
+        a = DropAfterWrap(timeline=[(0.2, 4.0)])
+        b = DropAfterWrap(timeline=[(0.4, 4.0)])
+        factory, _ = connect_factory(a, b)
+
+        with pytest.raises(RealtimeAPIError):
+            await run_duplex_act(brief, hosts, _settings(act_budget_s=3.0), connect=factory)
+
     async def test_duplex_needs_two_hosts(self, fake_live, connect_factory, brief, hosts):
         factory, _ = connect_factory(fake_live.Connection())
         with pytest.raises(ValueError, match="two hosts"):
@@ -378,15 +441,16 @@ def _duplex_act(act_id: str) -> ActResult:
             act_id=act_id, index=1, speaker_id="rory", speaker_name="Rory", text=f"{act_id} rory replies", seconds=1.0
         ),
     ]
-    return ActResult(
+    result = ActResult(
         act_id=act_id,
         audio=[TurnAudio(turn=t, pcm=b"") for t in turns],
-        usage=RealtimeUsage(live_seconds=40.0),
         stop_reason="target_seconds",
         mixed_pcm=mix_pcm16(list(stems.values())),
         stems=stems,
         collision_seconds=0.3,
     )
+    result.add_usage("gpt-live-1", RealtimeUsage(live_seconds=40.0))
+    return result
 
 
 class TestDuplexCheckpoints:
@@ -423,6 +487,20 @@ class TestDuplexCheckpoints:
         assert meta["mode"] == "duplex"
         assert meta["collision_seconds"] == 0.3
         assert [t["speaker_id"] for t in meta["turns"]] == ["avery", "rory"]
+        # Finding 2 applies to duplex too: the spend is on disk per model.
+        assert meta["usage_by_model"] == {"gpt-live-1": meta["usage"]}
+        assert meta["usage_by_model"]["gpt-live-1"]["live_seconds"] == 40.0
+        # The per-host streams are checkpointed beside the mix, digested and signed.
+        assert meta["stems"] == {
+            "avery": "Duplex_Test_dup_act1_stem_avery.mp3",
+            "rory": "Duplex_Test_dup_act1_stem_rory.mp3",
+        }
+        for host, name in meta["stems"].items():
+            data = (media_dir / name).read_bytes()
+            assert hashlib.sha256(data).hexdigest() == meta["stem_sha256"][host]
+        checkpoint = sim.ActCheckpoint.model_validate(meta)
+        swapped = checkpoint.model_copy(update={"stem_sha256": {**checkpoint.stem_sha256, "rory": "0" * 64}})
+        assert swapped.signed_payload() != checkpoint.signed_payload()
         assert first.acts[0].mode == "duplex" and first.acts[0].collision_seconds == 0.3
         assert first.duration_seconds == pytest.approx(2.0, abs=0.1)
         assert "act1 avery says" in first.transcript and "act1 rory replies" in first.transcript
@@ -436,7 +514,79 @@ class TestDuplexCheckpoints:
         assert resumed.turn_count == 2
         assert resumed.duration_seconds == pytest.approx(2.0, abs=0.15)
         assert resumed.cost.usage.live_seconds == pytest.approx(40.0)
+        assert resumed.cost.usd == pytest.approx(first.cost.usd)
         assert "act1 rory replies" in resumed.transcript
+
+    async def test_resume_preserves_previously_exported_duplex_stems(self, rundown, media_dir, stub_duplex):
+        """The reviewer's probe: a resumed duplex act must not render silence over recorded stems."""
+        from pydub import AudioSegment
+
+        first = await sim.simulate_podcast(
+            sim.SimulationBrief(rundown=rundown, model="gpt-live-1", qc=False, stems=True, run_id="stemreview")
+        )
+        stem_path = media_dir / first.stems["avery"]
+        before = stem_path.read_bytes()
+        assert AudioSegment.from_file(stem_path).rms > 0
+
+        stub_duplex.clear()
+        resumed = await sim.simulate_podcast(
+            sim.SimulationBrief(resume=True, run_id="stemreview", qc=False, stems=True)
+        )
+
+        assert stub_duplex == []
+        assert resumed.acts[0].reused
+        assert resumed.stems["avery"] == first.stems["avery"]
+        after_segment = AudioSegment.from_file(stem_path)
+        after_rms = after_segment.rms
+        assert after_rms > 0, f"resume overwrote {len(before)} bytes of recorded speech with a silent stem"
+        # Re-rendered from the checkpointed stem — one more mp3 generation, so
+        # not byte-identical: the same speech, same length, still audible. (The
+        # fixture's +/-8000 alternating samples are a 12kHz tone that mp3 at
+        # 24kHz mostly filters, so absolute levels here are tiny either way.)
+        before_segment = AudioSegment.from_file(BytesIO(before))
+        assert after_rms > before_segment.rms * 0.5
+        assert len(after_segment) == pytest.approx(len(before_segment), abs=60)
+
+    async def test_a_legacy_duplex_checkpoint_keeps_the_exported_stem_rather_than_silencing_it(
+        self, rundown, media_dir, stub_duplex, caplog
+    ):
+        from pydub import AudioSegment
+
+        first = await sim.simulate_podcast(
+            sim.SimulationBrief(rundown=rundown, model="gpt-live-1", qc=False, stems=True, run_id="legacy")
+        )
+        # A checkpoint from before stems were kept: strip the stem entries and files.
+        meta_path = media_dir / "Duplex_Test_legacy_act1.json"
+        meta = json.loads(meta_path.read_text())
+        for name in meta.pop("stems").values():
+            (media_dir / name).unlink()
+        meta.pop("stem_sha256")
+        meta_path.write_text(json.dumps(meta))
+        stem_path = media_dir / first.stems["avery"]
+        before = stem_path.read_bytes()
+
+        with caplog.at_level("WARNING", logger="sanzaru"):
+            resumed = await sim.simulate_podcast(
+                sim.SimulationBrief(resume=True, run_id="legacy", qc=False, stems=True)
+            )
+
+        assert resumed.acts[0].reused
+        assert stem_path.read_bytes() == before
+        assert AudioSegment.from_file(stem_path).rms > 0
+        assert resumed.stems["avery"] == first.stems["avery"]
+        assert first.stems["avery"] in caplog.text and "keeping the existing file" in caplog.text
+
+    async def test_a_swapped_checkpoint_stem_is_caught(self, rundown, media_dir, stub_duplex, caplog):
+        await sim.simulate_podcast(sim.SimulationBrief(rundown=rundown, model="gpt-live-1", qc=False, run_id="swap"))
+        (media_dir / "Duplex_Test_swap_act1_stem_rory.mp3").write_bytes(
+            (media_dir / "Duplex_Test_swap_act1_stem_avery.mp3").read_bytes()
+        )
+        stub_duplex.clear()
+        with caplog.at_level("WARNING", logger="sanzaru"):
+            await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="swap", qc=False))
+        # Not shipped: the act was re-recorded instead.
+        assert stub_duplex == ["act1"]
+        assert "does not match the digest" in caplog.text
 
     async def test_live_mode_is_restored_from_the_manifest(self, rundown, media_dir, stub_duplex):
         await sim.simulate_podcast(
