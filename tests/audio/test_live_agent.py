@@ -593,7 +593,9 @@ class TestCuedBudgetCountsListeners:
         a = fake_live.Connection(seconds=0.3, usage_seconds=[20.0, 40.0], final_usage_seconds=45.0)
         b = fake_live.Connection(seconds=0.3, usage_seconds=[20.0], final_usage_seconds=30.0)
         factory, _ = connect_factory(a, b)
-        settings = SimulationSettings(model="gpt-live-1", turn_seconds=5.0, live_turn_silence_s=SILENCE)
+        settings = SimulationSettings(
+            model="gpt-live-1", turn_seconds=5.0, live_turn_silence_s=SILENCE, live_mode="cued"
+        )
         budget = CostBudget(limit_usd=10.0)
 
         result = await run_act(brief, hosts, settings, connect=factory, budget=budget)
