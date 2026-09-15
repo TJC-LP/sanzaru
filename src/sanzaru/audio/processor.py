@@ -20,39 +20,23 @@ from .constants import (
     safe_audio_format,
 )
 
-# pydub hands `format` to ffmpeg verbatim as `-f <format>` (its only aliases are
-# m4a→mp4 and wave→wav), and these container extensions are not demuxer names:
-# `ffmpeg -f opus` is "Unknown format". Verified with `ffmpeg -h demuxer=<name>`
-# against ffmpeg 8.0.1. Every target is itself a self-contained container
-# demuxer — none reads other files — so this table cannot reintroduce the
-# playlist class that `safe_audio_format` exists to keep out.
-_DEMUXER_FOR_EXTENSION: dict[str, str] = {
-    "aif": "aiff",
-    "aifc": "aiff",
-    "m4b": "mp4",
-    "mka": "matroska",
-    "mpga": "mp3",
-    "oga": "ogg",
-    "opus": "ogg",
-    "wma": "asf",
-}
-
 
 def demuxer_for(name_or_suffix: str) -> str:
     """Return the ffmpeg demuxer for an allowlisted audio filename or suffix.
 
-    Runs :func:`safe_audio_format` first, so a playlist extension (`.hls`,
-    `.concat`, `.m3u8`) is refused here and never reaches
-    ``AudioSegment.from_file``; then maps the extensions ffmpeg does not know
-    by that name onto the demuxer that actually reads them.
+    Thin alias over :func:`safe_audio_format`, which refuses a playlist
+    extension (`.hls`, `.concat`, `.m3u8`) so it never reaches
+    ``AudioSegment.from_file``, and maps the container extensions ffmpeg does
+    not know by that name (`.opus`, `.wma`, `.m4b`, ...) onto the demuxer that
+    reads them via `AUDIO_DEMUXER_BY_EXTENSION`. pydub hands `format` to ffmpeg
+    verbatim as `-f <format>`, so the returned name has to be a real demuxer.
 
     Raises:
     ------
         ValueError: If the extension is outside `DECODABLE_AUDIO_EXTENSIONS`.
 
     """
-    ext = safe_audio_format(name_or_suffix)
-    return _DEMUXER_FOR_EXTENSION.get(ext, ext)
+    return safe_audio_format(name_or_suffix)
 
 
 class AudioProcessor:
