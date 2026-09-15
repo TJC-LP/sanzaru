@@ -66,6 +66,7 @@ from ..audio.realtime import (
     run_act,
 )
 from ..audio.realtime.mixdown import (
+    MixedBlock,
     TimelineItem,
     decode_to_pcm,
     encode_pcm,
@@ -84,6 +85,7 @@ from ..audio.realtime.types import (
     MAX_TURN_TOKENS,
     Bitrate,
     Filename,
+    LiveMode,
     RunId,
     extension_cap,
 )
@@ -131,6 +133,12 @@ class SimulationBrief(BaseModel):
     turn_timeout_s: float = Field(default=0.0, ge=0, le=3600.0)
     """Wall clock a single turn may take before the act is declared stalled.
     0 → SANZARU_REALTIME_TURN_TIMEOUT, else derived from `turn_seconds`."""
+    live_mode: LiveMode = "duplex"
+    """gpt-live hosts only. `duplex`: every host hears every other host
+    continuously and they take turns themselves, steered by silent producer
+    notes; the act is a live mix. `cued`: one host at a time is cued by the
+    producer (the Realtime loop). A table mixing Realtime and Live hosts is
+    always cued. Ignored for Realtime models."""
 
     max_concurrent_sessions: int = Field(default=0, ge=0, le=64)
     """0 → SANZARU_REALTIME_MAX_SESSIONS, else DEFAULT_MAX_SESSIONS."""
@@ -386,6 +394,9 @@ _SIGNED_BRIEF_FIELDS: tuple[str, ...] = (
     "turn_seconds",
     "turn_tokens",
     "turn_timeout_s",
+    # Added while signature v2 was still unreleased, so no bump: it changes what
+    # gets recorded (a live mix vs cued turns), which is the signing criterion.
+    "live_mode",
     "max_concurrent_sessions",
     "act_gap_ms",
     "intro_silence_ms",
@@ -483,6 +494,12 @@ class ActCheckpoint(_SignedRecord):
     prices). Empty on a checkpoint written before the field existed; such an
     act replays at the dearest billable model, erring closed. Signed, for the
     same reason `usage` is: it is exactly what the restored ceiling counts."""
+    mode: str = "turns"
+    """`turns`: the mp3 is the turns concatenated and slices back into them by
+    duration. `duplex`: the mp3 is a live mix of overlapping hosts; the turns
+    describe it but cannot be cut from it, so a resumed duplex act carries the
+    mix whole and no per-host stems."""
+    collision_seconds: float = 0.0
 
     def signed_fields(self) -> list[object]:
         return [
@@ -490,6 +507,7 @@ class ActCheckpoint(_SignedRecord):
             self.act_id,
             self.audio_sha256,
             self.stop_reason,
+            self.mode,
             [getattr(self.usage, name) for name in _SIGNED_USAGE_FIELDS],
             [
                 [model, [getattr(usage, name) for name in _SIGNED_USAGE_FIELDS]]
@@ -974,7 +992,12 @@ async def _load_checkpoint(
         # reachable — and a zero-audio act both fail here rather than at the
         # read, and one bad act must not make every later --resume exit 1.
         pcm = await anyio.to_thread.run_sync(decode_to_pcm, mp3, "mp3")
-        parts = await anyio.to_thread.run_sync(slice_pcm_by_durations, pcm, [t.seconds for t in meta.turns])
+        if meta.mode == "duplex":
+            if not pcm:
+                raise ValueError("duplex checkpoint decoded to no audio")
+            parts = [b"" for _ in meta.turns]
+        else:
+            parts = await anyio.to_thread.run_sync(slice_pcm_by_durations, pcm, [t.seconds for t in meta.turns])
     except Exception as exc:  # noqa: BLE001 — a corrupt checkpoint just means re-record
         logger.warning("Checkpoint for %s unusable (%s) - re-recording", brief_act.id, exc)
         return None
@@ -985,6 +1008,8 @@ async def _load_checkpoint(
         usage=meta.usage,
         usage_by_model=dict(meta.usage_by_model),
         stop_reason=meta.stop_reason,
+        mixed_pcm=pcm if meta.mode == "duplex" else None,
+        collision_seconds=meta.collision_seconds,
     )
     return _RecordedAct(
         brief=brief_act,
@@ -992,7 +1017,7 @@ async def _load_checkpoint(
         mp3=mp3,
         reused=True,
         checkpoint=audio_name,
-        turn_pcm=parts,
+        turn_pcm=[] if meta.mode == "duplex" else parts,
     )
 
 
@@ -1031,7 +1056,7 @@ async def _record_act(
             ),
         )
 
-    turn_pcm = [ta.pcm for ta in result.audio]
+    turn_pcm = [] if result.is_mixed else [ta.pcm for ta in result.audio]
     mp3 = await anyio.to_thread.run_sync(encode_pcm, result.join_pcm(), "mp3", brief.output_bitrate)
 
     audio_name = _act_audio_name(slug, run_id, act.id)
@@ -1044,6 +1069,8 @@ async def _record_act(
         turns=result.turns,
         run_id=run_id,
         audio_sha256=hashlib.sha256(mp3).hexdigest(),
+        mode="duplex" if result.is_mixed else "turns",
+        collision_seconds=result.collision_seconds,
     )
     # A checkpoint is two files, and `_load_checkpoint` requires both. A sibling
     # act failing — the cost ceiling, a stalled turn — cancels this task group at
@@ -1189,8 +1216,19 @@ def _build_timeline(
     if intro_ms > 0:
         timeline.append((None, pcm_silence(intro_ms)))
     for index, act in enumerate(recorded):
-        for turn_audio, pcm in zip(act.result.audio, act.turn_pcm, strict=False):
-            timeline.append((turn_audio.turn.speaker_id, pcm))
+        if act.result.is_mixed:
+            # Overlapping hosts: one block, each stem aligned to the mix. A
+            # resumed duplex act has no stems on disk, so its block is silence
+            # on every stem — the master still lines up.
+            if act.reused:
+                logger.warning(
+                    "act %s was resumed from a duplex checkpoint: its stems are silent (only the mix is on disk)",
+                    act.result.act_id,
+                )
+            timeline.append(MixedBlock(len(act.result.mixed_pcm or b""), dict(act.result.stems)))
+        else:
+            for turn_audio, pcm in zip(act.result.audio, act.turn_pcm, strict=False):
+                timeline.append((turn_audio.turn.speaker_id, pcm))
         if gap and index < len(recorded) - 1:
             timeline.append((None, gap))
     if outro_ms > 0:
@@ -1217,6 +1255,8 @@ def _summaries(recorded: Sequence[_RecordedAct]) -> list[ActSummary]:
             truncated_turns=sum(1 for t in act.result.turns if t.truncated),
             usage=act.result.usage,
             reused=act.reused,
+            mode="duplex" if act.result.is_mixed else "turns",
+            collision_seconds=act.result.collision_seconds,
         )
         for act in recorded
     ]
@@ -1398,6 +1438,7 @@ async def simulate_podcast(
         max_turn_tokens=effective.turn_tokens,
         turn_seconds=effective.turn_seconds,
         turn_timeout_s=effective.turn_timeout_s,
+        live_mode=effective.live_mode,
     )
     resume_command = f"sanzaru podcast simulate --resume {run_id}"
 

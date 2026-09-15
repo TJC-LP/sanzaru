@@ -389,6 +389,15 @@ async def podcast_rundown(
         "gpt-live-1: full-duplex Live API, $0.05/min per host, experimental."
     ),
 )
+@click.option(
+    "--live-mode",
+    type=click.Choice(["duplex", "cued"]),
+    default=None,
+    help=(
+        "gpt-live-1 only. duplex [default]: hosts hear each other continuously and take turns themselves, "
+        "steered by silent producer notes. cued: one host is cued at a time (the Realtime loop)."
+    ),
+)
 @click.option("--planner-model", default=None, help="Text model for pre-production [default: gpt-5.5].")
 @click.option("--turn-seconds", type=float, default=None, help="Target upper bound per turn [default: 15].")
 @click.option(
@@ -459,6 +468,7 @@ async def podcast_simulate(
     style: str | None,
     hosts: tuple[str, ...],
     model: str | None,
+    live_mode: str | None,
     planner_model: str | None,
     turn_seconds: float | None,
     turn_tokens: int | None,
@@ -548,6 +558,7 @@ async def podcast_simulate(
         ("title", title),
         ("style", style),
         ("model", model),
+        ("live_mode", live_mode),
         ("planner_model", planner_model),
         ("turn_seconds", turn_seconds),
         ("turn_tokens", turn_tokens),
