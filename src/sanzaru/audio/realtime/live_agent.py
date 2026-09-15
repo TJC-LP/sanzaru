@@ -540,7 +540,7 @@ class LiveAgent:
                 logger.warning(
                     "%s: no speech within %.1fs of the cue - recording an empty turn", self.name, self._start_wait_s
                 )
-                return SpokenTurn(pcm=b"", text="", usage=self._take_usage(), truncated=False)
+                return SpokenTurn(pcm=b"", text="", usage=self.take_usage(), truncated=False)
 
             # Set by the reader on the first speech frame, which the wait above
             # saw; fixed for the rest of the turn.
@@ -572,7 +572,7 @@ class LiveAgent:
         # The turn is over when everyone has heard it: a listener cued with
         # this speech still queued in front of it would answer too early.
         await self._wait_for_listeners()
-        return SpokenTurn(pcm=pcm, text=text, usage=self._take_usage(), truncated=truncated)
+        return SpokenTurn(pcm=pcm, text=text, usage=self.take_usage(), truncated=truncated)
 
     async def _wait_for_frame(self, timeout: float) -> bool:
         """True when the next on-floor output frame lands, False after `timeout`."""
@@ -601,8 +601,15 @@ class LiveAgent:
         wall = 0.0 if self._started_at is None else time.monotonic() - self._started_at
         return max(self._reported_seconds, wall)
 
-    def _take_usage(self) -> RealtimeUsage:
-        """Billable seconds since the last time this was called."""
+    def take_usage(self) -> RealtimeUsage:
+        """Billable seconds since the last time this was called.
+
+        The one accounting seam: `speak()` takes it for the speaker's turn, the
+        producer takes it for every *listening* Live host after each turn (a
+        session bills while it listens, and a ceiling that only saw speakers
+        let listeners run past it), and `finish()` takes what is left. Each
+        call moves the mark, so no second is charged twice.
+        """
         total = self._billable_seconds()
         delta = max(0.0, total - self._billed_seconds)
         self._billed_seconds = total
@@ -632,4 +639,4 @@ class LiveAgent:
                 self.name,
                 self.off_floor_seconds,
             )
-        return self._take_usage()
+        return self.take_usage()

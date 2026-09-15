@@ -769,7 +769,7 @@ async def run_act(
                         truncated=spoken.truncated,
                     )
                     result.audio.append(TurnAudio(turn=turn, pcm=spoken.pcm))
-                    result.usage = result.usage + spoken.usage
+                    result.add_usage(agent.model, spoken.usage)
                     logger.debug("%s turn %d [%s] %.1fs", brief.id, turn_index + 1, agent.name, turn.seconds)
                     if on_turn is not None:
                         on_turn(turn)
@@ -793,6 +793,21 @@ async def run_act(
                     else:
                         for other in listeners:
                             await other.hear(spoken.pcm)
+
+                    # A Live session bills while it listens, not only while it
+                    # speaks. Charging the speaker alone let every other Live
+                    # host run up session-seconds that the ceiling never saw
+                    # until that host's own next turn — so a run could start a
+                    # turn already over its limit. Charge what each listener has
+                    # accrued *now*, before deciding on another turn. The
+                    # speaker's own seconds were taken by `speak()`; `finish()`
+                    # takes only what is left after this.
+                    for other in agents:
+                        if other is not agent and isinstance(other, LiveAgent):
+                            listening = other.take_usage()
+                            result.add_usage(other.model, listening)
+                            if budget is not None:
+                                budget.charge(listening, other.model)
             except TimeoutError as exc:
                 raise RealtimeAPIError(
                     f"{brief.id}: {agent.name}'s turn {turn_index + 1} made no progress for "
@@ -810,7 +825,7 @@ async def run_act(
         for agent in agents:
             if isinstance(agent, LiveAgent):
                 tail = await agent.finish()
-                result.usage = result.usage + tail
+                result.add_usage(agent.model, tail)
                 if budget is not None:
                     budget.charge(tail, agent.model)
 

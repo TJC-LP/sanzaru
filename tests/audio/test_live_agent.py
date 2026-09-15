@@ -31,7 +31,7 @@ from sanzaru.audio.realtime.types import (
     RealtimeUsage,
     is_live_model,
 )
-from sanzaru.exceptions import RealtimeAPIError
+from sanzaru.exceptions import CostCeilingError, RealtimeAPIError
 
 pytestmark = pytest.mark.audio
 
@@ -566,3 +566,41 @@ class TestRunActRouting:
 
         producer._default_connect("gpt-realtime-2.1")
         client.realtime.connect.assert_called_once_with(model="gpt-realtime-2.1")
+
+
+class TestCuedBudgetCountsListeners:
+    """A Live session bills while it listens; the ceiling has to see that between turns."""
+
+    async def test_listening_hosts_are_charged_before_another_turn_starts(
+        self, fake_live, connect_factory, brief, hosts, monkeypatch
+    ):
+        # Both sessions have accrued a minute — the listener as much as the
+        # speaker — so after Avery's turn the table stands at 2 x $0.05.
+        monkeypatch.setattr(LiveAgent, "_billable_seconds", lambda self: 60.0)
+        a = fake_live.Connection(seconds=0.3)
+        b = fake_live.Connection(seconds=0.3)
+        factory, _ = connect_factory(a, b)
+        settings = SimulationSettings(model="gpt-live-1", turn_seconds=5.0, live_turn_silence_s=SILENCE)
+
+        with pytest.raises(CostCeilingError):
+            await run_act(brief, hosts, settings, connect=factory, budget=CostBudget(limit_usd=0.075))
+
+        assert b.turn == 0, "a second turn started with $0.10 already accrued against a $0.075 ceiling"
+
+    async def test_the_checkpoint_view_matches_what_the_budget_saw(self, fake_live, connect_factory, brief, hosts):
+        a = fake_live.Connection(seconds=0.3, usage_seconds=[20.0, 40.0], final_usage_seconds=45.0)
+        b = fake_live.Connection(seconds=0.3, usage_seconds=[20.0], final_usage_seconds=30.0)
+        factory, _ = connect_factory(a, b)
+        settings = SimulationSettings(model="gpt-live-1", turn_seconds=5.0, live_turn_silence_s=SILENCE)
+        budget = CostBudget(limit_usd=10.0)
+
+        result = await run_act(brief, hosts, settings, connect=factory, budget=budget)
+
+        # Listening charges, turn charges and the tail all land in both views,
+        # and nothing is charged twice: the per-model slices price to exactly
+        # the budget's total, and sum to the pooled usage.
+        assert set(result.usage_by_model) == {"gpt-live-1"}
+        assert result.usage_by_model["gpt-live-1"].live_seconds == pytest.approx(result.usage.live_seconds)
+        assert result.usage.live_seconds == pytest.approx(75.0)
+        priced = sum(usage_cost(u, m) or 0.0 for m, u in result.usage_by_model.items())
+        assert priced == pytest.approx(budget.spent_usd)

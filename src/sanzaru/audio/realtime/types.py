@@ -481,6 +481,14 @@ class ActResult:
     act_id: str
     audio: list[TurnAudio] = field(default_factory=list)
     usage: RealtimeUsage = field(default_factory=RealtimeUsage)
+    """Everything the act consumed, all hosts pooled. For display."""
+    usage_by_model: dict[str, RealtimeUsage] = field(default_factory=dict)
+    """The same usage split by the model it was billed to — what the cost
+    ceiling actually charged, slice by slice. A table can mix a token-billed
+    Realtime host with a duration-billed Live host, and one pooled
+    `RealtimeUsage` priced at any single model drops the other's cost; this is
+    what lets a resumed run replay the act's spend exactly. Always populate it
+    through `add_usage`, so the two views cannot drift."""
     stop_reason: str = "complete"
     """Why the act ended:
 
@@ -496,6 +504,11 @@ class ActResult:
 
     A cost abort is not one of these — `CostCeilingError` cancels the act rather
     than ending it, so no result is ever built for it."""
+
+    def add_usage(self, model: str, usage: RealtimeUsage) -> None:
+        """Record usage billed to `model`, in both the pooled and the per-model view."""
+        self.usage = self.usage + usage
+        self.usage_by_model[model] = self.usage_by_model.get(model, RealtimeUsage()) + usage
 
     @property
     def turns(self) -> list[Turn]:
