@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MIT
 """Integration tests for video tools with mocked OpenAI client."""
 
+from collections.abc import Awaitable, Callable
+
 import pytest
 
 from sanzaru.storage.local import LocalStorageBackend
@@ -201,13 +203,17 @@ async def test_create_video_with_reference_image_mime_types(mocker, mock_video_q
 
 # ==================== Resource ID Validation ====================
 
-# Every one of these reaches the SDK as a raw path segment, so a traversing id
-# is not a failed lookup — it is a different, authenticated endpoint. Keyed by
-# name so a failure says which sink lost its guard.
-_ID_SINKS = {
-    "get_video_status": lambda video_id: get_video_status(video_id),
+# Every one of these puts the id in a request path. The pinned SDK
+# percent-encodes the segment, so a traversing id is a failed lookup, not a
+# different endpoint; the guard is defence in depth that keeps that true
+# without the SDK, and these tests pin that it fires before any client or
+# storage is built. Keyed by name so a failure says which sink lost its guard.
+# The list is deliberately sink-specific (the DELETE /models case has no image
+# analogue), which is why it is not shared with test_image_tools.py.
+_ID_SINKS: dict[str, Callable[[str], Awaitable[object]]] = {
+    "get_video_status": get_video_status,
     "download_video": lambda video_id: download_video(video_id, filename="loot.bin"),
-    "delete_video": lambda video_id: delete_video(video_id),
+    "delete_video": delete_video,
     "remix_video": lambda video_id: remix_video(video_id, "new prompt"),
 }
 
@@ -217,8 +223,9 @@ _ID_SINKS = {
 @pytest.mark.parametrize(
     "video_id",
     [
+        # What each would reach if the segment ever went unencoded:
         "../files/file-XYZ/content?",  # GET /v1/files/file-XYZ/content -> any org file into VIDEO_PATH
-        "../files?",  # reflects the org file listing back to the caller
+        "../files?",  # the org file listing, reflected back to the caller
         "../models/ft:gpt-4.1:org:custom",  # DELETE against a fine-tuned model
         "vid_123/content",
         "vid_123?limit=100",

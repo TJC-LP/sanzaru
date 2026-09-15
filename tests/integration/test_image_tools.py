@@ -2,6 +2,7 @@
 """Integration tests for image generation tools with mocked OpenAI client."""
 
 import base64
+from collections.abc import Awaitable, Callable
 
 import pytest
 
@@ -217,10 +218,14 @@ async def test_image_download(mocker, tmp_reference_path):
 
 # ==================== Resource ID Validation ====================
 
-# GET /responses/{response_id} is f-string-interpolated with no encoding, so the
-# id selects the endpoint. Keyed by name so a failure names the unguarded sink.
-_ID_SINKS = {
-    "get_image_status": lambda response_id: get_image_status(response_id),
+# GET /responses/{response_id} takes the id as a path segment. The pinned SDK
+# percent-encodes it; the guard is defence in depth so that stays true without
+# the SDK, and these tests pin that it fires before any client or storage is
+# built. create_image sends the id in the body, not the path — it is here
+# because a caller-minted id fails the same way at every entry point. Keyed by
+# name so a failure names the unguarded sink.
+_ID_SINKS: dict[str, Callable[[str], Awaitable[object]]] = {
+    "get_image_status": get_image_status,
     "download_image": lambda response_id: download_image(response_id, filename="loot.bin"),
     "create_image": lambda response_id: create_image("a cat", previous_response_id=response_id),
 }

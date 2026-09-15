@@ -356,3 +356,41 @@ def test_capabilities_quota_failure_is_reported_not_raised(mocker):
     quota = json.loads(result.stdout)["result"]["elevenlabs_quota"]
     assert quota["available"] is False
     assert "ELEVENLABS_API_KEY" in quota["reason"]
+
+
+# ==================== Resource id guard, end to end ====================
+
+_HOSTILE_ID = "../files/file-XYZ/content?"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "argv",
+    [
+        ["image", "status", _HOSTILE_ID],
+        ["image", "download", _HOSTILE_ID],
+        ["image", "create", "a cat", "--previous-id", _HOSTILE_ID],
+        ["image", "wait", _HOSTILE_ID],
+        ["wait", "--type", "image", _HOSTILE_ID],
+    ],
+    ids=["status", "download", "create-previous-id", "wait", "top-level-wait"],
+)
+def test_hostile_response_id_is_a_usage_error(mocker, argv):
+    """The guard's ValueError reaches the shell as exit 2 and a `usage` envelope.
+
+    Runs the real tool function (see the video counterpart for why); the
+    --previous-id case pins that a body-field id is refused the same way as a
+    path-segment one.
+    """
+    mock_get_client = mocker.patch("sanzaru.tools.image.get_client")
+    mock_get_storage = mocker.patch("sanzaru.tools.image.get_storage")
+
+    result = CliRunner().invoke(cli, argv)
+
+    assert result.exit_code == 2, result.stdout
+    parsed = json.loads(result.stdout)
+    assert parsed["ok"] is False
+    assert parsed["error"]["type"] == "usage"
+    assert "not a valid OpenAI resource id" in parsed["error"]["message"]
+    mock_get_client.assert_not_called()
+    mock_get_storage.assert_not_called()

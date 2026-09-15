@@ -112,8 +112,9 @@ async def create_image(
 
     Raises:
         RuntimeError: If OPENAI_API_KEY not set or IMAGE_PATH not configured
-        ValueError: If invalid filename, path traversal, mask without input_images,
-            or background="transparent" with gpt-image-2 (use gpt-image-1.5 instead)
+        ValueError: If previous_response_id is not a plain resource id, invalid filename,
+            path traversal, mask without input_images, or background="transparent" with
+            gpt-image-2 (use gpt-image-1.5 instead)
 
     Example tool_config:
         {
@@ -126,10 +127,13 @@ async def create_image(
         }
         # gpt-image-1.5 only: "input_fidelity": "high"/"low", "background": "transparent"
     """
-    # A body field here, not a path segment — but an id is an id, so it fails
-    # the same way on every entry point rather than only where it is exploitable.
+    # A body field here, not a path segment, so nothing about the request shape
+    # is at stake — but a caller-minted resource id fails the same way at every
+    # entry point, so a hostile value is refused before any request rather than
+    # only where it would matter. (list_videos' `after` cursor is the deliberate
+    # exception: the API mints it, the caller only echoes it back.)
     if previous_response_id is not None:
-        validate_resource_id(previous_response_id, "previous_response_id")
+        previous_response_id = validate_resource_id(previous_response_id, "previous_response_id")
 
     client = get_client()
     storage = get_storage()
@@ -252,9 +256,10 @@ async def get_image_status(response_id: str) -> ImageResponse:
         RuntimeError: If OPENAI_API_KEY not set
         ValueError: If response_id is not a plain resource id
     """
-    # GET /responses/{response_id} is built by unencoded f-string; see
-    # validate_resource_id for why that makes the id an endpoint selector.
-    validate_resource_id(response_id, "response_id")
+    # Defence in depth: the id is the path segment of GET /responses/{response_id}.
+    # The pinned SDK percent-encodes it; this guard keeps that property from
+    # resting on an SDK detail. See validate_resource_id.
+    response_id = validate_resource_id(response_id, "response_id")
     client = get_client()
     response = await client.responses.retrieve(response_id)
 
@@ -282,7 +287,8 @@ async def download_image(
         RuntimeError: If IMAGE_PATH not configured or OPENAI_API_KEY not set
         ValueError: If response_id is not a plain resource id, image generation not found, or invalid filename
     """
-    validate_resource_id(response_id, "response_id")
+    # Same path segment as get_image_status, same defence-in-depth guard.
+    response_id = validate_resource_id(response_id, "response_id")
     storage = get_storage()
 
     client = get_client()
