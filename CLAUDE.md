@@ -550,7 +550,7 @@ Set environment variables explicitly in `.mcp.json` using template variables:
 
 **For local development with .env files:**
 1. Run `./setup.sh` for interactive setup, or manually copy `.env.example` to `.env`
-2. Install dotenv: `uv add --dev python-dotenv`
+2. python-dotenv ships with sanzaru as a runtime dependency; nothing to install
 3. Run Claude with dotenv-cli to inject env vars: `npx dotenv-cli -- claude` (or `bunx dotenv-cli -- claude`)
 
 This approach makes environment configuration explicit and avoids confusion from implicit `.env` loading.
