@@ -329,7 +329,7 @@ sanzaru podcast simulate --resume 6f1a9c02
 | **Local** (default) | `SANZARU_MEDIA_PATH=/path/to/media` | Development, local deployments |
 | **Databricks** | `STORAGE_BACKEND=databricks` | Databricks Apps with Unity Catalog Volumes |
 
-The Databricks backend supports per-user storage isolation via the `user_context` module, enabling multi-tenant deployments where each user's media is stored under their own volume prefix.
+The Databricks backend supports per-user storage isolation via the `user_context` module, enabling multi-tenant deployments where each user's media is stored under their own volume prefix (`<local-part>-<hash>`, injective over email addresses; the prefix format changed after 0.10.0 — see CLAUDE.md for the migration note). Set `SANZARU_REQUIRE_USER_CONTEXT=1` on a shared deployment so a request with no identity is refused instead of served from the shared root.
 
 See [CLAUDE.md](CLAUDE.md) for full configuration details.
 

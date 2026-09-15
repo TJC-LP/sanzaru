@@ -16,7 +16,7 @@ from contextlib import asynccontextmanager
 import aiofiles
 
 from ..config import get_path
-from ..security import check_not_symlink, validate_safe_path
+from ..security import check_not_symlink, open_nofollow, validate_safe_path
 from .protocol import FileInfo, PathType
 
 logger = logging.getLogger("sanzaru")
@@ -72,7 +72,7 @@ class LocalStorageBackend:
     async def read(self, path_type: PathType, filename: str) -> bytes:
         self._check_symlink(path_type, filename)
         file_path = self._safe(path_type, filename)
-        async with aiofiles.open(file_path, "rb") as f:
+        async with aiofiles.open(file_path, "rb", opener=open_nofollow) as f:
             return await f.read()
 
     async def read_range(self, path_type: PathType, filename: str, offset: int, length: int) -> bytes:
@@ -80,19 +80,24 @@ class LocalStorageBackend:
             raise ValueError(f"offset must be non-negative, got {offset}")
         self._check_symlink(path_type, filename)
         file_path = self._safe(path_type, filename)
-        async with aiofiles.open(file_path, "rb") as f:
+        async with aiofiles.open(file_path, "rb", opener=open_nofollow) as f:
             await f.seek(offset)
             return await f.read(length)
 
     async def write(self, path_type: PathType, filename: str, data: bytes) -> str:
+        # Pre-open check on the write side too. On POSIX `open_nofollow` would
+        # catch a planted link anyway; where O_NOFOLLOW does not exist this
+        # check is the only thing between a "wb" open and the link's target.
+        self._check_symlink(path_type, filename)
         file_path = self._safe(path_type, filename, allow_create=True)
-        async with aiofiles.open(file_path, "wb") as f:
+        async with aiofiles.open(file_path, "wb", opener=open_nofollow) as f:
             await f.write(data)
         return str(file_path)
 
     async def write_stream(self, path_type: PathType, filename: str, chunks: AsyncIterator[bytes]) -> str:
+        self._check_symlink(path_type, filename)
         file_path = self._safe(path_type, filename, allow_create=True)
-        async with aiofiles.open(file_path, "wb") as f:
+        async with aiofiles.open(file_path, "wb", opener=open_nofollow) as f:
             async for chunk in chunks:
                 await f.write(chunk)
         return str(file_path)
@@ -155,7 +160,19 @@ class LocalStorageBackend:
 
     @asynccontextmanager
     async def local_tempfile(self, path_type: PathType, filename: str):
-        """Yield the actual destination path (no temp file needed)."""
+        """Yield the actual destination path (no temp file needed).
+
+        The symlink check that `local_path` has is needed here more, not less:
+        this is the *write* side, and the caller (pydub, `shutil.copyfile`, PIL)
+        opens the path itself, so `open_nofollow` never gets a say. Without it a
+        link planted at the destination was written straight through.
+
+        This closes the pre-planted case only. A link introduced between here
+        and the caller's open is still a race this cannot win — the opener is
+        third-party code. `validate_safe_path` bounds the damage in that window
+        to somewhere inside the media directory.
+        """
+        self._check_symlink(path_type, filename)
         file_path = self._safe(path_type, filename, allow_create=True)
         yield file_path
 

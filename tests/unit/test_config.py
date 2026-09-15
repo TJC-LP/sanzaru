@@ -183,6 +183,22 @@ class TestGetPathErrorCases:
         with pytest.raises(RuntimeError, match="cannot be a symbolic link"):
             get_path("reference")
 
+    def test_dangling_symlink_subdir_rejected_not_created_through(self, mocker, tmp_path):
+        """`exists() and is_symlink()` answered False for a broken link, so the
+        auto-create branch then mkdir'ed the link's target *through* it and the
+        videos dir ended up wherever the link pointed."""
+        media_root = tmp_path / "media"
+        media_root.mkdir()
+        target = tmp_path / "elsewhere"
+        (media_root / "videos").symlink_to(target)
+        assert not (media_root / "videos").exists()
+
+        mocker.patch.dict(os.environ, {"SANZARU_MEDIA_PATH": str(media_root)}, clear=True)
+
+        with pytest.raises(RuntimeError, match="cannot be a symbolic link"):
+            get_path("video")
+        assert not target.exists()
+
 
 @pytest.mark.unit
 class TestGetPathEdgeCases:

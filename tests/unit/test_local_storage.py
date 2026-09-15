@@ -5,6 +5,7 @@ import pathlib
 
 import pytest
 
+from sanzaru.security import O_NOFOLLOW
 from sanzaru.storage.local import LocalStorageBackend
 from sanzaru.storage.protocol import FileInfo, StorageBackend
 
@@ -413,3 +414,127 @@ async def test_list_files_stays_directory_wide(tmp_path):
     backend = LocalStorageBackend(path_overrides={"audio": a}, file_overrides={("audio", "elsewhere.mp3"): b})
 
     assert [f.name for f in await backend.list_files("audio")] == ["here.mp3"]
+
+
+@pytest.mark.unit
+@pytest.mark.skipif(not O_NOFOLLOW, reason="the swap defence is O_NOFOLLOW; see TestPlantedSymlinksAreRefused")
+class TestSymlinkSwapCannotEscapeTheMediaDir:
+    """Containment is checked, then the file is opened by name — not atomic.
+
+    A symlink already in place at validation time is caught by
+    `validate_safe_path` resolving out of the base directory. The gap is the
+    window *after* that: an attacker with write access inside the media dir
+    renames a symlink onto the validated name before the open, and the server
+    reads or truncates whatever it points at (CWE-367). These tests reproduce
+    that ordering exactly — validation succeeds against a clean name, the swap
+    lands, and O_NOFOLLOW is what has to refuse.
+    """
+
+    @pytest.fixture
+    def media(self, tmp_path):
+        path = tmp_path / "audio"
+        path.mkdir()
+        return path
+
+    @staticmethod
+    def _win_the_race(mocker, media, filename, target):
+        """Let validation pass, then plant the symlink before the open."""
+        real = media / filename
+
+        def validate_then_swap(base, name, *, allow_create=False):
+            real.symlink_to(target)
+            return real
+
+        mocker.patch("sanzaru.storage.local.check_not_symlink")
+        mocker.patch("sanzaru.storage.local.validate_safe_path", side_effect=validate_then_swap)
+
+    async def test_a_write_cannot_follow_a_swapped_in_symlink(self, media, tmp_path, mocker):
+        storage = LocalStorageBackend(path_overrides={"audio": media})
+        victim = tmp_path / "victim.txt"
+        victim.write_text("original")
+        self._win_the_race(mocker, media, "out.mp3", victim)
+
+        with pytest.raises(ValueError, match="Refusing to follow a symbolic link"):
+            await storage.write("audio", "out.mp3", b"attacker bytes")
+
+        assert victim.read_text() == "original"
+
+    async def test_a_read_cannot_follow_a_swapped_in_symlink(self, media, tmp_path, mocker):
+        storage = LocalStorageBackend(path_overrides={"audio": media})
+        secret = tmp_path / "secret.txt"
+        secret.write_text("private")
+        self._win_the_race(mocker, media, "clip.mp3", secret)
+
+        with pytest.raises(ValueError, match="Refusing to follow a symbolic link"):
+            await storage.read("audio", "clip.mp3")
+
+    async def test_a_dangling_symlink_is_not_created_through(self, media, tmp_path, mocker):
+        """The write case the old `exists() and is_symlink()` guard let through."""
+        storage = LocalStorageBackend(path_overrides={"audio": media})
+        target = tmp_path / "not_yet.txt"
+        self._win_the_race(mocker, media, "out.mp3", target)
+
+        with pytest.raises(ValueError, match="Refusing to follow a symbolic link"):
+            await storage.write("audio", "out.mp3", b"data")
+
+        assert not target.exists()
+
+    async def test_ordinary_files_still_round_trip(self, media):
+        storage = LocalStorageBackend(path_overrides={"audio": media})
+        await storage.write("audio", "fine.mp3", b"hello")
+        assert await storage.read("audio", "fine.mp3") == b"hello"
+
+
+@pytest.mark.unit
+class TestPlantedSymlinksAreRefusedBeforeTheOpen:
+    """The other layer, unmocked: a link already in place when the call starts.
+
+    `TestSymlinkSwapCannotEscapeTheMediaDir` mocks out both validators to show
+    what O_NOFOLLOW contributes on its own. These keep the pre-open check pinned
+    independently — it is the only defence on a platform without O_NOFOLLOW,
+    which is why `write`/`write_stream` call it and not just the readers. The
+    link's target sits *inside* the media dir so `validate_safe_path` accepts
+    it; only the symlink check can refuse.
+    """
+
+    @pytest.fixture
+    def media(self, tmp_path):
+        path = tmp_path / "audio"
+        path.mkdir()
+        return path
+
+    @pytest.fixture
+    def planted(self, media):
+        victim = media / "simrun_abcd1234.json"
+        victim.write_bytes(b'{"manifest": true}')
+        (media / "out.mp3").symlink_to(victim)
+        return victim
+
+    async def test_write_refuses_a_planted_link(self, media, planted):
+        storage = LocalStorageBackend(path_overrides={"audio": media})
+        with pytest.raises(ValueError, match="cannot be a symbolic link"):
+            await storage.write("audio", "out.mp3", b"attacker")
+        assert planted.read_bytes() == b'{"manifest": true}'
+
+    async def test_write_stream_refuses_a_planted_link(self, media, planted):
+        storage = LocalStorageBackend(path_overrides={"audio": media})
+
+        async def chunks():
+            yield b"attacker"
+
+        with pytest.raises(ValueError, match="cannot be a symbolic link"):
+            await storage.write_stream("audio", "out.mp3", chunks())
+        assert planted.read_bytes() == b'{"manifest": true}'
+
+    async def test_read_refuses_a_planted_link(self, media, planted):
+        storage = LocalStorageBackend(path_overrides={"audio": media})
+        with pytest.raises(ValueError, match="cannot be a symbolic link"):
+            await storage.read("audio", "out.mp3")
+
+    async def test_write_is_refused_even_without_o_nofollow(self, media, planted, mocker):
+        """What Windows gets: the opener is a no-op there, so the pre-check has to hold alone."""
+        mocker.patch("sanzaru.security.O_NOFOLLOW", 0)
+        storage = LocalStorageBackend(path_overrides={"audio": media})
+        with pytest.raises(ValueError, match="cannot be a symbolic link"):
+            await storage.write("audio", "out.mp3", b"attacker")
+        assert planted.read_bytes() == b'{"manifest": true}'
