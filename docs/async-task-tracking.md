@@ -24,7 +24,7 @@ Why we're not using it (as of this writing):
 - **Experimental and unstable.** Tasks were subsequently **removed from the MCP spec**, and
   the experimental Tasks API is **scheduled for removal in the `mcp` 2.0 Python SDK**. It is
   expected to return later as a separate MCP extension.
-- **Not in the SDK we use.** Sanzaru runs on the **official `mcp` SDK** (`mcp.server.fastmcp`).
+- **Not in the SDK we use.** Sanzaru runs on the **official `mcp` SDK** (`mcp.server.mcpserver`).
   The ergonomic `@tool(task=True)` decorator lives only in the *standalone* `fastmcp` package
   (v2.14+/v3), which would be a framework migration, not a drop-in.
 - **No client benefit yet.** Native tasks only help when the consuming client also implements

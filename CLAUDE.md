@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A stateless FastMCP server wrapping OpenAI's Sora Video API and Responses API (image generation). Supports both stdio (for MCP clients) and HTTP streaming (for web clients) transports. Exposes MCP tools for async video/image generation with polling-based workflows.
+A stateless MCP server (`mcp.server.mcpserver.MCPServer`, mcp SDK 2.x, protocol 2026-07-28) wrapping OpenAI's Sora Video API and Responses API (image generation). Supports both stdio (for MCP clients) and HTTP streaming (for web clients) transports. Exposes MCP tools for async video/image generation with polling-based workflows.
 
 **Key Architecture Principles:**
 - **Stateless**: No database, no in-memory job tracking. All state lives in OpenAI's cloud.
@@ -59,7 +59,7 @@ The server is organized into focused modules for maintainability and code reuse:
 
 ```
 src/sanzaru/
-├── server.py           # FastMCP initialization & tool registration (run_server + argparse main shim)
+├── server.py           # MCPServer initialization & tool registration (run_server + argparse main shim)
 ├── polling.py          # wait_for_video/wait_for_image (neutral async wait loops, used by the CLI)
 ├── cli/                # Agent CLI (click): root group runs the server when no subcommand given
 │   ├── __init__.py     # `sanzaru` entry point (console script → sanzaru.cli:main)
@@ -122,7 +122,7 @@ src/sanzaru/
     └── media-viewer/   # React MCP App for media playback
 ```
 
-**server.py** registers all tools with FastMCP decorators and delegates to tool implementations
+**server.py** registers all tools with MCPServer decorators and delegates to tool implementations; the media viewer goes through the SDK's `Apps` extension so the server advertises `io.modelcontextprotocol/ui`
 **types.py** defines all return types (DownloadResult, VideoSummary, etc.)
 **config.py** provides `get_client()` and `get_path()` with validation
 **security.py** provides reusable functions: `validate_safe_path()`, `check_not_symlink()`, `safe_open_file()`
@@ -152,7 +152,7 @@ back-compat for every existing config is guarded by tests. Key design points:
   concurrently, so there is no point at which it could be swapped. Two inputs of one type
   sharing a basename stay a usage error — the tool layer only ever sees bare names.
 - **Lazy imports**: command bodies import `sanzaru.tools.*` at call time so `sanzaru --help`
-  never pays the openai/FastMCP import cost (enforced by a startup-weight test); missing
+  never pays the openai/MCPServer import cost (enforced by a startup-weight test); missing
   optional extras surface as `config` envelopes (exit 3) with the install command.
 - CLI tests live in `tests/cli/` (CliRunner; mock at the `sanzaru.tools.*` layer).
 
@@ -492,7 +492,7 @@ they are easy to "simplify" away.
   used to come from `mimetypes.guess_type()` of a caller-chosen name, which made a
   stored `.html` an executable document in the server's own origin — the origin the
   MCP SDK's rebinding allowlist trusts for `/mcp`. It also applies the same
-  Host/Origin policy as `/mcp` by hand, because FastMCP appends custom routes
+  Host/Origin policy as `/mcp` by hand, because the SDK appends custom routes
   outside that middleware.
 - **HTTP mode requires a bearer token on a non-loopback bind.** The Host allowlist
   is not authentication — a network peer writes that header themselves.
@@ -870,9 +870,10 @@ from sanzaru.server import build_http_app
 app = build_http_app(host="0.0.0.0", port=8000)
 app = CORSMiddleware(app, allow_origins=["https://client.example"], expose_headers=["Mcp-Session-Id"])
 ```
-Call it once per process, before anything else calls `mcp.streamable_http_app()`:
-FastMCP freezes the stateless flag and security settings into its session manager on
-the first call.
+It is safe to call more than once: mcp 2.x builds a fresh session manager on every
+`streamable_http_app()` call, with the stateless flag and Host/Origin policy passed as
+arguments rather than read from server settings (`mcp.settings.stateless_http` and
+`mcp.settings.transport_security` no longer exist — that is the 1.x API).
 
 **Note:** The `/media` route does not include CORS headers by default. If you need cross-origin access to media files (e.g., from a browser-based client), wrap with CORSMiddleware as shown above.
 

@@ -81,16 +81,13 @@ def server():
 
 @pytest.fixture
 def fresh_server_state(server, monkeypatch):
-    """Build from constructor state and leave nothing behind.
+    """Start from the loopback policy and leave nothing behind.
 
-    `build_http_app` rewrites `mcp.settings`, and FastMCP freezes the stateless
-    flag and security settings into a session manager it creates once per
-    process — whose `run()` is itself once-per-instance, so a second
-    `TestClient` lifespan on the same manager fails. Swapping in a copy of the
-    settings and an empty manager slot gives each test its own.
+    `build_http_app` rewrites the module-level Host/Origin policy that `/media`
+    reads at request time; mcp 2.x builds a fresh session manager on every
+    `streamable_http_app()` call, so that is the only process state to reset.
     """
-    monkeypatch.setattr(server.mcp, "settings", server.mcp.settings.model_copy(deep=True))
-    monkeypatch.setattr(server.mcp, "_session_manager", None)
+    monkeypatch.setattr(server, "_transport_security", server._LOOPBACK_TRANSPORT_SECURITY)
 
 
 def _rpc_result(response):
@@ -182,9 +179,7 @@ class TestBuildHttpAppAuthenticatesMcp:
         be revisited.
         """
         monkeypatch.setenv(HTTP_TOKEN_ENV, "s3cret")
-        server.mcp.settings.stateless_http = True
-
-        with TestClient(server.mcp.streamable_http_app()) as client:
+        with TestClient(server.mcp.streamable_http_app(stateless_http=True)) as client:
             assert client.post("/mcp", json=TOOLS_LIST, headers=MCP_HEADERS).status_code == 200
 
     def test_returns_a_starlette_app_ready_to_mount(self, server, fresh_server_state):
@@ -202,7 +197,7 @@ class TestBuildHttpAppAuthenticatesMcp:
         mocker.patch("sanzaru.server.get_storage", return_value=storage)
 
         app = server.build_http_app(host="127.0.0.1", port=3000)
-        assert server.mcp.settings.transport_security is server._DEFAULT_TRANSPORT_SECURITY
+        assert server.current_transport_security() is server._LOOPBACK_TRANSPORT_SECURITY
 
         with TestClient(app) as client:
             local = MCP_HEADERS | {"host": "127.0.0.1:3000"}
@@ -284,7 +279,7 @@ class TestNonLoopbackPolicy:
 
         app = server.build_http_app(host="0.0.0.0", port=8000)
 
-        policy = server.mcp.settings.transport_security
+        policy = server.current_transport_security()
         assert policy is not None
         assert policy.enable_dns_rebinding_protection is True
         assert policy.allowed_hosts == ["sanzaru.example.com", "sanzaru.example.com:*"]
@@ -323,7 +318,7 @@ class TestNonLoopbackPolicy:
 
         server.build_http_app(host="0.0.0.0", port=8000)
 
-        policy = server.mcp.settings.transport_security
+        policy = server.current_transport_security()
         assert policy is not None
         assert policy.allowed_origins == ["https://app.example", "https://staging.app.example"]
 
@@ -340,7 +335,7 @@ class TestNonLoopbackPolicy:
 
         app = server.build_http_app(host="0.0.0.0", port=8000)
 
-        policy = server.mcp.settings.transport_security
+        policy = server.current_transport_security()
         assert policy is not None
         assert policy.enable_dns_rebinding_protection is False
 
@@ -356,7 +351,7 @@ class TestNonLoopbackPolicy:
 
         app = server.build_http_app(host="0.0.0.0", port=8000)
 
-        policy = server.mcp.settings.transport_security
+        policy = server.current_transport_security()
         assert policy is not None
         assert policy.enable_dns_rebinding_protection is True
 
@@ -377,11 +372,11 @@ class TestNonLoopbackPolicy:
         """Each build derives its policy from scratch; the loopback allowlist is restored."""
         monkeypatch.setenv(HTTP_TOKEN_ENV, "s3cret")
         server.build_http_app(host="0.0.0.0", port=8000)
-        policy = server.mcp.settings.transport_security
+        policy = server.current_transport_security()
         assert policy is not None and policy.enable_dns_rebinding_protection is False
 
         server.build_http_app(host="127.0.0.1", port=8000)
-        assert server.mcp.settings.transport_security is server._DEFAULT_TRANSPORT_SECURITY
+        assert server.current_transport_security() is server._LOOPBACK_TRANSPORT_SECURITY
 
 
 @pytest.mark.integration
