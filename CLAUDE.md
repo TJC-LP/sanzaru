@@ -416,6 +416,43 @@ they are easy to "simplify" away.
   switch's failure mode is "every user shares one namespace", so an unrecognised
   value (`enabled`, `y`) is a configuration error, never a silent "off" — the original
   `1/true/yes` parse treated `on` as off.
+- **The ffmpeg demuxer is never chosen from an untrusted extension.** pydub turns
+  `format=<ext>` into `ffmpeg -f <ext>`, and playlist demuxers (`hls`, `concat`,
+  `dash`) read *other local files* named by the file's content. Every
+  `AudioSegment.from_file` whose format derives from a filename goes through
+  `demuxer_for()` (which runs `safe_audio_format()` and then maps the extensions
+  ffmpeg does not know by name — `.opus`→`ogg`, `.m4b`→`mp4`, `.wma`→`asf` — onto
+  a self-contained demuxer). Current ffmpeg blunts the playlist escapes on its
+  own (`concat` defaults to `safe=1`; `hls` checks `allowed_extensions`), so for
+  that class the allowlist holds regardless of the host build. It is not a
+  complete answer: `mov`/`mp4` stay allowlisted, and that demuxer can follow
+  external data references (`dref`) — gated only by ffmpeg's `enable_drefs=0`
+  default, which pydub gives us no way to pass as an input option. That one does
+  depend on the host's ffmpeg defaults.
+- **Two extension sets, and they are not interchangeable.**
+  `DECODABLE_AUDIO_EXTENSIONS` gates what ffmpeg may *read* — the rule is only
+  "a self-contained container", so `.aac`/`.opus`/`.wma` belong here and
+  narrowing it to the transcription formats broke `convert_audio`, whose whole
+  job is unsupported input. `SAFE_AUDIO_EXTENSIONS` gates what this server may
+  *create* under a caller-chosen name: `convert_audio`, `compress_audio` and
+  `create_audio` all run `require_audio_name()` on the output before any work, so
+  none of them can mint a `.json` or `.html` for `/media` to serve. It is not
+  enforced by the storage layer (`storage.write` checks containment only), and
+  `generate_podcast` only *warns* on a mismatched extension — so the claim is
+  about those three tools, not every write.
+- **Every convert/compress output goes through
+  `FileSystemRepository.write_audio_file`.** pydub used to export straight into
+  `storage.local_tempfile`, and the no-op copy was a `shutil.copyfile`; neither
+  passed through the repository, so any write-time policy attached there (the
+  checkpoint-overwrite refusal) silently did not cover them. The name check in
+  `require_audio_name` does not protect act checkpoints and says so — they are
+  ordinary `.mp3` names, and the write path is the only place that can tell.
+- **`list_audio_files(pattern=)` is a substring or fnmatch glob, and refuses
+  regex syntax.** The old `re.search` was a ReDoS (`(a+)+$` froze the event
+  loop). fnmatch is itself `re`-backed but safe through its atomic-group
+  translation of `*`, which is the property `compile_name_filter` relies on;
+  regex-only metacharacters raise rather than fail open, because a caller on the
+  old contract recovers from an error and not from an empty list.
 - **`/media` serves an allowlisted content type or `application/octet-stream`,
   always with `nosniff` + `Content-Disposition: attachment`.** The response type
   used to come from `mimetypes.guess_type()` of a caller-chosen name, which made a

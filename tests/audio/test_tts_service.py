@@ -85,6 +85,28 @@ async def test_generated_filename_when_unspecified(openai_client, storage):
 
 
 @pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("name", "reason"),
+    [
+        ("simrun_victim.json", "unsupported audio format"),  # run bookkeeping; also not audio
+        ("x.html", "unsupported audio format"),  # /media would have served this as a page
+        ("notes", "has no audio extension"),
+    ],
+)
+async def test_a_bad_output_name_is_refused_before_synthesis(openai_client, storage, tmp_audio_path, name, reason):
+    """The guard's comment asserts an *ordering*: nothing is billed for a name that cannot be written.
+
+    `create_audio(output_filename="x.html")` used to land an .html in the audio
+    directory — the only tool not held to the output-extension rule.
+    """
+    with pytest.raises(ValueError, match=reason):
+        await TTSService().create_speech(text_prompt="Hello", output_filename=name)
+
+    openai_client.audio.speech.create.assert_not_awaited()
+    assert list(tmp_audio_path.iterdir()) == []
+
+
+@pytest.mark.anyio
 async def test_elevenlabs_path(mocker, storage, tmp_audio_path, fake_elevenlabs):
     client = fake_elevenlabs.Client(chunks=(b"EL", b"AUDIO"))
     mocker.patch("sanzaru.audio.providers.elevenlabs_provider.get_elevenlabs_client", return_value=client)

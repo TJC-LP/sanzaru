@@ -46,7 +46,8 @@ async def list_audio_files(
     """List, filter, and sort audio files with comprehensive options.
 
     Args:
-        pattern: Optional regex pattern to filter files by name
+        pattern: Optional case-insensitive filter — a substring match, or a glob (e.g. "*.mp3") when it contains
+            * ? or [. Not a regex: ^ $ | ( ) + and backslash raise ValueError.
         min_size_bytes: Minimum file size in bytes
         max_size_bytes: Maximum file size in bytes
         min_duration_seconds: Minimum audio duration in seconds

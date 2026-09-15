@@ -13,7 +13,30 @@ from pydub import AudioSegment  # type: ignore
 
 from ..config import logger
 from ..exceptions import AudioCompressionError, AudioConversionError
-from .constants import DEFAULT_MAX_FILE_SIZE_MB, DEFAULT_TTS_SAMPLE_RATE, SupportedChatWithAudioFormat
+from .constants import (
+    DEFAULT_MAX_FILE_SIZE_MB,
+    DEFAULT_TTS_SAMPLE_RATE,
+    SupportedChatWithAudioFormat,
+    safe_audio_format,
+)
+
+
+def demuxer_for(name_or_suffix: str) -> str:
+    """Return the ffmpeg demuxer for an allowlisted audio filename or suffix.
+
+    Thin alias over :func:`safe_audio_format`, which refuses a playlist
+    extension (`.hls`, `.concat`, `.m3u8`) so it never reaches
+    ``AudioSegment.from_file``, and maps the container extensions ffmpeg does
+    not know by that name (`.opus`, `.wma`, `.m4b`, ...) onto the demuxer that
+    reads them via `AUDIO_DEMUXER_BY_EXTENSION`. pydub hands `format` to ffmpeg
+    verbatim as `-f <format>`, so the returned name has to be a real demuxer.
+
+    Raises:
+    ------
+        ValueError: If the extension is outside `DECODABLE_AUDIO_EXTENSIONS`.
+
+    """
+    return safe_audio_format(name_or_suffix)
 
 
 class AudioProcessor:
@@ -119,11 +142,19 @@ class AudioProcessor:
 
         Raises:
         ------
+            ValueError: If the file's extension is not an allowlisted audio
+                container. Raised before ffmpeg is involved and deliberately
+                *not* wrapped in AudioConversionError — it is a usage error
+                about the name, not a decode failure.
             AudioConversionError: If loading fails.
 
         """
+        # Validate the extension against the audio allowlist *before* invoking
+        # ffmpeg. The demuxer is chosen from this suffix, and a playlist demuxer
+        # (hls/concat/dash) selected from a planted file's extension would read
+        # other local files as "segments" (CWE-610).
+        format_str = demuxer_for(file_path.suffix)
         try:
-            format_str = file_path.suffix[1:]  # Remove leading dot
             return await anyio.to_thread.run_sync(lambda: AudioSegment.from_file(str(file_path), format=format_str))
         except Exception as e:
             raise AudioConversionError(f"Failed to load audio file {file_path}: {e}") from e

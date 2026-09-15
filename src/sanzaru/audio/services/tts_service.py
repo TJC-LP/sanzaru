@@ -10,6 +10,7 @@ import anyio
 from ...infrastructure import FileSystemRepository
 from ..models import TTSResult
 from ..providers import SpeechRequest, VoiceSettingsDict, get_provider, synthesize_speech
+from .audio_service import require_audio_name
 
 
 class TTSService:
@@ -47,7 +48,19 @@ class TTSService:
         -------
             TTSResult: Result with name of the generated audio file.
 
+        Raises:
+        ------
+            ValueError: If `output_filename` lacks an audio extension
+                (`SAFE_AUDIO_EXTENSIONS`) or names run bookkeeping.
+
         """
+        # Before synthesis, so a bad name costs nothing to discover. The same
+        # rule as every other caller-named audio output: this server is
+        # creating the file, so it carries an audio extension — without this,
+        # `create_audio(output_filename="x.html")` landed an .html in the audio
+        # directory for /media to serve — and it is not a run manifest.
+        if output_filename is not None:
+            require_audio_name(output_filename, "output filename", is_output=True)
         tts = get_provider(provider)
         request = SpeechRequest(
             text=text_prompt,

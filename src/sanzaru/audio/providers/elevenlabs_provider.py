@@ -6,6 +6,7 @@ this module must stay importable without it so feature detection and error
 messages work on an OpenAI-only install.
 """
 
+import re
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, cast, get_args
 
@@ -49,6 +50,29 @@ _OMIT_STR = cast(str, ...)
 _OMIT_SETTINGS = cast("VoiceSettings", ...)
 _OMIT_MODEL_SETTINGS = cast("ModelSettingsResponseModel", ...)
 
+# The voice id is a URL *path segment*: the Fern-generated SDK interpolates it
+# into f"v1/text-to-speech/{voice_id}" and string-concatenates that onto the
+# base URL unencoded (its `_build_url` explicitly avoids urljoin), and httpx
+# then collapses the dot segments when it builds the request. A voice of
+# "../../v1/voices/VICTIM/settings/edit?" therefore retargets an authenticated
+# POST carrying the operator's xi-api-key, and the non-2xx body comes back to
+# the caller through _as_tts_error. Real ids are 20-character alphanumeric
+# tokens (21m00Tcm4TlvDq8ikWAM); "_" and "-" are allowed because callers name
+# voices that way in scripts and fixtures, and "." is out so ".." cannot be
+# spelled at all. 64 leaves room for a longer id without leaving room for a URL.
+_VOICE_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
+def _validate_voice_id(voice: str) -> str:
+    """Return `voice` if it is a plain ElevenLabs voice id, else raise ValueError."""
+    if not isinstance(voice, str) or not _VOICE_ID_PATTERN.fullmatch(voice):
+        # Truncated repr: the value is caller-controlled and lands in logs.
+        raise ValueError(
+            f"voice={voice!r:.80} is not a valid ElevenLabs voice id; expected only letters, digits, "
+            "'_' or '-' (max 64 characters)"
+        )
+    return voice
+
 
 class ElevenLabsTTSProvider:
     """Speech via ElevenLabs, requested as mp3 so the stitch path is unchanged."""
@@ -71,7 +95,10 @@ class ElevenLabsTTSProvider:
                 "provider='elevenlabs' requires an explicit voice id "
                 "(from your ElevenLabs voice library), not a named OpenAI voice"
             )
-        return voice.strip()
+        # Every caller path — TTSService.create_speech, the podcast segment and
+        # dialogue planners — resolves the voice here, so this is the one place
+        # the path-segment check has to live.
+        return _validate_voice_id(voice.strip())
 
     def max_chunk_chars(self, model: str) -> int:
         return ELEVENLABS_MAX_CHARS[cast(ElevenLabsModel, model)]
@@ -87,6 +114,16 @@ class ElevenLabsTTSProvider:
             )
         if not request.voice.strip():
             raise ValueError("provider='elevenlabs' requires an explicit voice id")
+        # Backstop for a SpeechRequest assembled without resolve_voice: validate()
+        # is the last thing synthesize_speech runs before the URL is built.
+        # resolve_voice strips, so whitespace reaching here means the request
+        # skipped it; say so rather than reporting a valid id as a bad one.
+        if request.voice != request.voice.strip():
+            raise ValueError(
+                f"voice={request.voice!r:.80} has surrounding whitespace; pass the bare voice id "
+                "(resolve_voice strips it)"
+            )
+        _validate_voice_id(request.voice)
 
         settings = request.voice_settings or {}
         # Types first: the range comparisons below would raise TypeError on a
@@ -171,6 +208,12 @@ class ElevenLabsTTSProvider:
                 f"dialogue request is {total_chars} characters across {len(turns)} turns, over the "
                 f"{ELEVENLABS_DIALOGUE_MAX_CHARS}-character limit; split it at a turn boundary"
             )
+
+        # Here the voice rides in the request body rather than the path, so this
+        # is consistency rather than a fix: one malformed id fails the same way
+        # whichever endpoint would have received it.
+        for turn in turns:
+            _validate_voice_id(turn.voice)
 
         client = get_elevenlabs_client()
         return await self._with_retries(lambda: self._convert_dialogue(client, turns, model, stability))
