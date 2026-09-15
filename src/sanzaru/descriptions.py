@@ -801,27 +801,31 @@ one edit cycle rather than one per field.
       }
     }
   ],
-  "segments": [                      // Ordered list of spoken segments (required)
+  "segments": [                      // Ordered list of spoken segments (required, max 2000)
     {
       "speaker": string,             // Must match a speaker id (required)
-      "text": string,                // Spoken content (required, max ~40000 chars)
-      "pause_after": number,         // Silence in ms after this segment (optional, overrides default)
+      "text": string,                // Spoken content (required, max 40000 chars)
+      "pause_after": number,         // Silence in ms after this segment (optional, 0-60000;
+                                     // overrides default_pause_ms; null = not set)
       "speed_override": number,      // Override speaker speed for this segment (optional; also
                                      // wins over the speaker's voice_settings "speed")
       "instruction_override": string // Override speaker instructions for this segment (optional)
     }
   ],
   "config": {                        // Global podcast settings (optional — omit for all defaults)
-    "default_pause_ms": number,      // Default silence between segments (optional, default 600)
-    "intro_silence_ms": number,      // Silence before first segment (optional; 500ms recommended)
-    "outro_silence_ms": number,      // Silence after last segment (optional; 1000ms recommended)
+    "default_pause_ms": number,      // Default silence between segments (optional, 0-60000, default 600)
+    "intro_silence_ms": number,      // Silence before first segment (optional, 0-60000; 500ms recommended)
+    "outro_silence_ms": number,      // Silence after last segment (optional, 0-60000; 1000ms recommended)
+                                     // All silence in the episode together may not exceed one hour
+                                     // (summed as if every segment's pause were inserted).
     "normalize_loudness": boolean,   // Peak-normalize each segment for volume (optional, default true)
     "output_format": "mp3"|"wav",    // Output format (optional, default "mp3")
     "output_bitrate": string,        // MP3 bitrate (optional; default "192k")
     "provider": string,              // Optional episode default: "openai" | "elevenlabs"
-    "max_concurrency": number,       // Optional cap on parallel TTS requests (positive int).
-                                     // ElevenLabs enforces a per-tier cap (2-15, or 4-30 on
-                                     // Flash/Turbo); lower this if you see HTTP 429.
+    "max_concurrency": number,       // Optional cap on parallel TTS requests (positive int;
+                                     // default 32 per provider). ElevenLabs enforces a per-tier
+                                     // cap (2-15, or 4-30 on Flash/Turbo); lower this if you see
+                                     // HTTP 429.
     "render_mode": string,           // Optional: "segments" (default) | "dialogue"
     "dialogue_stability": number     // Optional 0-1, dialogue mode only
   }
@@ -889,7 +893,14 @@ A 10-minute podcast needs ~1500 words of content.
 - provider: Episode-wide default provider, overridden by config.provider and speaker.provider.
   Default: "openai"
 - output_filename: Optional name to write the episode under (defaults to a title-and-timestamp
-  slug). Confined to the audio directory: anything resolving outside it is rejected.
+  slug). A bare filename with an audio extension (mp3, wav, m4a, flac, ogg, ...): paths are
+  rejected, so are non-audio extensions, a simulated run's bookkeeping name (`simrun_<id>.json`)
+  and the audio of a recorded act (one with a `.json` act sidecar beside it) — all before any
+  synthesis is paid for.
+- verify: Default false. Transcribe each rendered unit and check it actually says what the
+  script said, re-rendering the ones that do not, once. TTS drops segment tails and whole short
+  segments at random with no error, and `transcript` is only an echo of the input, so it is no
+  evidence. Costs one transcription per unit.
 
 **Returns** PodcastResult with:
 - output_file: The name actually written — always the file that exists, whether it came from
@@ -898,7 +909,15 @@ A 10-minute podcast needs ~1500 words of content.
 - segment_count: Number of segments generated
 - estimated_duration_seconds: Estimated total duration
 - speakers: List of speaker display names
-- transcript: Full formatted transcript
+- transcript: Full formatted transcript (an echo of the script, not evidence of the audio)
+- usage: Characters and requests per provider/model
+- verified: null unless `verify` was requested; true only when every segment was transcribed AND
+  found in the audio; false when any segment was missing OR could not be checked at all. Read
+  `segment_verdicts` to tell the two apart — the episode is written either way.
+- verify_retries: Segments re-rendered because verification flagged them
+- segment_verdicts: Per segment: `ok` (no problem found), `checked` (actually transcribed and
+  compared), `reason` (`tail_missing` | `segment_missing` | `diverged`, or `not_transcribed` |
+  `too_large_to_verify` when `checked` is false), `similarity`, `retried`
 
 **Example (minimal two-speaker podcast):**
 {

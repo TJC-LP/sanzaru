@@ -1881,3 +1881,282 @@ class TestResourceBoundsAreValidatedNotAllocated:
         minimal_script["segments"] = [{"speaker": speaker, "text": "hi"} for _ in range(2_001)]
         with pytest.raises(ValueError, match="at most 2000 segments"):
             _validate_script(minimal_script)
+
+    def test_the_total_silence_is_bounded_even_when_every_knob_passes(self, minimal_script):
+        """Per-knob bounds compose: 100 segments each at the per-pause maximum
+        is 100 minutes of silence, well past the hour the episode may hold."""
+        speaker = minimal_script["segments"][0]["speaker"]
+        minimal_script["segments"] = [{"speaker": speaker, "text": "hi", "pause_after": 60_000} for _ in range(100)]
+        with pytest.raises(ValueError, match="6000s of silence in total, over the 3600s ceiling"):
+            _validate_script(minimal_script)
+
+    def test_exactly_the_ceiling_still_passes(self, minimal_script):
+        """Inclusive, and the arithmetic is the sum and nothing else — a script
+        that lands on the ceiling to the millisecond is not over it."""
+        speaker = minimal_script["segments"][0]["speaker"]
+        minimal_script["segments"] = [{"speaker": speaker, "text": "hi", "pause_after": 60_000} for _ in range(60)]
+        minimal_script["config"] = {"intro_silence_ms": 0, "outro_silence_ms": 0, "default_pause_ms": 0}
+        _validate_script(minimal_script)
+
+    def test_a_long_but_ordinary_episode_is_not_rejected(self, minimal_script):
+        """The complement: the segment cap at the default gap is twenty minutes
+        of silence and passes. The trade the ceiling makes is documented by
+        what it lets through, not only by what it refuses."""
+        speaker = minimal_script["segments"][0]["speaker"]
+        minimal_script["segments"] = [{"speaker": speaker, "text": "hi"} for _ in range(2_000)]
+        minimal_script["config"] = {}
+        _, _, segments, _ = _validate_script(minimal_script)
+        assert len(segments) == 2_000
+
+    def test_intro_and_outro_count_toward_the_total(self, minimal_script):
+        speaker = minimal_script["segments"][0]["speaker"]
+        minimal_script["segments"] = [{"speaker": speaker, "text": "hi", "pause_after": 60_000} for _ in range(60)]
+        minimal_script["config"] = {"intro_silence_ms": 1, "default_pause_ms": 0}
+        with pytest.raises(ValueError, match="of silence in total"):
+            _validate_script(minimal_script)
+
+
+@pytest.mark.unit
+class TestNullPausesMeanNotSet:
+    """A JSON `null` on an optional pause is ordinary model output and means
+    "not set", exactly as an absent key does.
+
+    `dict.get(key, default)` substitutes only for an absent key, so a present
+    null used to reach `int(None)` in the total-silence sum — an uncaught
+    TypeError (CLI exit 1, an opaque traceback over MCP) from a script the
+    parent level rendered. The type check just above it had tolerated `None`
+    on purpose; the sum was the one path that did not.
+    """
+
+    def test_a_null_default_pause_validates(self, minimal_script):
+        minimal_script["config"] = {"default_pause_ms": None}
+        _validate_script(minimal_script)
+
+    def test_a_null_default_pause_validates_with_several_segments(self, two_speaker_script):
+        two_speaker_script["config"]["default_pause_ms"] = None
+        _validate_script(two_speaker_script)
+
+    def test_a_null_default_pause_resolves_to_the_default(self, two_speaker_script):
+        from sanzaru.tools.podcast import DEFAULT_PAUSE_MS, _default_pause_ms
+
+        two_speaker_script["config"]["default_pause_ms"] = None
+        _, _, segments, config = _validate_script(two_speaker_script)
+
+        assert _default_pause_ms(config) == DEFAULT_PAUSE_MS
+        units = [RenderUnit((0,), "host", False), RenderUnit((1,), "cohost", False), RenderUnit((2,), "host", False)]
+        # Segment 1 carries its own 1000ms; the others fall back to the default.
+        assert _build_pause_list(units, segments, _default_pause_ms(config)) == [DEFAULT_PAUSE_MS, 1000, 0]
+
+    def test_a_null_segment_pause_falls_back_to_the_default(self, two_speaker_script):
+        two_speaker_script["segments"][1]["pause_after"] = None
+        _, _, segments, config = _validate_script(two_speaker_script)
+
+        units = [RenderUnit((0,), "host", False), RenderUnit((1,), "cohost", False), RenderUnit((2,), "host", False)]
+        assert _build_pause_list(units, segments, 600) == [600, 600, 0]
+
+    def test_zero_is_a_real_pause_not_a_missing_one(self, two_speaker_script):
+        """The obvious `or` fix would have read an explicit 0 as unset."""
+        from sanzaru.tools.podcast import _default_pause_ms
+
+        two_speaker_script["config"]["default_pause_ms"] = 0
+        two_speaker_script["segments"][1]["pause_after"] = 0
+        _, _, segments, config = _validate_script(two_speaker_script)
+
+        assert _default_pause_ms(config) == 0
+        units = [RenderUnit((0,), "host", False), RenderUnit((1,), "cohost", False), RenderUnit((2,), "host", False)]
+        assert _build_pause_list(units, segments, _default_pause_ms(config)) == [0, 0, 0]
+
+    def test_a_null_default_pause_counts_as_the_default_in_the_total(self, minimal_script):
+        """The regression site itself, at the segment count that made it matter."""
+        speaker = minimal_script["segments"][0]["speaker"]
+        minimal_script["segments"] = [{"speaker": speaker, "text": "hi"} for _ in range(2_000)]
+        minimal_script["config"] = {"default_pause_ms": None}
+        _validate_script(minimal_script)
+
+    def test_a_non_integer_segment_pause_is_still_a_usage_error(self, minimal_script):
+        """Tolerating null did not loosen the type check for anything else."""
+        minimal_script["segments"][0]["pause_after"] = "500"
+        with pytest.raises(ValueError, match="'pause_after' must be an integer, got str"):
+            _validate_script(minimal_script)
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_a_null_default_pause_renders_the_default_gap(mocker, podcast_env):
+    """End to end: the null reaches the stitch as the default, not as None."""
+    from sanzaru.tools.podcast import DEFAULT_PAUSE_MS, generate_podcast
+
+    _openai_client(mocker)
+    stitch = mocker.patch("sanzaru.tools.podcast._stitch_audio", return_value=b"STITCHED")
+    script = {
+        "speakers": [{"name": "Alex", "voice": "ash"}],
+        "segments": [
+            {"speaker": "Alex", "text": "First.", "pause_after": None},
+            {"speaker": "Alex", "text": "Second."},
+        ],
+        "config": {"default_pause_ms": None, "intro_silence_ms": None, "outro_silence_ms": None},
+    }
+
+    result = await generate_podcast(script)
+
+    assert result.segment_count == 2
+    assert stitch.call_args.kwargs["pause_ms_list"] == [DEFAULT_PAUSE_MS, 0]
+    assert stitch.call_args.kwargs["intro_ms"] == 0
+    assert stitch.call_args.kwargs["outro_ms"] == 0
+
+
+# ==================== OUTPUT NAME IS CHECKED BEFORE SYNTHESIS ====================
+
+
+def _one_line_script() -> dict:
+    return {
+        "title": "My Episode",
+        "speakers": [{"id": "a", "name": "Alex", "voice": "ash"}],
+        "segments": [{"speaker": "a", "text": "Hello."}],
+    }
+
+
+def _plant_checkpoint(media, stem: str) -> None:
+    """An act checkpoint as `simulate_podcast` leaves it: audio plus sidecar."""
+    import json
+
+    (media / f"{stem}.mp3").write_bytes(b"VICTIM-PAID-AUDIO")
+    (media / f"{stem}.json").write_text(
+        json.dumps({"act_id": "act1", "title": "Act 1", "stop_reason": "complete", "usage": {}, "turns": []})
+    )
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+class TestOutputNameIsRefusedBeforeAnySynthesis:
+    """Every refusal of the caller's `filename` costs nothing: no TTS request
+    has gone out and nothing has been written when it lands. The three checks
+    are one argument's validation and raise the same type, so the CLI reports
+    all of them as usage (exit 2) rather than one of them as a server fault."""
+
+    @pytest.mark.parametrize(
+        ("bad", "why"),
+        [
+            ("simrun_a1b2c3d4.json", "reserved for simulated-podcast run bookkeeping"),
+            ("simrun_other-run_2.json", "reserved for simulated-podcast run bookkeeping"),
+            ("episode.html", "must carry an audio extension"),
+            ("notes.json", "must carry an audio extension"),
+            ("episode", "must carry an audio extension"),
+        ],
+    )
+    async def test_a_reserved_or_non_audio_name_is_refused(self, mocker, podcast_env, tmp_audio_path, bad, why):
+        """`simrun_<id>.json` is another run's manifest: writing mp3 bytes over
+        it stranded audio that run had already paid for (CWE-73). A non-audio
+        extension parks mp3 bytes under a name some other consumer trusts."""
+        from sanzaru.tools.podcast import generate_podcast
+
+        synth = mocker.patch("sanzaru.tools.podcast.synthesize_speech", new_callable=mocker.AsyncMock)
+
+        with pytest.raises(ValueError, match=why):
+            await generate_podcast(_one_line_script(), filename=bad)
+
+        synth.assert_not_called()
+        assert not list(tmp_audio_path.iterdir())
+
+    async def test_a_checkpoint_name_is_refused_before_any_synthesis(self, mocker, podcast_env, tmp_audio_path):
+        """The copy of this check inside `write_audio_file` fires only after
+        the whole episode has been rendered and billed — and the scripted path
+        has no checkpoints to recover that spend from. The pre-flight copy in
+        `generate_podcast` must refuse before a single TTS request goes out,
+        and as a `ValueError`: it is the caller's argument being refused."""
+        from sanzaru.tools.podcast import generate_podcast
+
+        _plant_checkpoint(tmp_audio_path, "Show_a1b2c3d4_act1")
+        synth = mocker.patch("sanzaru.tools.podcast.synthesize_speech", new_callable=mocker.AsyncMock)
+
+        with pytest.raises(ValueError, match="refusing to overwrite"):
+            await generate_podcast(_one_line_script(), filename="Show_a1b2c3d4_act1.mp3")
+
+        synth.assert_not_called()
+        assert (tmp_audio_path / "Show_a1b2c3d4_act1.mp3").read_bytes() == b"VICTIM-PAID-AUDIO"
+
+    async def test_an_audio_extension_that_differs_from_the_format_is_still_allowed(self, mocker, podcast_env):
+        """The extension rule is "an audio format", not "the configured one":
+        a .wav name on an mp3 render stays the caller's call (warned, above)."""
+        from sanzaru.tools.podcast import generate_podcast
+
+        _openai_client(mocker)
+        result = await generate_podcast(_one_line_script(), filename="episode.wav")
+        assert result.output_file == "episode.wav"
+
+
+# ==================== FAN-OUT HAS A FINITE DEFAULT ====================
+
+
+def _tracking_openai_client(mocker):
+    """An OpenAI TTS client that records how many requests are in flight at once."""
+    import anyio
+
+    peak = {"in_flight": 0, "peak": 0}
+
+    async def create(**kwargs):
+        peak["in_flight"] += 1
+        peak["peak"] = max(peak["peak"], peak["in_flight"])
+        await anyio.sleep(0)
+        peak["in_flight"] -= 1
+        response = mocker.MagicMock()
+        response.content = b"OPENAI_MP3"
+        return response
+
+    client = mocker.MagicMock()
+    client.audio.speech.create = mocker.AsyncMock(side_effect=create)
+    mocker.patch("sanzaru.audio.providers.openai_provider.get_client", return_value=client)
+    return peak
+
+
+def _many_segment_script(count: int) -> dict:
+    return {
+        "speakers": [{"name": "Alex", "voice": "ash"}],
+        "segments": [{"speaker": "Alex", "text": f"Segment {i}."} for i in range(count)],
+    }
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_openai_fan_out_is_bounded_by_default(mocker, podcast_env, monkeypatch):
+    """The OpenAI provider reports no cap of its own, and the fan-out used to
+    read that as "no limiter": every segment went out at once, and a 2,000
+    segment script was 2,000 concurrent sockets (CWE-770). `MAX_SEGMENTS`
+    bounds the work; this is what bounds the concurrency."""
+    from sanzaru.tools.podcast import DEFAULT_PODCAST_MAX_CONCURRENCY, generate_podcast
+
+    monkeypatch.delenv("SANZARU_OPENAI_MAX_CONCURRENCY", raising=False)
+    peak = _tracking_openai_client(mocker)
+
+    await generate_podcast(_many_segment_script(DEFAULT_PODCAST_MAX_CONCURRENCY + 8))
+
+    assert peak["peak"] == DEFAULT_PODCAST_MAX_CONCURRENCY
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_the_provider_env_cap_still_wins_over_the_podcast_default(mocker, podcast_env, monkeypatch):
+    from sanzaru.tools.podcast import generate_podcast
+
+    monkeypatch.setenv("SANZARU_OPENAI_MAX_CONCURRENCY", "3")
+    peak = _tracking_openai_client(mocker)
+
+    await generate_podcast(_many_segment_script(12))
+
+    assert peak["peak"] == 3
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+async def test_config_max_concurrency_can_raise_the_podcast_default(mocker, podcast_env, monkeypatch):
+    """The default is a default: a caller who wants more says so in the script."""
+    from sanzaru.tools.podcast import DEFAULT_PODCAST_MAX_CONCURRENCY, generate_podcast
+
+    monkeypatch.delenv("SANZARU_OPENAI_MAX_CONCURRENCY", raising=False)
+    peak = _tracking_openai_client(mocker)
+    script = _many_segment_script(DEFAULT_PODCAST_MAX_CONCURRENCY + 8)
+    script["config"] = {"max_concurrency": DEFAULT_PODCAST_MAX_CONCURRENCY + 8}
+
+    await generate_podcast(script)
+
+    assert peak["peak"] == DEFAULT_PODCAST_MAX_CONCURRENCY + 8

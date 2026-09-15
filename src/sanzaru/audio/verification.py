@@ -65,8 +65,18 @@ def similarity(intended: str, rendered: str) -> float:
     diff scores `plumbing` against `plumbing.` as a total mismatch — enough to
     put a short, clean act under the warn threshold on commas alone.
     """
-    intended_words = words(intended)
-    rendered_words = words(rendered)
+    return similarity_tokens(words(intended), words(rendered))
+
+
+def similarity_tokens(intended_words: list[str], rendered_words: list[str]) -> float:
+    """`similarity()` over word lists that are already tokenised.
+
+    For a caller that compares one needle against many windows of one
+    transcript — the podcast verify pass slides a segment across the unit's
+    text — tokenising both sides on every call was the larger cost, and it was
+    paid once per window. This is the same score with the split hoisted out;
+    `similarity()` is a thin wrapper over it so the two cannot disagree.
+    """
     if not intended_words and not rendered_words:
         return 1.0
     if not intended_words or not rendered_words:

@@ -256,8 +256,28 @@ currency and wobbles on proper nouns.
 Failures re-render **once**, then are reported. Drops are per-render random, not per-segment
 sticky, so a segment that fails twice wants its tail rewritten rather than a third render. A
 dialogue unit is atomic — a failure anywhere in a batched run re-renders the whole run, since the
-model paced those turns together. A transcription failure downgrades a segment to
-`not_transcribed` and never fails the episode, the same property `run_qc` has.
+model paced those turns together.
+
+A `SegmentVerdict` carries `checked` separately from `ok`, and `verified=True` requires both.
+Transcription is retried `VERIFY_TRANSCRIBE_ATTEMPTS` times (cheap, idempotent, mostly transient
+429s); only then is the segment downgraded to `not_transcribed` with `checked=False`, and a unit
+over `TRANSCRIBE_MAX_BYTES` is `too_large_to_verify` without a call. Neither ever loses the
+episode — the same property `run_qc` has — but both make it **unverified** (`verified=False`),
+never verified: folding "nothing was found" into "nothing was looked at" made the control assert
+its own success (CWE-636). The CLI reports the two as separate blocks for the same reason.
+
+Scoring runs off the event loop and the window scan strides by `span // VERIFY_WINDOW_STRIDE_DIVISOR`
+for long needles (tails and short segments still slide one word at a time), so a 40k-char segment
+is not minutes of uninterruptible CPU per unit.
+
+Bounds are enforced in `_validate_script` before any synthesis: `MAX_SEGMENTS`, `MAX_SILENCE_MS`
+per knob, `MAX_TOTAL_SILENCE_MS` over the sum (deliberately over-counting the final pause and
+intra-dialogue pauses — a ceiling wants the upper bound), and `DEFAULT_PODCAST_MAX_CONCURRENCY`
+where a provider reports no cap of its own. A JSON `null` on a pause knob means "not set", the
+same as an absent key (`_default_pause_ms` / `_pause_after_ms`; `dict.get(key, default)` alone
+does not do that). The output name runs `reject_reserved_name`, `safe_audio_format` against
+`SAFE_AUDIO_EXTENSIONS`, and the checkpoint-sidecar pre-flight; all three raise `ValueError` so
+the CLI classifies them alike (usage, exit 2).
 
 ### Simulated Podcasts (realtime)
 
