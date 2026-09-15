@@ -42,7 +42,7 @@ _AUDIO_DEP_MESSAGE = "podcast generation requires optional dependencies — inst
 
 # Literal lists rather than imports: importing sanzaru.cli must not pull in
 # openai/pydantic (tests/cli/test_root.py guards the startup weight).
-_REALTIME_MODELS = ["gpt-realtime-2.1", "gpt-realtime-2.1-mini", "gpt-realtime-2", "gpt-realtime"]
+_REALTIME_MODELS = ["gpt-realtime-2.1", "gpt-realtime-2.1-mini", "gpt-realtime-2", "gpt-realtime", "gpt-live-1"]
 _REALTIME_VOICES = ["marin", "cedar", "alloy", "ash", "ballad", "coral", "echo", "sage", "shimmer", "verse"]
 
 
@@ -384,7 +384,10 @@ async def podcast_rundown(
     "--model",
     type=click.Choice(_REALTIME_MODELS),
     default=None,
-    help="Realtime model [default: gpt-realtime-2.1]. -mini is ~3x cheaper and noticeably faster.",
+    help=(
+        "Realtime model [default: gpt-realtime-2.1]. -mini is ~3x cheaper and noticeably faster. "
+        "gpt-live-1: full-duplex Live API, $0.05/min per host, experimental."
+    ),
 )
 @click.option("--planner-model", default=None, help="Text model for pre-production [default: gpt-5.5].")
 @click.option("--turn-seconds", type=float, default=None, help="Target upper bound per turn [default: 15].")
@@ -639,7 +642,7 @@ async def podcast_simulate(
                 "cost_limit",
                 f"{ceiling} — {len(ceiling.completed_acts)} act(s) checkpointed and safe. Raising --max-cost "
                 f"cannot help; set {ceiling.price_env} (text_in,cached_text_in,audio_in,cached_audio_in,"
-                f"audio_out,text_out per 1M tokens) and then resume: {resume_command}",
+                f"audio_out,text_out per 1M tokens, optionally ,per_minute) and then resume: {resume_command}",
                 exit_code=EXIT_PARTIAL,
                 resume=resume_command,
                 extra={
@@ -738,10 +741,17 @@ def _note_dry_run(result: SimulatedPodcastResult, quiet: bool) -> None:
         shape = f"{budget} planned, up to {act.turns}" if budget is not None else f"up to {act.turns}"
         note(f"  {act.act_id}: {act.title!r} — {act.seconds:.0f}s, {shape} turns")
     usage = result.cost.usage
-    note(
-        f"projected ~{result.duration_seconds / 60:.0f} min audio, "
-        f"{usage.input_tokens:,} input / {usage.output_tokens:,} output tokens"
-    )
+    if usage.live_seconds:
+        # Duration-billed (gpt-live): every host's session runs the whole act.
+        note(
+            f"projected ~{result.duration_seconds / 60:.0f} min audio, "
+            f"~{usage.live_seconds / 60:.0f} billable session-minutes across all hosts"
+        )
+    else:
+        note(
+            f"projected ~{result.duration_seconds / 60:.0f} min audio, "
+            f"{usage.input_tokens:,} input / {usage.output_tokens:,} output tokens"
+        )
     if result.cost.usd is not None:
         # Projected from rates measured in a live spike, not from a price quote.
         note(f"projected cost ~${result.cost.usd:.2f} (estimate, not a quote)")

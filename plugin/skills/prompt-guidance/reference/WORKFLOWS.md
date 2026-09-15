@@ -158,7 +158,7 @@ create_video(
 - Use concrete verbs and nouns, not vague adjectives
 
 **For best image quality:**
-- Use `generate_image` (defaults to `model="gpt-image-2"`) + `quality="high"`
+- Use `generate_image` (defaults to `model="gpt-image-2.5-flare"`) + `quality="high"` (or `"max"` on gpt-image-2.5)
 - Use `size="1536x1024"` for landscape detail, or `"3840x2160"` for 4K
 - Add style references: "photorealistic," "cinematic," "studio lighting"
 - Switch to `model="gpt-image-1.5"` only when you need a transparent background

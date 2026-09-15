@@ -35,7 +35,7 @@ import os
 import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, cast
 
 import anyio
 
@@ -43,6 +43,7 @@ from ...config import logger
 from ...exceptions import RealtimeAPIError
 from .agent import RealtimeAgent
 from .budget import CostBudget
+from .live_agent import DEFAULT_END_OF_TURN_SILENCE_S, LiveAgent
 from .pricing import OUTPUT_TOKENS_PER_SECOND
 from .types import (
     DEFAULT_TURN_SECONDS,
@@ -56,14 +57,22 @@ from .types import (
     Turn,
     TurnAudio,
     extension_cap,
+    is_live_model,
 )
 
 if TYPE_CHECKING:
     from contextlib import AbstractAsyncContextManager
 
+    from openai.resources.live.live import AsyncLiveConnection
     from openai.resources.realtime.realtime import AsyncRealtimeConnection
 
-    ConnectFactory = Callable[[str], AbstractAsyncContextManager[AsyncRealtimeConnection]]
+    ConnectFactory = Callable[[str], AbstractAsyncContextManager[AsyncRealtimeConnection | AsyncLiveConnection]]
+    """Opens the socket for one host's model. Which API it dials is the model's
+    business (`is_live_model`), so a test can hand back a fake of either kind."""
+
+Agent = RealtimeAgent | LiveAgent
+"""What sits at the table. Both expose `spec`/`model`/`id`/`name`, `configure`,
+`steer`, `hear`, `speak`; only `LiveAgent` needs entering and `finish()`-ing."""
 
 
 DEFAULT_REALTIME_MODEL = "gpt-realtime-2.1"
@@ -186,6 +195,9 @@ class SimulationSettings:
     """0 → SANZARU_REALTIME_TURN_TIMEOUT, else derived; see `turn_timeout_seconds`."""
     act_budget_s: float = 0.0
     """0 → SANZARU_REALTIME_ACT_BUDGET, else derived; see `act_wall_budget_seconds`."""
+    live_turn_silence_s: float = DEFAULT_END_OF_TURN_SILENCE_S
+    """Live hosts only: how long output audio must be absent before a turn is
+    over. A Live turn has no end marker, so this is the boundary."""
 
 
 # ---------- prompts ----------
@@ -457,10 +469,45 @@ def _point_schedule(brief: ActBrief) -> dict[int, int]:
 # ---------- recording ----------
 
 
-def _default_connect(model: str) -> AbstractAsyncContextManager[AsyncRealtimeConnection]:
+def _default_connect(model: str) -> AbstractAsyncContextManager[AsyncRealtimeConnection | AsyncLiveConnection]:
     from ...config import get_client
 
-    return get_client().realtime.connect(model=model)
+    client = get_client()
+    if is_live_model(model):
+        # The Live API takes the model inside `session.start`, not on the URL.
+        return client.live.connect()
+    return client.realtime.connect(model=model)
+
+
+def _make_agent(
+    host: HostSpec,
+    connection: AsyncRealtimeConnection | AsyncLiveConnection,
+    *,
+    model: str,
+    settings: SimulationSettings,
+    max_turn_tokens: int,
+) -> Agent:
+    """Seat a host at the table on whichever API its model speaks.
+
+    `max_turn_tokens` is meaningless on the Live API, which has no token cap on
+    a turn; the `LiveAgent` bounds a turn by audio duration instead.
+    """
+    if is_live_model(model):
+        return LiveAgent(
+            host,
+            cast("AsyncLiveConnection", connection),
+            model=model,
+            turn_seconds=settings.turn_seconds,
+            sample_rate=settings.sample_rate,
+            end_of_turn_silence_s=settings.live_turn_silence_s,
+        )
+    return RealtimeAgent(
+        host,
+        cast("AsyncRealtimeConnection", connection),
+        model=model,
+        max_turn_tokens=max_turn_tokens,
+        sample_rate=settings.sample_rate,
+    )
 
 
 def _resolve_order(brief: ActBrief, hosts: Sequence[HostSpec], start_index: int) -> list[int]:
@@ -537,19 +584,24 @@ async def run_act(
     order = _resolve_order(brief, hosts, start_index)
 
     async with contextlib.AsyncExitStack() as stack:
-        agents: list[RealtimeAgent] = []
+        agents: list[Agent] = []
         for host in hosts:
             model = host.model or settings.model
             connection = await stack.enter_async_context(connect_fn(model))
-            agents.append(
-                RealtimeAgent(
-                    host,
-                    connection,
-                    model=model,
-                    max_turn_tokens=max_turn_tokens,
-                    sample_rate=settings.sample_rate,
-                )
-            )
+            agent = _make_agent(host, connection, model=model, settings=settings, max_turn_tokens=max_turn_tokens)
+            if isinstance(agent, LiveAgent):
+                # Starts the reader task; exits (session.close) before the
+                # connection it sits on, since the stack unwinds in reverse.
+                await stack.enter_async_context(agent)
+            agents.append(agent)
+
+        # Live hosts hear each other as they speak: the one on the floor feeds
+        # its frames straight into the others' input clocks. That is what keeps
+        # a live act at ~1x real time rather than speak-then-replay's 2x, and
+        # it is why the post-turn `hear()` below skips them.
+        live_agents = [agent for agent in agents if isinstance(agent, LiveAgent)]
+        for live in live_agents:
+            live.set_listeners(live_agents)
 
         for agent in agents:
             others = [h for h in hosts if h.id != agent.id]
@@ -717,7 +769,7 @@ async def run_act(
                         truncated=spoken.truncated,
                     )
                     result.audio.append(TurnAudio(turn=turn, pcm=spoken.pcm))
-                    result.usage = result.usage + spoken.usage
+                    result.add_usage(agent.model, spoken.usage)
                     logger.debug("%s turn %d [%s] %.1fs", brief.id, turn_index + 1, agent.name, turn.seconds)
                     if on_turn is not None:
                         on_turn(turn)
@@ -725,10 +777,37 @@ async def run_act(
                         budget.charge(spoken.usage, agent.model)
 
                     # Everyone else hears it. This is what makes it a
-                    # conversation rather than N monologues interleaved.
-                    for other in agents:
-                        if other is not agent:
+                    # conversation rather than N monologues interleaved. Live
+                    # listeners of a live speaker already heard it live.
+                    listeners = [
+                        other
+                        for other in agents
+                        if other is not agent and not (isinstance(agent, LiveAgent) and isinstance(other, LiveAgent))
+                    ]
+                    if any(isinstance(other, LiveAgent) for other in listeners):
+                        # A live host plays a turn out at real-time pace, so a
+                        # mixed table hears it in parallel rather than in series.
+                        async with anyio.create_task_group() as hear_group:
+                            for other in listeners:
+                                hear_group.start_soon(other.hear, spoken.pcm)
+                    else:
+                        for other in listeners:
                             await other.hear(spoken.pcm)
+
+                    # A Live session bills while it listens, not only while it
+                    # speaks. Charging the speaker alone let every other Live
+                    # host run up session-seconds that the ceiling never saw
+                    # until that host's own next turn — so a run could start a
+                    # turn already over its limit. Charge what each listener has
+                    # accrued *now*, before deciding on another turn. The
+                    # speaker's own seconds were taken by `speak()`; `finish()`
+                    # takes only what is left after this.
+                    for other in agents:
+                        if other is not agent and isinstance(other, LiveAgent):
+                            listening = other.take_usage()
+                            result.add_usage(other.model, listening)
+                            if budget is not None:
+                                budget.charge(listening, other.model)
             except TimeoutError as exc:
                 raise RealtimeAPIError(
                     f"{brief.id}: {agent.name}'s turn {turn_index + 1} made no progress for "
@@ -739,5 +818,15 @@ async def run_act(
             if is_final_turn:
                 closing_delivered = True
             turn_index += 1
+
+        # A Live session bills by the minute for as long as it is open, so the
+        # seconds between the last cue and the close are real money the turns
+        # never saw. Close each session now and charge what it settles on.
+        for agent in agents:
+            if isinstance(agent, LiveAgent):
+                tail = await agent.finish()
+                result.add_usage(agent.model, tail)
+                if budget is not None:
+                    budget.charge(tail, agent.model)
 
     return result

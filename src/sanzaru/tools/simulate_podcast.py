@@ -345,12 +345,16 @@ def _signature_ok(payload: str, signature: str | None) -> bool:
     return hmac.compare_digest(expected.encode(), signature.encode())
 
 
-SIGNATURE_VERSION = 1
+SIGNATURE_VERSION = 2
 """Which fields a signature covers, and in what shape.
 
 Bump when the signed tuple changes meaning; a record carrying another version
 cannot be verified by this code and is refused under a secret. Adding a field
-to any of the models below does *not* need a bump — that is the point."""
+to any of the models below does *not* need a bump — that is the point.
+
+v2 added `live_seconds` to the usage tuple: it is the one counter a Live-model
+checkpoint's cost rests on, so leaving it unsigned would have let an edited
+sidecar replay a `gpt-live` act into the ceiling for free."""
 
 _SIGNED_USAGE_FIELDS: tuple[str, ...] = (
     "input_tokens",
@@ -361,6 +365,7 @@ _SIGNED_USAGE_FIELDS: tuple[str, ...] = (
     "cached_audio_tokens",
     "output_text_tokens",
     "output_audio_tokens",
+    "live_seconds",
 )
 """The counters `usage_cost` multiplies — spelled out rather than taken from
 `RealtimeUsage.model_fields`, so a counter added later is not silently pulled
@@ -471,6 +476,13 @@ class ActCheckpoint(_SignedRecord):
     this field existed, which is the one case the binding is skipped."""
     audio_sha256: str = ""
     """Digest of the act's mp3, so the pair is checked together."""
+    usage_by_model: dict[str, RealtimeUsage] = Field(default_factory=dict)
+    """`usage` split by the model each slice was billed to, so a resume can
+    replay the act's spend at each model's own price (a mixed Realtime/Live
+    table has token-billed and duration-billed slices that no single model
+    prices). Empty on a checkpoint written before the field existed; such an
+    act replays at the dearest billable model, erring closed. Signed, for the
+    same reason `usage` is: it is exactly what the restored ceiling counts."""
 
     def signed_fields(self) -> list[object]:
         return [
@@ -479,6 +491,10 @@ class ActCheckpoint(_SignedRecord):
             self.audio_sha256,
             self.stop_reason,
             [getattr(self.usage, name) for name in _SIGNED_USAGE_FIELDS],
+            [
+                [model, [getattr(usage, name) for name in _SIGNED_USAGE_FIELDS]]
+                for model, usage in sorted(self.usage_by_model.items())
+            ],
             # What the transcript and the stem slicing are rebuilt from.
             # `seconds` as fixed-point text: a float's repr is stable, but a
             # string cannot drift between serializers at all.
@@ -791,7 +807,7 @@ def annotate_upcoming(rundown: Rundown) -> Rundown:
     return rundown.model_copy(update={"acts": updated})
 
 
-def _projected_usage(rundown: Rundown, acts: Sequence[ActBrief]) -> RealtimeUsage:
+def _projected_usage(rundown: Rundown, acts: Sequence[ActBrief], model: str) -> RealtimeUsage:
     """Expected usage for some of a rundown's acts, at its host count.
 
     Turns are the *extended* ceiling, not `max_turns` (#50): an act runs to
@@ -800,6 +816,10 @@ def _projected_usage(rundown: Rundown, acts: Sequence[ActBrief]) -> RealtimeUsag
     exceed. Audio terms scale with `target_seconds` and are unaffected, which
     is why the difference is small — but a projection that reads low is worse
     than one that reads high, since the resume refusal projects from this too.
+
+    `model` decides the axis: a Live model projects session-seconds per host
+    and no tokens (see `project_usage`). Projected at the episode model even
+    when hosts override it — the projection is priced there too.
     """
     total = RealtimeUsage()
     for act in acts:
@@ -807,6 +827,7 @@ def _projected_usage(rundown: Rundown, acts: Sequence[ActBrief]) -> RealtimeUsag
             seconds=act.target_seconds,
             turns=extension_cap(act.max_turns),
             hosts=len(rundown.hosts),
+            model=model,
         )
     return total
 
@@ -820,7 +841,7 @@ def project_run(rundown: Rundown, brief: SimulationBrief) -> CostReport:
     count those turns at all. Any unpriced billable model now empties the
     dollar figure and is named, which is what a dry run is for.
     """
-    total = _projected_usage(rundown, rundown.acts)
+    total = _projected_usage(rundown, rundown.acts, brief.model)
     unpriced = _unpriced(_billable_models(brief, rundown))
     cost = None if unpriced else usage_cost(total, brief.model)
     return CostReport(
@@ -833,18 +854,40 @@ def project_run(rundown: Rundown, brief: SimulationBrief) -> CostReport:
 
 
 def _replay_model(usage: RealtimeUsage, billable: Iterable[str], fallback: str) -> str:
-    """The model to charge a replayed act at: the dearest one it could have used.
+    """Legacy path: the model to charge a pooled `usage` at — the dearest it could have used.
 
-    A checkpoint stores one aggregated `usage` with no per-model split, while
-    the live run charged every turn at its own host's model (`HostSpec.model`
-    overrides the episode's). Replaying at the episode model under-counted each
-    act whose hosts were overridden onto a dearer model, so the restored ceiling
-    erred *open* by exactly that difference. Until the checkpoint carries a
-    per-model breakdown, the replay errs closed: the priced billable model that
-    makes this usage cost the most. A run with no overrides is unaffected.
+    Only for a checkpoint written before `ActCheckpoint.usage_by_model`
+    existed. Such a sidecar has one aggregated `usage` and no per-model split,
+    while the live run charged every turn at its own host's model, so the
+    replay errs closed: the priced billable model that makes this usage cost
+    the most. It still cannot be exact for a table mixing token- and
+    duration-billed hosts — one model prices one kind of slice — which is why
+    new checkpoints carry the breakdown and `_replay_charges` prefers it.
     """
     priced = [(cost, model) for model in billable if (cost := usage_cost(usage, model)) is not None]
     return max(priced)[1] if priced else fallback
+
+
+def _replay_charges(act: _RecordedAct, billable: Iterable[str], fallback: str) -> list[tuple[RealtimeUsage, str]]:
+    """What to charge a reused act as: (usage slice, model) pairs.
+
+    With a per-model breakdown every slice goes to its own model, which makes
+    the replayed total exactly what the original run charged. Without one, the
+    whole pooled usage goes to the dearest billable model, with a warning.
+    """
+    by_model = act.result.usage_by_model
+    if by_model:
+        return [(usage, model) for model, usage in by_model.items()]
+    model = _replay_model(act.result.usage, billable, fallback)
+    if act.result.usage != RealtimeUsage():
+        logger.warning(
+            "act %s: checkpoint has no per-model usage breakdown - replaying its whole spend at %r, the "
+            "dearest billable model (an older checkpoint; a mixed Realtime/Live table cannot be priced "
+            "exactly this way)",
+            act.result.act_id,
+            model,
+        )
+    return [(act.result.usage, model)]
 
 
 def _refuse_a_resume_that_cannot_finish(budget: CostBudget, run_id: str, remaining_acts: int) -> None:
@@ -940,6 +983,7 @@ async def _load_checkpoint(
         act_id=meta.act_id,
         audio=[TurnAudio(turn=turn, pcm=part) for turn, part in zip(meta.turns, parts, strict=False)],
         usage=meta.usage,
+        usage_by_model=dict(meta.usage_by_model),
         stop_reason=meta.stop_reason,
     )
     return _RecordedAct(
@@ -996,6 +1040,7 @@ async def _record_act(
         title=act.title,
         stop_reason=result.stop_reason,
         usage=result.usage,
+        usage_by_model=result.usage_by_model,
         turns=result.turns,
         run_id=run_id,
         audio_sha256=hashlib.sha256(mp3).hexdigest(),
@@ -1425,11 +1470,9 @@ async def simulate_podcast(
 
     todo = [act for act in rundown.acts if act.id not in reuse]
     billable = _billable_models(effective, rundown)
-    replay_models = {
-        act_id: _replay_model(act.result.usage, billable, effective.model) for act_id, act in reuse.items()
-    }
-    replayed = sum(usage_cost(act.result.usage, replay_models[act_id]) or 0.0 for act_id, act in reuse.items())
-    remaining = usage_cost(_projected_usage(rundown, todo), effective.model)
+    replay_charges = {act_id: _replay_charges(act, billable, effective.model) for act_id, act in reuse.items()}
+    replayed = sum(usage_cost(usage, model) or 0.0 for charges in replay_charges.values() for usage, model in charges)
+    remaining = usage_cost(_projected_usage(rundown, todo, effective.model), effective.model)
     budget = CostBudget(
         effective.max_cost_usd,
         projected_usd=None if remaining is None else replayed + remaining,
@@ -1441,8 +1484,9 @@ async def simulate_podcast(
         # loop below. Marking and charging together under-reported the count the
         # abort tells the user to decide on.
         budget.mark_act_complete(existing.result.act_id)
-    for act_id, existing in reuse.items():
-        budget.charge(existing.result.usage, replay_models[act_id])
+    for act_id in reuse:
+        for usage, model in replay_charges[act_id]:
+            budget.charge(usage, model)
     if effective.resume and todo:
         _refuse_a_resume_that_cannot_finish(budget, run_id, len(todo))
 

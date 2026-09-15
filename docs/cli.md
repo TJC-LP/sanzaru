@@ -169,7 +169,7 @@ and style (see `docs/sora-prompting-guide.md`).
 |---------|---------|
 | `generate PROMPT...` | **Synchronous** Images API — returns file + token usage. RECOMMENDED for one-off images. Multi-prompt × `--count` fan-out with `--concurrency` |
 | `edit PROMPT` | Synchronous edit/composition of existing images (`--input-image`, `--mask`) |
-| `create PROMPT` | **Async** Responses job — for refinement chains (`--previous-id`) and parallel jobs. `--image-model` (default gpt-image-2), `--input-image`, `--mask`, one-shot flags |
+| `create PROMPT` | **Async** Responses job — for refinement chains (`--previous-id`) and parallel jobs. `--image-model` (default gpt-image-2.5-flare), `--input-image`, `--mask`, one-shot flags |
 | `status ID` / `wait ID...` / `download ID` | The async job trio |
 | `prepare INPUT` | Resize to Sora dimensions (`--size`, `--mode crop\|pad\|rescale`) |
 | `files` | Images in the media dir |
@@ -181,8 +181,9 @@ R1=$(sanzaru image create "a cyberpunk courier, full body" --size 1024x1536 --wa
 sanzaru image create "add neon rain and a cityscape" --previous-id "$R1" -o ./art/courier_v2.png
 ```
 
-gpt-image-2 (the default) does not support `--background transparent` — the guard raises a clear
-usage error pointing to gpt-image-1.5.
+`generate`/`create` default to gpt-image-2.5-flare and `edit` to gpt-image-2.5-sunburst; both accept
+`--background transparent` (png/webp output) and the extra `--quality xhigh|max` levels. Passing
+`--model gpt-image-2` with either raises a clear usage error before any request is made.
 
 ### `sanzaru audio` — synchronous audio ops (requires `sanzaru[audio]`)
 | Command | Purpose |
@@ -317,7 +318,8 @@ behind. That is also where you learn that the *recording* will be refused: a cei
 whose spend cannot be counted is not enforced silently, it exits **2** before anything is billed
 (before the planner call, when only a premise was given). Set
 `SANZARU_REALTIME_PRICE_<MODEL>` (`text_in,cached_text_in,audio_in,cached_audio_in,audio_out,text_out`
-per 1M tokens) or record without a ceiling. If an unpriced model slips past that check and is
+per 1M tokens, plus an optional seventh `per_minute` in USD per session-minute) or record without
+a ceiling. If an unpriced model slips past that check and is
 charged mid-run anyway, the run stops with exit 6 and the envelope names `unpriced_model` and
 `price_env` — its `resume` command carries no `--max-cost`, because raising the cap cannot help.
 
@@ -387,6 +389,15 @@ Options: `-p/--premise`, `--acts`, `-m/--target-minutes`, `--title`, `--style`, 
 `--model`, `--planner-model`, `--turn-seconds`, `--turn-tokens`, `--max-cost`, `--max-sessions`,
 `--resume RUN_ID`, `--run-id RUN_ID`, `--stems`, `--qc/--no-qc`, `--qc-retry`, `--dry-run`,
 `--act-gap`, `--format`, `--bitrate`, `-o`.
+
+`--model gpt-live-1` (experimental) records on the full-duplex Live API instead: billed
+**$0.05 per session-minute per host** with no tokens (the dry run prints session-minutes rather
+than token counts); the act runs in **real time** (a 1-minute act takes about a minute, acts still
+parallel) because the Live session only advances while input audio streams; floor control is
+advisory (the model is asked to wait for its cue; anything it says out of turn is discarded and
+logged); turn ends are detected by loudness after ~1.2s of near-silent output; and `--turn-tokens`
+has no effect — a turn is cut at 2× `--turn-seconds` of speech. See
+[`docs/audio/simulated-podcasts.md`](audio/simulated-podcasts.md#gpt-live-1-experimental).
 
 Exit codes are the usual contract plus one: **6** means the cost ceiling stopped the run — the
 envelope carries `spent_usd`, `suggested_limit_usd`, `completed_acts`, and a `resume` command.

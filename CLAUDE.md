@@ -102,6 +102,7 @@ src/sanzaru/
 │   ├── realtime/       # Simulated podcasts: agents that actually converse
 │   │   ├── types.py    # HostSpec/ActBrief/Rundown/Turn/RealtimeUsage + PCM16 helpers
 │   │   ├── agent.py    # one persona on one connection: configure/speak/hear/steer
+│   │   ├── live_agent.py # same surface on the full-duplex Live API (gpt-live-1, per-minute billing)
 │   │   ├── producer.py # floor control, coverage steering, act budgets, prompts
 │   │   ├── rundown.py  # pre-production: premise → parallel-recordable acts
 │   │   ├── budget.py   # shared cost ceiling, charged every turn
@@ -113,7 +114,7 @@ src/sanzaru/
 │   ├── video.py        # 7 video tools
 │   ├── reference.py    # 2 reference image tools
 │   ├── image.py        # 3 image generation tools (Responses API)
-│   ├── images_api.py   # 2 image tools (Images API, gpt-image-2)
+│   ├── images_api.py   # 2 image tools (Images API, gpt-image-2.5 by default)
 │   ├── audio.py        # 9 audio tools (list, transcribe, TTS, chat)
 │   ├── podcast.py      # 1 podcast generation tool (scripted TTS)
 │   ├── simulate_podcast.py # 1 simulated podcast tool (realtime agents, parallel acts)
@@ -327,6 +328,26 @@ Non-obvious things that are easy to break:
   paying to re-record: `_refuse_a_resume_that_cannot_finish` projects the remaining acts and
   stops first, and the CLI's ceiling envelope prints a resume command with a raised
   `--max-cost` (`CostBudget.suggested_limit_usd`).
+- **`gpt-live-1` is a different API wearing the same agent surface.** `is_live_model()` (prefix
+  `gpt-live`) routes a host to `live_agent.LiveAgent` — `client.live.connect()` with no model on
+  the URL, one immutable `session.start`, steering via `session.instructions.append` (every append
+  is acked with `*.appended`, matched by `event_id`). Measured facts that the design rests on:
+  **the session timeline only advances while input audio streams** (no input → no speech, no
+  applied instructions, and one `context_injection_incomplete` error per pending append at close),
+  so every agent runs a 100 ms input clock from `session.started` to `session.close` and *an act
+  runs in real time* (parallel across acts); **output is a continuous frame stream including
+  exact-zero silence frames**, so turns are bounded by loudness (`SPEECH_RMS_THRESHOLD` 300;
+  speech measures 500–3500), end after `end_of_turn_silence_s` of quiet frames or at
+  `2 × turn_seconds` (`truncated`), and are trimmed to the speech; **live hosts hear each other
+  live** — the speaker forwards frames into listeners' inboxes via `set_listeners`, so `run_act`
+  must not `hear()` them again; the model is full duplex with no `response.create`/`done`, so floor
+  control is advisory and off-floor *speech* is discarded and counted. It bills **$0.05 per
+  session-minute per host**, no tokens: `usage.seconds` meters streamed session time and is
+  cumulative (never sum it); `RealtimeUsage.live_seconds` carries the per-turn delta (max of
+  reported and wall clock), `finish()` charges the tail, `ModelPrices.per_minute` prices it,
+  `project_usage(model=...)` projects `target_seconds × hosts`, `live_seconds` is in
+  `_SIGNED_USAGE_FIELDS` (hence `SIGNATURE_VERSION` 2), and `SANZARU_REALTIME_PRICE_*` accepts an
+  optional 7th value (`per_minute`).
 - **Every turn runs under `anyio.fail_after`.** Nothing in the Realtime protocol bounds a turn, and
   a stalled session would hold a `CapacityLimiter` slot forever inside a blocking tool. The bound
   is 6x `turn_seconds` (min 60s), overridable via `SANZARU_REALTIME_TURN_TIMEOUT` /
@@ -647,9 +668,11 @@ SANZARU_REALTIME_MAX_SESSIONS=6       # concurrent realtime sessions across all 
 SANZARU_REALTIME_TURN_TIMEOUT=120     # per-turn stall bound; default 6x turn_seconds, min 60s
 SANZARU_REALTIME_ACT_BUDGET=3000      # per-act wall clock; default 3000s, under the 60-min close
 # Override stale list pricing: text_in,cached_text_in,audio_in,cached_audio_in,audio_out,text_out
+# (USD per 1M tokens), optionally followed by a 7th per_minute value (USD per session-minute).
 # Also the way to make an unlisted model usable *with* max_cost_usd: a ceiling
 # over a model nothing can price is refused, not silently un-enforced.
 SANZARU_REALTIME_PRICE_GPT_REALTIME_2_1=4,0.4,32,0.4,64,24
+SANZARU_REALTIME_PRICE_GPT_LIVE_1=0,0,0,0,0,0,0.05
 
 # HTTP transport security (ignored on stdio). None of these load from `.env` —
 # the loader is an allowlist and a planted file must not weaken transport auth;
@@ -897,24 +920,33 @@ arguments rather than read from server settings (`mcp.settings.stateless_http` a
 | `create_image` | Responses API | Parallel generation, iterative refinement chains |
 | `edit_image` | Images API | Editing existing images |
 
-All three default to gpt-image-2 via model selection.
+Generation (`generate_image`, `create_image`) defaults to `DEFAULT_IMAGE_MODEL` (gpt-image-2.5-flare);
+`edit_image` defaults to `DEFAULT_IMAGE_EDIT_MODEL` (gpt-image-2.5-sunburst). Both live in `config.py`.
 
 **Image generation models:**
-- **gpt-image-2**: STATE-OF-THE-ART (RECOMMENDED, DEFAULT) — ~99% text accuracy, up to 4K output, any valid resolution
-- **gpt-image-1.5**: Previous gen — needed for transparent backgrounds or explicit `input_fidelity`
+- **gpt-image-2.5-flare**: DEFAULT for generation — OpenAI's pick for fast, high-quality everyday images
+- **gpt-image-2.5-sunburst**: DEFAULT for edits — tuned for editing precision. Both 2.5 variants (snapshot
+  `2026-09-08`) are priced like gpt-image-2 and add transparent backgrounds plus `quality="xhigh"|"max"`
+- **gpt-image-2**: Previous flagship — ~99% text accuracy, up to 4K output, any valid resolution
+- **gpt-image-1.5**: Older gen — transparent backgrounds and `input_fidelity`, fixed sizes only
 - **gpt-image-1**: High quality
 - **gpt-image-1-mini**: Fast, cost-effective
-- **dall-e-3**: Legacy DALL-E 3
-- **dall-e-2**: Legacy DALL-E 2
+- **dall-e-3** / **dall-e-2**: Legacy
 
 **Supported image sizes:**
 - Common: `1024x1024`, `1024x1536`, `1536x1024`, `auto`
-- gpt-image-2 also: `2048x2048`, `2048x1152`, `3840x2160`, `2160x3840`, plus any resolution with
-  max edge ≤3840px, multiples of 16, ratio ≤3:1, and 655,360 ≤ pixels ≤ 8,294,400.
+- gpt-image-2.5 and gpt-image-2 also: `2048x2048`, `2048x1152`, `3840x2160`, `2160x3840`, plus any
+  resolution with max edge ≤3840px, multiples of 16, ratio ≤3:1, and 655,360 ≤ pixels ≤ 8,294,400.
 
-**gpt-image-2 quirks:**
-- Does NOT support `background="transparent"` — use gpt-image-1.5 for transparent output
-- Ignores `input_fidelity` (always high fidelity on inputs) — silently stripped by our wrappers
+**Per-model rules live in `image_models.py`, not at the call sites.** `capabilities_for()` resolves a
+model (dated snapshots included) to one row; `check_background` / `check_quality` /
+`honors_input_fidelity` are what the three tools call. The rules the table encodes:
+- gpt-image-2 does NOT support `background="transparent"` (raises before the request)
+- gpt-image-2 **and gpt-image-2.5** reject `input_fidelity` (always high fidelity) — the wrappers strip it
+  rather than let the API 400. The SDK docstring claims 2.5 honours it; the endpoint said otherwise on
+  2026-09-15, and the endpoint wins
+- `quality="xhigh"` and `"max"` exist only on gpt-image-2.5; other models raise with the accepted list
+- Unknown models (dall-e-*, anything newer than the table) get no client-side rules; the API decides
 
 **Example with generate_image (recommended default — synchronous):**
 ```python
@@ -923,7 +955,7 @@ generate_image(
     prompt="a futuristic cityscape at sunset",
     size="1536x1024",
     quality="high",
-)  # defaults to model="gpt-image-2"
+)  # defaults to model="gpt-image-2.5-flare"
 ```
 
 **Example with create_image (parallel/refinement workflows):**
@@ -933,8 +965,8 @@ resp = create_image(
     prompt="a futuristic cityscape at sunset",
     tool_config={
         "type": "image_generation",
-        "model": "gpt-image-2",
-        "quality": "high",
+        "model": "gpt-image-2.5-flare",
+        "quality": "max",
         "size": "1536x1024",
     },
 )

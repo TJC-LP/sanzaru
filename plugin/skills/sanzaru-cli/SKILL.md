@@ -1,11 +1,11 @@
 ---
 name: sanzaru-cli
-description: Generate videos (Sora), images (gpt-image-2), speech/transcription (OpenAI or ElevenLabs), scripted podcasts, and simulated podcasts (realtime agents that actually converse) from the shell with the sanzaru CLI. Use for long-running media jobs (create → wait → download one-shots, resumable waits, JSON envelopes, batch fan-out) instead of loading the MCP tool surface.
+description: Generate videos (Sora), images (gpt-image-2.5), speech/transcription (OpenAI or ElevenLabs), scripted podcasts, and simulated podcasts (realtime agents that actually converse) from the shell with the sanzaru CLI. Use for long-running media jobs (create → wait → download one-shots, resumable waits, JSON envelopes, batch fan-out) instead of loading the MCP tool surface.
 ---
 
 # Sanzaru CLI for agents
 
-`sanzaru <group> <verb>` wraps OpenAI's Sora video, gpt-image-2, TTS/Whisper, and podcast APIs
+`sanzaru <group> <verb>` wraps OpenAI's Sora video, gpt-image-2.5, TTS/Whisper, and podcast APIs
 for shell use. Requires `OPENAI_API_KEY` in the environment. Start with:
 
 ```bash
@@ -53,7 +53,7 @@ sanzaru video wait "$ID" --download -o ./out/clip.mp4 --timeout 100s
   failed `.input.prompt`s).
 - `image create` — async job; use for refinement chains:
   `image create "add neon rain" --previous-id "$R1" -o v2.png`.
-- gpt-image-2 is the default; `--background transparent` requires `--image-model gpt-image-1.5`.
+- gpt-image-2.5-flare is the default (sunburst for `edit`); `--background transparent` and `--quality xhigh|max` work on both. gpt-image-2 rejects them.
 
 ## Two TTS providers
 

@@ -24,6 +24,7 @@ from openai.types.responses.tool_param import ImageGeneration
 from PIL import Image
 
 from ..config import DEFAULT_IMAGE_MODEL, get_client, logger
+from ..image_models import check_background, check_quality
 from ..storage import get_storage
 from ..types import ImageDownloadResult, ImageResponse
 from ..utils import generate_filename, validate_resource_id
@@ -146,20 +147,19 @@ async def create_image(
     # (we may add "model" and "input_image_mask" below).
     config: ImageGeneration = tool_config.copy() if tool_config else {"type": "image_generation"}
 
-    # Default the image model to gpt-image-2 (state-of-the-art) when the caller
-    # hasn't pinned one. The Responses API image_generation tool selects the
-    # image model via this field; the top-level `model` arg stays a mainline model.
+    # Default the image model when the caller hasn't pinned one. The Responses
+    # API image_generation tool selects the image model via this field; the
+    # top-level `model` arg stays a mainline model.
     if "model" not in config:
         config["model"] = DEFAULT_IMAGE_MODEL
 
-    # gpt-image-2 cannot produce transparent backgrounds. Mirror the guard in
-    # generate_image/edit_image so this fails with a clear, early error instead
-    # of an opaque API rejection — whether gpt-image-2 was injected as the
-    # default above or passed explicitly in tool_config.
-    if config.get("model") == DEFAULT_IMAGE_MODEL and config.get("background") == "transparent":
-        raise ValueError(
-            "gpt-image-2 does not support transparent backgrounds. Use gpt-image-1.5 for transparent output."
-        )
+    # Same per-model rules as generate_image/edit_image (image_models.py), so a
+    # background or quality the model cannot honour fails here with a clear
+    # error instead of an opaque API rejection — whether the model was injected
+    # as the default above or passed explicitly in tool_config.
+    image_model = str(config.get("model", DEFAULT_IMAGE_MODEL))
+    check_background(image_model, config.get("background"))
+    check_quality(image_model, config.get("quality"))
 
     # Handle mask upload if provided
     if mask_filename:

@@ -134,7 +134,7 @@ def test_image_generate_single_with_output_file(mocker, tmp_path):
     assert result.exit_code == 0, result.stderr
     parsed = json.loads(result.stdout)
     assert parsed["result"]["file"]["path"] == str(out)
-    assert parsed["result"]["model"] == "gpt-image-2"  # DEFAULT_IMAGE_MODEL applied
+    assert parsed["result"]["model"] == "gpt-image-2.5-flare"  # DEFAULT_IMAGE_MODEL applied
     assert parsed["input"] == {"index": 0, "prompt": "an app icon"}
 
 

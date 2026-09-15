@@ -103,6 +103,48 @@ REALTIME_VOICES: tuple[str, ...] = (
 most natural of the set in conversation — that pairing is what the spike used.
 An unknown voice warns rather than fails: OpenAI adds them faster than we ship."""
 
+LIVE_VOICES: tuple[str, ...] = (
+    "alloy",
+    "ash",
+    "ballad",
+    "beacon",
+    "bossa",
+    "cedar",
+    "cinder",
+    "coral",
+    "delta",
+    "echo",
+    "gleam",
+    "marin",
+    "meridian",
+    "quartz",
+    "ripple",
+    "sage",
+    "shimmer",
+    "stone",
+    "tempo",
+    "verse",
+    "vesper",
+    "willow",
+)
+"""Built-in voices of the Live API (`openai.types.live.BuiltInVoice`), a superset
+of the realtime list, so `assign_voices` can keep drawing from `REALTIME_VOICES`
+whichever API a host ends up on."""
+
+LIVE_MODEL_PREFIX = "gpt-live"
+
+
+def is_live_model(model: str) -> bool:
+    """Whether `model` runs on the Live API (`gpt-live-*`) rather than Realtime.
+
+    The two APIs differ in protocol, in what a turn is, and in how they bill
+    (per session-minute against per token), so this one predicate decides which
+    agent class records a host, how its usage is projected, and how a
+    checkpoint's usage is priced. A prefix rather than an exact name because
+    dated snapshots (`gpt-live-1-2026-...`) must land on the same side."""
+    return model.startswith(LIVE_MODEL_PREFIX)
+
+
 # Ids reach filenames (`{slug}_{run_id}_{act_id}.mp3`). `validate_safe_path`
 # sanitizes at the storage layer, but rejecting a separator here turns a
 # confusing late failure into an obvious early one.
@@ -144,7 +186,8 @@ class HostSpec(BaseModel):
     name: Annotated[str, StringConstraints(min_length=1, max_length=120)]
     voice: str = ""
     """A Realtime API voice (marin, cedar, alloy, ash, ballad, coral, echo, sage,
-    shimmer, verse) — not a TTS voice and not an ElevenLabs voice id.
+    shimmer, verse), or one of the Live API's built-in voices for a `gpt-live`
+    host — not a TTS voice and not an ElevenLabs voice id.
 
     Empty means "you pick": `assign_voices` hands out a distinct voice per host.
     Defaulting to a *named* voice instead made every host who did not state one
@@ -158,13 +201,14 @@ class HostSpec(BaseModel):
         # A bad voice is only rejected by the API at session.update — after the
         # connections are open and an act is under way. Warning here at least
         # puts the reason in the log before that happens.
-        if self.voice and self.voice not in REALTIME_VOICES:
+        if self.voice and self.voice not in REALTIME_VOICES and self.voice not in LIVE_VOICES:
             logger.warning(
-                "Host %r uses voice %r, which is not a known realtime voice (%s) - "
+                "Host %r uses voice %r, which is not a known realtime voice (%s) or live voice (%s) - "
                 "the session will fail if the API does not recognise it either",
                 self.id,
                 self.voice,
                 ", ".join(REALTIME_VOICES),
+                ", ".join(v for v in LIVE_VOICES if v not in REALTIME_VOICES),
             )
         return self
 
@@ -384,6 +428,11 @@ class RealtimeUsage(BaseModel):
     cached_audio_tokens: int = Field(default=0, ge=0)
     output_text_tokens: int = Field(default=0, ge=0)
     output_audio_tokens: int = Field(default=0, ge=0)
+    live_seconds: float = Field(default=0.0, ge=0)
+    """Billable session seconds on the Live API (`gpt-live-*`), which prices
+    per session-minute and reports no tokens at all. Zero for realtime hosts.
+    Reported per turn as the *delta* of the session's cumulative figure, so
+    summing turns gives the act's total the same way the token fields do."""
 
     def __add__(self, other: RealtimeUsage) -> RealtimeUsage:
         return RealtimeUsage(**{k: getattr(self, k) + getattr(other, k) for k in RealtimeUsage.model_fields})
@@ -412,7 +461,8 @@ class Turn(BaseModel):
     text: str
     seconds: float
     truncated: bool = False
-    """True when the response hit max_output_tokens and was cut off mid-thought."""
+    """True when the response hit max_output_tokens and was cut off mid-thought —
+    or, on a Live host, when the producer stopped collecting at the audio cap."""
 
 
 @dataclass(slots=True)
@@ -431,6 +481,14 @@ class ActResult:
     act_id: str
     audio: list[TurnAudio] = field(default_factory=list)
     usage: RealtimeUsage = field(default_factory=RealtimeUsage)
+    """Everything the act consumed, all hosts pooled. For display."""
+    usage_by_model: dict[str, RealtimeUsage] = field(default_factory=dict)
+    """The same usage split by the model it was billed to — what the cost
+    ceiling actually charged, slice by slice. A table can mix a token-billed
+    Realtime host with a duration-billed Live host, and one pooled
+    `RealtimeUsage` priced at any single model drops the other's cost; this is
+    what lets a resumed run replay the act's spend exactly. Always populate it
+    through `add_usage`, so the two views cannot drift."""
     stop_reason: str = "complete"
     """Why the act ended:
 
@@ -446,6 +504,11 @@ class ActResult:
 
     A cost abort is not one of these — `CostCeilingError` cancels the act rather
     than ending it, so no result is ever built for it."""
+
+    def add_usage(self, model: str, usage: RealtimeUsage) -> None:
+        """Record usage billed to `model`, in both the pooled and the per-model view."""
+        self.usage = self.usage + usage
+        self.usage_by_model[model] = self.usage_by_model.get(model, RealtimeUsage()) + usage
 
     @property
     def turns(self) -> list[Turn]:

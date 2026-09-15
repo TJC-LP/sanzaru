@@ -21,7 +21,7 @@ A **stateless**, lightweight **MCP** server **and agent CLI** that wraps **OpenA
 - Download variants (video, thumbnail, spritesheet)
 
 ### Image Generation
-- Generate images with gpt-image-2 (recommended), gpt-image-1.5, or GPT-5
+- Generate images with gpt-image-2.5 (sunburst/flare, recommended), gpt-image-2, gpt-image-1.5, or GPT-5
 - Edit and compose images with up to 16 inputs
 - Iterative refinement via Responses API
 - Automatic resizing for Sora compatibility
@@ -105,7 +105,7 @@ uv tool install sanzaru && export OPENAI_API_KEY=sk-...
 # One command: submit Sora job → poll → download → print the file path
 sanzaru video create "a tabby cat stretches on a windowsill" --seconds 4 -o ./cat.mp4 | jq -r .result.file.path
 
-# Synchronous image generation (gpt-image-2), batch fan-out, JSONL output
+# Synchronous image generation (gpt-image-2.5), batch fan-out, JSONL output
 sanzaru image generate "app icon" "hero banner" --quality high -o ./art/
 
 sanzaru capabilities   # machine-readable: what's enabled here
@@ -209,7 +209,7 @@ uv run sanzaru --transport http --port 8000
 | Category | Tools | Description |
 |----------|-------|-------------|
 | **Video** | `create_video`, `get_video_status`, `download_video`, `list_videos`, `list_local_videos`, `delete_video`, `remix_video` | Generate and manage Sora videos with optional reference images |
-| **Image** | `generate_image`, `edit_image`, `create_image`, `get_image_status`, `download_image` | Generate with gpt-image-2 (default, sync) or GPT-5 (polling) |
+| **Image** | `generate_image`, `edit_image`, `create_image`, `get_image_status`, `download_image` | Generate with gpt-image-2.5 (default, sync) or GPT-5 (polling) |
 | **Reference** | `list_reference_images`, `prepare_reference_image` | Manage and resize images for Sora compatibility |
 | **Audio** | `transcribe_audio`, `chat_with_audio`, `create_audio`, `convert_audio`, `compress_audio`, `list_audio_files`, `get_latest_audio`, `transcribe_with_enhancement` | Transcription, analysis, TTS (OpenAI or ElevenLabs), and file management |
 | **Podcast** | `generate_podcast` | Multi-voice podcast generation with parallel TTS and audio stitching; speakers may mix TTS providers |
@@ -239,7 +239,7 @@ download_video(video.id, filename="mountain_sunrise.mp4")
 
 ### Generate with Reference Image
 ```python
-# 1. Generate reference image (gpt-image-2, synchronous)
+# 1. Generate reference image (gpt-image-2.5-flare, synchronous)
 generate_image(
     prompt="futuristic pilot in mech cockpit",
     size="1536x1024",

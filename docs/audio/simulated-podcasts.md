@@ -288,10 +288,96 @@ override without waiting for a release:
 ```bash
 # text_in,cached_text_in,audio_in,cached_audio_in,audio_out,text_out — USD per 1M tokens
 export SANZARU_REALTIME_PRICE_GPT_REALTIME_2_1=4,0.4,32,0.4,64,24
+# an optional seventh value is USD per session-minute, for duration-billed models
+export SANZARU_REALTIME_PRICE_GPT_LIVE_1=0,0,0,0,0,0,0.05
 ```
 
 A model with no known price is reported in `cost.unpriced_models` rather than silently
 charged at zero.
+
+---
+
+## gpt-live-1 (experimental)
+
+`--model gpt-live-1` records the hosts on OpenAI's **Live API** instead of the Realtime API.
+It is the same producer, the same rundown, the same checkpoints and resume — but the model
+underneath is a different kind of thing. The code lives in `audio/realtime/live_agent.py`;
+`producer.run_act` seats a `LiveAgent` or a `RealtimeAgent` per host by
+`is_live_model(host.model or episode.model)`, so one episode can mix them. Everything below
+was measured against the real API on 2026-09-15 (openai 3.14.0); the first design, built from
+the SDK types alone, recorded 11 empty turns, and each of these facts is why.
+
+**A different API.** The Live connection is opened without a model (`client.live.connect()`)
+and configured with a single `session.start` — model, instructions (~2k tokens accepted,
+`session.started` back in under a second), voice, PCM format — that is immutable afterwards.
+There is no `session.update`. Steering goes out as `session.instructions.append` (500-token
+limit; notes are trimmed to ~1500 characters), audio in as `session.input_audio.append`, and the
+session is ended with `session.close`, answered by `session.closed` with the final usage. Every
+append is acknowledged (`session.instructions.appended` / `session.commentary.appended`, echoing
+the client `event_id`); two appends in flight at once are accepted. Voices are the Live built-in
+set (`LIVE_VOICES` in `types.py`), a superset of the realtime voices, so the default assignment
+still works.
+
+**The session timeline only advances while input audio is streaming.** With nothing on
+`session.input_audio.append` the model never speaks, appended instructions are never applied,
+`usage.seconds` stays at 0.0, and at close the server returns one
+`context_injection_incomplete` error per pending append (20 of them in the failed run). So each
+`LiveAgent` runs a **clock task** from `session.started` to `session.close`: one 100 ms PCM16
+frame every 100 ms, silence when there is nothing to hear, otherwise frames from an inbox. The
+clock keeps ticking while the agent itself speaks. Two consequences:
+
+- **An act runs in real time.** A 1-minute act takes about a minute of wall clock (plus the
+  per-turn cue latency and end-of-turn silence). Acts still record in parallel, so a 30-minute
+  episode in six acts is ~5 minutes, not 30 — but the Realtime path's "30 minutes in ~1 minute"
+  does not apply here.
+- **Live hosts hear each other live, not by replay.** The host on the floor forwards each
+  output frame, from its first speech frame on (pauses included, leading silence dropped),
+  into the other live hosts' inboxes, where their clocks play it out at pace. `run_act`
+  therefore skips the post-turn `hear()` for live listeners of a live speaker — replaying would
+  double both the wall clock and what they heard. In a mixed episode a live host hearing a
+  Realtime host does go through `hear()`, which queues the turn and waits until the clock has
+  played it (so "heard" means heard before the host is cued), and a Realtime host hearing a live
+  host gets the trimmed speech replayed as before.
+
+**Output is a continuous frame stream that includes silence.** About ten `output_audio.delta`
+a second whether or not the model is talking; between and after speech the frames are exact
+zeros (a handful of RMS 1–200 frames on word edges). "No delta for N seconds" never fires. Turn
+boundaries are therefore detected by **loudness**: a turn starts at the first frame whose PCM16
+RMS clears `SPEECH_RMS_THRESHOLD` (300 — measured speech sits at 500–3500), ends after
+`end_of_turn_silence_s` (1.2 s) of sub-threshold frames, or at `2 × turn_seconds` of speech —
+reported `truncated`, followed by a stop instruction, and anything said after is discarded. The
+returned PCM is trimmed to the speech, so `Turn.seconds` is talking time, not stream time.
+First speech was measured 0.6 s after the cue; if none arrives within `max(6 s, 3 × silence)`
+the turn is recorded empty with a warning rather than failing the act — the producer's stall
+timeout still owns genuine hangs. There is no token cap on a Live turn, so `--turn-tokens` has
+no effect; the length rule in the prompt and the 2× cap are what bound it.
+
+**Billed by the minute, per host.** $0.05 per session-minute, metered per second, and no
+tokens at all. `usage.seconds` meters *streamed session time* (14.0 mid-run and 19.0 at a 20 s
+close in the probe), not spoken audio, and it is cumulative — never sum it across events. Every
+host's session is open for the whole act, listening included, so a two-host 6-minute act costs
+about `2 × 6 × $0.05 = $0.60` plus overhead, regardless of how many turns it holds. The dry run
+projects `target_seconds × hosts` as `usage.live_seconds` and prints it as session-minutes; that
+is a floor. Each turn charges the growth in the session's cumulative seconds, taken as the larger
+of the API's figure and the wall clock since `session.started` (the report lags the turn it lands
+after), and closing the session charges the remainder. `RealtimeUsage.live_seconds` is signed
+into checkpoints like the token counters (signature v2).
+
+**Floor control is advisory.** The model is full duplex: it decides when to speak, with no
+`response.create` to ask and no `response.done` to wait for. The session instructions tell it to
+speak only when cued and to stay silent while it hears its co-hosts; `speak()` sends the cue (an
+instruction plus a short `session.commentary.append` nudge) and waits, bounded, for the acks
+before looking for speech — the acks were measured arriving *after* the first speech frame, so
+this never delays a turn. Speech the model produces while it does *not* hold the floor is
+discarded — counted at debug per turn and at info per act as "off-floor" seconds — because a
+full-duplex model may talk over the host it is hearing. Idle silence frames are not counted.
+`context_injection_incomplete` errors at close are logged as a warning naming the note that was
+lost (by its `event_id`), never raised: the audio is already recorded by then.
+
+Still unverified against a live key: how reliably the model honours the cue in a long
+multi-turn act (the measured session was a single cued turn; it spoke ~11 s against a 6 s
+rule, so expect the 2× cap to matter), whether it ever echoes the commentary nudge aloud, and
+the tuning of the 1.2 s end-of-turn silence and the 300 RMS threshold on quieter voices.
 
 ---
 
@@ -468,7 +554,8 @@ worth watching past an hour.
 ```
 src/sanzaru/audio/realtime/
 ├── types.py      # rundown/act/turn/usage values, PCM16 helpers
-├── agent.py      # one persona on one connection: configure / speak / hear / steer
+├── agent.py      # one persona on one Realtime connection: configure / speak / hear / steer
+├── live_agent.py # the same surface on a Live (gpt-live) connection: full duplex, per-minute billing
 ├── producer.py   # floor control, coverage steering, act budgets, prompts
 ├── rundown.py    # pre-production: premise → parallel-recordable acts
 ├── budget.py     # shared cost ceiling, charged every turn
@@ -480,8 +567,9 @@ src/sanzaru/tools/simulate_podcast.py   # the tool: parallel acts, checkpoints, 
 src/sanzaru/cli/podcast.py              # rundown / simulate / generate
 ```
 
-Every `openai.realtime` import is function-local or `TYPE_CHECKING`-only, so `sanzaru --help`
-never pays for the SDK (guarded by `tests/cli/test_root.py`).
+Every `openai.realtime` and `openai.types.live` import is function-local or
+`TYPE_CHECKING`-only, so `sanzaru --help` never pays for the SDK (guarded by
+`tests/cli/test_root.py`).
 
 Tests run against a fake connection object — the agent only ever touches five methods and
 async iteration — so floor control, budgets, checkpointing and resume are all covered without

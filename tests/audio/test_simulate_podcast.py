@@ -270,7 +270,7 @@ class TestPricing:
         monkeypatch.setenv("SANZARU_REALTIME_PRICE_GPT_REALTIME_2_1", "not,a,price")
         assert prices_for("gpt-realtime-2.1") == ModelPrices(4.0, 0.40, 32.0, 0.40, 64.0, 24.0)
 
-    @pytest.mark.parametrize("raw", ["not,a,price", "1,2,3,4,5", "1,2,3,4,5,6,7", "4,0.4,32,0.4,64,cheap"])
+    @pytest.mark.parametrize("raw", ["not,a,price", "1,2,3,4,5", "1,2,3,4,5,6,7,8", "4,0.4,32,0.4,64,cheap"])
     def test_a_malformed_env_override_says_so(self, monkeypatch, caplog, raw):
         # Someone who set this variable wanted it to take effect; billing them at
         # list price without a word is the outcome they were trying to avoid.
@@ -1665,6 +1665,92 @@ class TestReplayIsPricedAtTheDearestBillableModel:
         dear = await resumed_spend("dear", rundown.model_copy(update={"hosts": dearer_hosts}))
 
         assert dear > plain
+
+
+class TestReplayChargesEachModelAtItsOwnPrice:
+    """A checkpoint carries its usage per model, so a resume replays the exact spend.
+
+    The pooled `usage` alone cannot be priced for a table mixing a token-billed
+    Realtime host with a duration-billed Live host: any single model prices one
+    kind of slice and drops the other, and "dearest model" picked the larger
+    half rather than the sum — the restored ceiling erred open.
+    """
+
+    TOKENS = RealtimeUsage(output_audio_tokens=1_000)
+    LIVE = RealtimeUsage(live_seconds=60.0)
+
+    @pytest.fixture
+    def mixed_rundown(self, rundown):
+        avery, rory = rundown.hosts
+        return rundown.model_copy(update={"hosts": [avery, rory.model_copy(update={"model": "gpt-live-1"})]})
+
+    @pytest.fixture
+    def stub_mixed_act(self, monkeypatch):
+        """Each act bills tokens to the Realtime host and session-seconds to the Live host."""
+        recorded: list[str] = []
+
+        async def fake_run_act(brief, hosts, settings, **kwargs):
+            recorded.append(brief.id)
+            result = _fake_act(brief.id)
+            result.usage = RealtimeUsage()
+            result.add_usage(settings.model, self.TOKENS)
+            result.add_usage("gpt-live-1", self.LIVE)
+            budget = kwargs.get("budget")
+            if budget is not None:
+                for model, usage in result.usage_by_model.items():
+                    budget.charge(usage, model)
+            return result
+
+        monkeypatch.setattr(sim, "run_act", fake_run_act)
+        return recorded
+
+    def expected_per_act(self) -> float:
+        return (usage_cost(self.TOKENS, "gpt-realtime-2.1") or 0.0) + (usage_cost(self.LIVE, "gpt-live-1") or 0.0)
+
+    async def test_resume_charges_live_and_token_usage(self, mixed_rundown, media_dir, stub_mixed_act):
+        first = await sim.simulate_podcast(sim.SimulationBrief(rundown=mixed_rundown, qc=False, run_id="mixed"))
+        expected = 3 * self.expected_per_act()
+        assert first.cost.usd == pytest.approx(expected)
+
+        resumed = await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="mixed", qc=False))
+        assert resumed.cost.usd == pytest.approx(expected)
+        # ...and not what the dearest single model would have made of the pooled usage.
+        pooled = self.TOKENS + self.LIVE
+        dearest = max(usage_cost(pooled, m) or 0.0 for m in ("gpt-realtime-2.1", "gpt-live-1"))
+        assert resumed.cost.usd != pytest.approx(3 * dearest)
+        assert 3 * dearest < expected
+
+    async def test_the_breakdown_is_in_the_sidecar_and_signed(self, mixed_rundown, media_dir, stub_mixed_act):
+        await sim.simulate_podcast(sim.SimulationBrief(rundown=mixed_rundown, qc=False, run_id="mixed"))
+        meta = json.loads((media_dir / "Stitch_Test_mixed_act1.json").read_text())
+        assert set(meta["usage_by_model"]) == {"gpt-realtime-2.1", "gpt-live-1"}
+        assert meta["usage_by_model"]["gpt-live-1"]["live_seconds"] == 60.0
+        assert meta["usage_by_model"]["gpt-realtime-2.1"]["output_audio_tokens"] == 1000
+
+        checkpoint = sim.ActCheckpoint.model_validate(meta)
+        shaved = checkpoint.model_copy(
+            update={"usage_by_model": {**checkpoint.usage_by_model, "gpt-live-1": RealtimeUsage(live_seconds=1.0)}}
+        )
+        assert shaved.signed_payload() != checkpoint.signed_payload()
+
+    async def test_a_legacy_checkpoint_without_the_breakdown_replays_at_the_dearest_model(
+        self, mixed_rundown, media_dir, stub_mixed_act, caplog
+    ):
+        await sim.simulate_podcast(sim.SimulationBrief(rundown=mixed_rundown, qc=False, run_id="legacy"))
+        for index in range(1, 4):
+            path = media_dir / f"Stitch_Test_legacy_act{index}.json"
+            meta = json.loads(path.read_text())
+            del meta["usage_by_model"]
+            path.write_text(json.dumps(meta))
+
+        with caplog.at_level("WARNING", logger="sanzaru"):
+            resumed = await sim.simulate_podcast(sim.SimulationBrief(resume=True, run_id="legacy", qc=False))
+
+        pooled = self.TOKENS + self.LIVE
+        dearest = max(usage_cost(pooled, m) or 0.0 for m in ("gpt-realtime-2.1", "gpt-live-1"))
+        assert resumed.cost.usd == pytest.approx(3 * dearest)
+        assert "no per-model usage breakdown" in caplog.text
+        assert "dearest billable model" in caplog.text
 
 
 @pytest.mark.integration
