@@ -235,14 +235,26 @@ class FileSystemRepository:
         except Exception as e:
             raise AudioFileError(f"Failed to read audio file '{filename}': {e}") from e
 
+    SIDECAR_PROBE_BYTES = 2048
+    """How much of a sidecar the checkpoint probe reads. An `ActCheckpoint`
+    serializes `sig`, `sig_version`, `act_id`, `title` (<=200 chars),
+    `stop_reason`, `usage` and then `turns`, so both markers land well inside
+    this; the transcript that follows can run to hundreds of KB and is never
+    fetched."""
+
+    @staticmethod
+    def _looks_like_an_act_sidecar(head: bytes) -> bool:
+        return b'"act_id"' in head and b'"turns"' in head
+
     async def refuse_clobbering_a_checkpoint(self, filename: str) -> None:
         """Refuse a write that would land on a simulated-podcast act checkpoint.
 
-        Public because the podcast tools also call it *pre-flight*, before any
-        synthesis is billed: the copy inside `write_audio_file` is what actually
-        protects the checkpoint, but it fires only at the final write — after
-        the whole episode has been rendered and paid for, and the scripted path
-        has no checkpoints of its own to recover that spend from.
+        Public so a tool can call it *pre-flight*, before any synthesis is
+        billed (`simulate_podcast` does, on its output name): the copy inside
+        `write_audio_file` is what actually protects the checkpoint, but it
+        fires only at the final write — after the whole episode has been
+        rendered and paid for, and the scripted path has no checkpoints of its
+        own to recover that spend from.
 
         Checked by *looking*, not by matching the name. The name shape
         (`<slug>_<runid>_<actid>.mp3`) cannot be recognised reliably: eight hex
@@ -251,29 +263,57 @@ class FileSystemRepository:
         whether an act sidecar actually sits beside the target has no such
         ambiguity.
 
-        Worth the extra stat because the alternative is silent: every
+        Both halves of the pair are covered. The sidecar is what this probe
+        reads, so leaving it writable defeated the guard in two calls: replace
+        `<stem>.json` with audio bytes through any tool that takes an output
+        name, and the mp3 beside it stopped looking like a checkpoint. A write
+        to a `.json` target is therefore refused when the *existing* file is an
+        act sidecar, and a run-manifest name (`simrun_*.json`) is refused
+        outright — the tools check that at their entry points too, but this is
+        the one place every audio write converges.
+
+        Worth the extra request because the alternative is silent: every
         audio-producing tool writes into one flat directory under a caller-chosen
         name and the storage write is an unconditional truncate, so on a shared
         deployment this was how one session replaced another's paid-for act
         audio — and, when the replacement decoded, how attacker-chosen audio got
-        into someone else's finished episode (CWE-73).
+        into someone else's finished episode (CWE-73). The probe is a single
+        ranged read of the sidecar's head, so it costs one round-trip on a remote
+        backend, not a HEAD plus a full download of every turn's transcript.
         """
+        # Imported here rather than at the top: this module's header is shared
+        # with unrelated file-listing code, and the guard is the only user.
+        from ..config import logger
+        from ..utils import reject_reserved_name
+
         stem, _, suffix = filename.rpartition(".")
-        if suffix.lower() not in ("mp3", "wav") or not stem:
+        suffix = suffix.lower()
+        if not stem or suffix not in ("mp3", "wav", "json"):
             return
-        sidecar = f"{stem}.json"
         try:
-            if not await self._storage.exists("audio", sidecar):
-                return
-            head = (await self._storage.read("audio", sidecar))[:2048]
-        except Exception:  # noqa: BLE001 - a failed probe must not block a legitimate write
+            reject_reserved_name(filename)
+        except ValueError as exc:
+            raise AudioFileError(str(exc)) from exc
+        sidecar = filename if suffix == "json" else f"{stem}.json"
+        try:
+            head = await self._storage.read_range("audio", sidecar, 0, self.SIDECAR_PROBE_BYTES)
+        except (FileNotFoundError, ValueError):
+            # No sidecar (the local backend reports a missing file as ValueError
+            # from `validate_safe_path`, the same way `read_audio_file` sees it).
             return
-        if b'"act_id"' in head and b'"turns"' in head:
-            raise AudioFileError(
-                f"'{filename}' is the audio of a recorded act belonging to another run "
-                f"(its checkpoint sidecar '{sidecar}' is present) — refusing to overwrite it; "
-                "choose another output name"
-            )
+        except Exception as exc:  # noqa: BLE001 - a failed probe must not block a legitimate write
+            logger.warning("Could not probe %r for an act checkpoint (%s) - allowing the write", sidecar, exc)
+            return
+        if not self._looks_like_an_act_sidecar(head):
+            return
+        what = (
+            "the checkpoint sidecar of a recorded act"
+            if suffix == "json"
+            else f"the audio of a recorded act (its checkpoint sidecar '{sidecar}' is present)"
+        )
+        raise AudioFileError(
+            f"'{filename}' is {what} belonging to another run — refusing to overwrite it; choose another output name"
+        )
 
     async def write_audio_file(self, filename: str, content: bytes, *, is_bookkeeping: bool = False) -> str:
         """Write audio content to a file asynchronously.
@@ -283,7 +323,8 @@ class FileSystemRepository:
             content: Audio content as bytes.
             is_bookkeeping: True when the caller *is* the run-checkpoint writer,
                 which is the one path allowed to write over its own act audio
-                (``--qc-retry`` re-records an act that is already on disk).
+                and sidecar (``--qc-retry`` re-records an act that is already
+                on disk) and to write a run manifest at all.
 
         Returns:
             str: Display path of the written file.

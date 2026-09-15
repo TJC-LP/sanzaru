@@ -8,8 +8,8 @@ async iteration.
 import pytest
 from pydantic import ValidationError
 
-from sanzaru.audio.realtime.agent import RealtimeAgent
-from sanzaru.audio.realtime.budget import CostBudget
+from sanzaru.audio.realtime.agent import RealtimeAgent, _usage_from_event
+from sanzaru.audio.realtime.budget import CostBudget, UnpricedModelError
 from sanzaru.audio.realtime.producer import (
     SimulationSettings,
     _point_schedule,
@@ -862,25 +862,74 @@ class TestCostBudget:
         assert "no price is known" in str(excinfo.value)
         assert budget.unpriced_models == ["some-future-model"]
 
-    def test_negative_usage_cannot_drive_spend_backwards(self):
+    def test_negative_usage_cannot_drive_spend_backwards(self, monkeypatch, caplog):
         """A negative charge must not buy headroom under the ceiling (CWE-1284).
 
-        RealtimeUsage rejects negative counts outright now, so this reaches
-        charge() the only way it still can — a cost computed as negative.
+        `RealtimeUsage` rejects negative counts and `uncached_*` are clamped, so
+        the one route left to a negative *cost* is a negative price override —
+        which `SANZARU_REALTIME_PRICE_<MODEL>` accepts. That is the input that
+        actually reaches `charge()`'s `cost < 0` branch.
         """
+        monkeypatch.setenv("SANZARU_REALTIME_PRICE_NEG_MODEL", "-1,-1,-1,-1,-1,-1")
         budget = CostBudget(limit_usd=1.0)
         budget.charge(RealtimeUsage(output_audio_tokens=1_000), "gpt-realtime-2.1-mini")
         after_real_spend = budget.spent_usd
         assert after_real_spend > 0
 
-        budget.charge(RealtimeUsage(), "gpt-realtime-2.1-mini")
+        with caplog.at_level("WARNING", logger="sanzaru"):
+            budget.charge(RealtimeUsage(output_audio_tokens=1_000_000), "neg-model")
 
-        assert budget.spent_usd >= after_real_spend
+        assert budget.spent_usd == after_real_spend
+        assert "Ignoring negative cost" in caplog.text
+        assert budget.unpriced_models == []
+
+    def test_a_ceiling_over_an_unpriced_model_is_a_distinct_failure(self):
+        """The CLI must not answer "cannot count" with "raise --max-cost"."""
+        budget = CostBudget(limit_usd=0.5)
+        budget.mark_act_complete("act1")
+
+        with pytest.raises(UnpricedModelError) as excinfo:
+            budget.charge(RealtimeUsage(output_audio_tokens=10), "some-future-model")
+
+        error = excinfo.value
+        assert isinstance(error, CostCeilingError)
+        assert error.model == "some-future-model"
+        assert error.price_env == "SANZARU_REALTIME_PRICE_SOME_FUTURE_MODEL"
+        assert error.suggested_limit_usd is None
+        assert error.completed_acts == ["act1"]
+        assert "SANZARU_REALTIME_PRICE_SOME_FUTURE_MODEL" in str(error)
 
     def test_usage_counts_cannot_be_negative(self):
         """The checkpoint-resume ingestion path rejects tampered counts."""
         with pytest.raises(ValidationError):
             RealtimeUsage(output_audio_tokens=-100_000_000_000)
+
+    def test_a_negative_wire_counter_is_clamped_not_fatal(self, caplog):
+        """The peer's counter must not unwind an act's worth of paid audio.
+
+        `RealtimeUsage` would reject it; the agent clamps to 0 and says so, so
+        the ceiling arithmetic still cannot move backwards (CWE-1284) and the
+        turn's audio survives.
+        """
+        from types import SimpleNamespace
+
+        wire = SimpleNamespace(
+            input_tokens=-5,
+            output_tokens=40,
+            input_token_details=SimpleNamespace(
+                text_tokens=10, audio_tokens=-7, cached_tokens_details=SimpleNamespace(text_tokens=3, audio_tokens=0)
+            ),
+            output_token_details=SimpleNamespace(text_tokens=10, audio_tokens=30),
+        )
+        with caplog.at_level("WARNING", logger="sanzaru"):
+            usage = _usage_from_event(wire)
+
+        assert usage.input_tokens == 0
+        assert usage.input_audio_tokens == 0
+        assert usage.output_tokens == 40
+        assert usage.output_audio_tokens == 30
+        assert "negative input_tokens (-5)" in caplog.text
+        assert "negative audio_tokens (-7)" in caplog.text
 
     def test_ceiling_carries_the_completed_acts(self):
         budget = CostBudget(limit_usd=0.001)

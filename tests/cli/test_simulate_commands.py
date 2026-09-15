@@ -393,6 +393,63 @@ class TestPodcastSimulate:
         assert envelope["suggested_limit_usd"] == 2.63
         assert "--max-cost" in envelope["error"]["message"]
 
+    def test_an_unpriced_model_under_a_ceiling_is_not_told_to_raise_the_ceiling(self, runner, mocker, tmp_path):
+        """A raised --max-cost cannot help when the model has no price.
+
+        `charge()` refuses a capped turn it cannot count; the envelope for that
+        has to point at the price variable, not print a `--max-cost` that would
+        fail again on the first turn of the resume.
+        """
+        from sanzaru.audio.realtime.budget import UnpricedModelError
+
+        mocker.patch(
+            "sanzaru.tools.simulate_podcast.simulate_podcast",
+            side_effect=UnpricedModelError(
+                "cannot enforce the $2.00 ceiling: no price is known for 'some-future-model'",
+                model="some-future-model",
+                spent_usd=0.40,
+                limit_usd=2.00,
+                completed_acts=["act1"],
+            ),
+        )
+        result = runner.invoke(cli, ["podcast", "simulate", "-p", "p", "-o", str(tmp_path / "ep.mp3")])
+        assert result.exit_code == 6
+        envelope = _envelope(result.stdout)
+        assert envelope["error"]["type"] == "cost_limit"
+        assert "--max-cost" not in envelope["resume"]
+        assert envelope["resume"].startswith("sanzaru podcast simulate --resume ")
+        assert envelope["suggested_limit_usd"] is None
+        assert envelope["unpriced_model"] == "some-future-model"
+        assert envelope["price_env"] == "SANZARU_REALTIME_PRICE_SOME_FUTURE_MODEL"
+        assert "SANZARU_REALTIME_PRICE_SOME_FUTURE_MODEL" in envelope["error"]["message"]
+        assert "raise it to finish" not in envelope["error"]["message"]
+
+    def test_a_dry_run_says_a_ceiling_over_an_unpriced_model_will_be_refused(self, runner, mocker, fake_result):
+        """The dry run still projects; the note is where the user learns the
+        recording will exit 2 — before they pay for a planner call to find out."""
+        from sanzaru.audio.realtime.types import RealtimeUsage
+        from sanzaru.tools.simulate_podcast import CostReport
+
+        mocker.patch(
+            "sanzaru.tools.simulate_podcast.simulate_podcast",
+            return_value=fake_result(
+                dry_run=True,
+                output_file="",
+                cost=CostReport(
+                    usd=None,
+                    usage=RealtimeUsage(output_audio_tokens=2400),
+                    limit_usd=2.0,
+                    unpriced_models=["some-future-model"],
+                    estimated=True,
+                ),
+            ),
+        )
+        result = runner.invoke(cli, ["podcast", "simulate", "-p", "p", "--dry-run", "--max-cost", "2"])
+        assert result.exit_code == 0
+        assert "no price known for some-future-model" in result.stderr
+        assert "will be refused (exit 2)" in result.stderr
+        assert _envelope(result.stdout)["result"]["cost"]["unpriced_models"] == ["some-future-model"]
+
     def test_any_other_failure_still_hands_back_the_run_id(self, runner, mocker, tmp_path):
         """Acts checkpointed before the failure are only reachable by run id.
 

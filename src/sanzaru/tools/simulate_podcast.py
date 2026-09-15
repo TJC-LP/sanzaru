@@ -32,14 +32,15 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import math
 import os
 import pathlib
 import sys
 import time
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import ClassVar, Literal
 
 if sys.version_info < (3, 11):  # pragma: no cover - 3.11+ has it as a builtin
     # anyio already requires this backport below 3.11, so it is always present.
@@ -72,7 +73,7 @@ from ..audio.realtime.mixdown import (
     render_stem,
     slice_pcm_by_durations,
 )
-from ..audio.realtime.pricing import prices_for, project_usage, usage_cost
+from ..audio.realtime.pricing import price_env_name, prices_for, project_usage, usage_cost
 from ..audio.realtime.producer import DEFAULT_REALTIME_MODEL, DEFAULT_TURN_SECONDS, DEFAULT_TURN_TOKENS
 from ..audio.realtime.qc import DEFAULT_JUDGE_MODEL, DEFAULT_TRANSCRIBE_MODEL, QCReport, run_qc
 from ..audio.realtime.rundown import DEFAULT_PLANNER_MODEL, assign_rundown_voices
@@ -211,7 +212,7 @@ class SimulationBrief(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _warn_on_unpriced_model(self) -> SimulationBrief:
+    def _note_unpriced_models(self) -> SimulationBrief:
         """Note an unpriceable model. Only ever a note — see `check_ceiling_is_enforceable`.
 
         A refusal cannot live in a validator. `RunManifest.brief` *is* a
@@ -328,31 +329,106 @@ def _sign(payload: str) -> str | None:
 def _signature_ok(payload: str, signature: str | None) -> bool:
     """Whether `signature` authenticates `payload` under the configured secret.
 
-    True when no secret is configured — verification is opt-in, and the run_id
-    binding below is the check that always applies.
+    True when no secret is configured — the signature is the opt-in layer. The
+    run binding (`run_id`, and for a checkpoint the digest of its mp3) is a
+    separate check that the readers apply whenever the record carries it,
+    secret or not.
     """
     expected = _sign(payload)
     if expected is None:
         return True
-    return signature is not None and hmac.compare_digest(expected, signature)
+    if signature is None:
+        return False
+    # Bytes, not str: `compare_digest` raises TypeError for a non-ASCII str, and
+    # a sidecar with a garbage `sig` is exactly the input this must *reject*
+    # rather than escape on with an opaque internal error.
+    return hmac.compare_digest(expected.encode(), signature.encode())
+
+
+SIGNATURE_VERSION = 1
+"""Which fields a signature covers, and in what shape.
+
+Bump when the signed tuple changes meaning; a record carrying another version
+cannot be verified by this code and is refused under a secret. Adding a field
+to any of the models below does *not* need a bump — that is the point."""
+
+_SIGNED_USAGE_FIELDS: tuple[str, ...] = (
+    "input_tokens",
+    "output_tokens",
+    "input_text_tokens",
+    "input_audio_tokens",
+    "cached_text_tokens",
+    "cached_audio_tokens",
+    "output_text_tokens",
+    "output_audio_tokens",
+)
+"""The counters `usage_cost` multiplies — spelled out rather than taken from
+`RealtimeUsage.model_fields`, so a counter added later is not silently pulled
+into signatures that existing files never covered."""
+
+_SIGNED_BRIEF_FIELDS: tuple[str, ...] = (
+    "model",
+    "planner_model",
+    "max_cost_usd",
+    "filename",
+    "output_format",
+    "output_bitrate",
+    "stems",
+    "qc",
+    "qc_retry",
+    "transcribe_model",
+    "judge_model",
+    "turn_seconds",
+    "turn_tokens",
+    "turn_timeout_s",
+    "max_concurrent_sessions",
+    "act_gap_ms",
+    "intro_silence_ms",
+    "outro_silence_ms",
+    "normalize_loudness",
+)
+"""What a resume restores from the manifest and acts on: the ceiling, the
+models, the output name, and every knob that changes what gets recorded or
+billed. All scalars, so the canonical JSON of the tuple is stable."""
 
 
 class _SignedRecord(BaseModel):
     """Base for on-disk bookkeeping that resume trusts.
 
-    `sig` is excluded from the signed bytes for the obvious reason, and defaults
-    to None so a file written before signing was enabled still parses — it just
-    fails verification once a secret exists.
+    What gets signed is an *explicit tuple* of the fields that decide what a
+    resume does — never the whole model dump. Signing `model_dump_json()` meant
+    that any field with a default added by a later version changed the bytes an
+    older file hashed to, so the first upgrade after enabling the secret made
+    every in-flight manifest unresumable ("not signed by this installation")
+    and re-billed every signed act as corrupt. That is the same "strand paid
+    acts on version skew" failure the pricing refusal was moved out of a
+    validator to avoid. With a fixed tuple, adding a field leaves existing
+    signatures valid; changing which fields matter bumps `SIGNATURE_VERSION`.
+
+    `sig` defaults to None so a file written before signing was enabled still
+    parses — it just fails verification once a secret exists.
     """
 
+    _record_kind: ClassVar[str] = "record"
+    """Bound into the payload so a checkpoint's signature can never be presented
+    as a manifest's, or vice versa."""
+
     sig: str | None = None
+    sig_version: int = SIGNATURE_VERSION
+
+    def signed_fields(self) -> list[object]:
+        """The tuple the signature covers, as JSON-serializable values."""
+        raise NotImplementedError
 
     def signed_payload(self) -> str:
-        """The bytes the signature covers. Field order is pydantic's, so it is
-        stable across a write/read round trip."""
-        return self.model_dump_json(exclude={"sig"})
+        """Canonical JSON of the version, the record kind and the signed tuple."""
+        return json.dumps([self.sig_version, self._record_kind, *self.signed_fields()], separators=(",", ":"))
 
     def verify(self) -> bool:
+        if self.sig_version != SIGNATURE_VERSION:
+            # Signed under a tuple this code cannot rebuild. Without a secret
+            # nothing is verified anyway; with one, refuse rather than guess.
+            return _run_secret() is None
         return _signature_ok(self.signed_payload(), self.sig)
 
 
@@ -368,20 +444,22 @@ class ActCheckpoint(_SignedRecord):
     what it cost. Without it a resumed run reports zero usage, has no transcript,
     and cannot rebuild per-speaker stems.
 
-    Signed because `usage` is replayed straight into the shared `CostBudget` on
-    resume, so a planted sidecar moves the spend accounting before a single new
-    turn is recorded.
+    `run_id` and `audio_sha256` bind the pair to its run and to each other, and
+    `_load_checkpoint` checks both whenever they are present — with or without
+    a secret. That is what catches the cheap attack, which needs no forgery at
+    all: record a run of your own, then copy its (perfectly genuine) checkpoint
+    pair over a victim's act names. The copied sidecar says which run it belongs
+    to and which mp3 it describes, so it is refused on its own word.
 
-    `run_id` and `audio_sha256` are part of the record, and therefore part of
-    what the signature covers, because a signature over the rest alone proves
-    almost nothing in the deployment it exists for. The threat model for
-    `SANZARU_RUN_SECRET` is a *shared* installation, where the attacker can
-    start their own run and have this very code mint them a validly-signed
-    checkpoint carrying any `usage` they like; without the run binding they
-    could drop it on a victim's act and it would verify. And a sidecar that says
-    nothing about the mp3 beside it leaves the audio swappable, which is the
-    half that ends up in the finished episode.
+    The signature is the layer for *edited* files, which is why the two fields
+    are inside the signed tuple too: the threat model for `SANZARU_RUN_SECRET`
+    is a shared installation, where the attacker can have this very code mint
+    them a validly-signed checkpoint carrying any `usage` they like. A
+    signature that bound neither the run nor the audio would verify wherever it
+    was dropped.
     """
+
+    _record_kind: ClassVar[str] = "act"
 
     act_id: str
     title: str
@@ -389,10 +467,23 @@ class ActCheckpoint(_SignedRecord):
     usage: RealtimeUsage
     turns: list[Turn]
     run_id: str = ""
-    """Which run this act belongs to. Defaults to empty so a checkpoint written
-    before this field existed still parses; it simply will not verify."""
+    """Which run this act belongs to. Empty only on a checkpoint written before
+    this field existed, which is the one case the binding is skipped."""
     audio_sha256: str = ""
-    """Digest of the act's mp3, so the pair is authenticated together."""
+    """Digest of the act's mp3, so the pair is checked together."""
+
+    def signed_fields(self) -> list[object]:
+        return [
+            self.run_id,
+            self.act_id,
+            self.audio_sha256,
+            self.stop_reason,
+            [getattr(self.usage, name) for name in _SIGNED_USAGE_FIELDS],
+            # What the transcript and the stem slicing are rebuilt from.
+            # `seconds` as fixed-point text: a float's repr is stable, but a
+            # string cannot drift between serializers at all.
+            [[turn.speaker_id, turn.text, f"{turn.seconds:.3f}", turn.truncated] for turn in self.turns],
+        ]
 
 
 class RunManifest(_SignedRecord):
@@ -406,11 +497,42 @@ class RunManifest(_SignedRecord):
     signature above defend.
     """
 
+    _record_kind: ClassVar[str] = "manifest"
+
     run_id: str
     slug: str
     created: float
     rundown: Rundown
     brief: SimulationBrief
+
+    def signed_fields(self) -> list[object]:
+        rundown = self.rundown
+        return [
+            self.run_id,
+            self.slug,
+            [getattr(self.brief, name) for name in _SIGNED_BRIEF_FIELDS],
+            rundown.title,
+            [[host.id, host.name, host.voice, host.model, host.persona] for host in rundown.hosts],
+            # The billing shape of the episode (how long, how many turns, on
+            # which model via the hosts above) plus what the hosts are told to
+            # say. Derived context (`prior_context`, `upcoming`) is left out:
+            # it is recomputed on resume anyway.
+            [
+                [
+                    act.id,
+                    act.title,
+                    act.topic,
+                    act.talking_points,
+                    act.target_seconds,
+                    act.max_turns,
+                    act.direction,
+                    sorted(act.turn_notes.items()),
+                    act.closing_note,
+                    act.speaking_order,
+                ]
+                for act in rundown.acts
+            ],
+        ]
 
 
 def checkpoint_storage() -> StorageBackend:
@@ -445,11 +567,21 @@ def checkpoint_storage() -> StorageBackend:
     return default
 
 
-def _price_env_names(models: list[str]) -> str:
-    return ", ".join("SANZARU_REALTIME_PRICE_" + m.upper().replace("-", "_").replace(".", "_") for m in models)
+def _price_env_names(models: Iterable[str]) -> str:
+    return ", ".join(price_env_name(m) for m in models)
 
 
-def check_ceiling_is_enforceable(brief: SimulationBrief, rundown: Rundown) -> None:
+def _billable_models(brief: SimulationBrief, rundown: Rundown | None) -> set[str]:
+    """Every model a run can bill a turn to: the episode's, plus per-host overrides."""
+    hosts = rundown.hosts if rundown is not None else brief.hosts
+    return {brief.model} | {host.model for host in hosts if host.model}
+
+
+def _unpriced(models: Iterable[str]) -> list[str]:
+    return sorted(model for model in models if prices_for(model) is None)
+
+
+def check_ceiling_is_enforceable(brief: SimulationBrief, rundown: Rundown | None = None) -> None:
     """Refuse a spend ceiling over a model whose spend cannot be counted.
 
     Every model the run can *bill*, not just the episode-level one:
@@ -465,18 +597,51 @@ def check_ceiling_is_enforceable(brief: SimulationBrief, rundown: Rundown) -> No
     the effective brief and rundown are both known, still before any session
     opens. `charge()` keeps its own copy of the rule, which is what covers a
     resume — `model_copy(update=...)` does not re-run validators.
+
+    Called twice when the rundown has to be planned first: once with only the
+    brief (`rundown=None` — the episode model and any hosts the caller named),
+    so a premise-only run is refused *before* the planner call is billed, and
+    again once the planned rundown's per-host models are known.
+
+    Not applied to a dry run. A dry run spends nothing, so there is nothing for
+    a ceiling to enforce, and its projection is the cheapest way to *find out*
+    that a model cannot be priced — `project_run` reports the unpriced models
+    and leaves the dollar figure empty instead.
     """
-    if brief.max_cost_usd is None:
+    if brief.max_cost_usd is None or brief.dry_run:
         return
-    billable = {brief.model} | {host.model for host in rundown.hosts if host.model}
-    unpriced = sorted(model for model in billable if prices_for(model) is None)
+    unpriced = _unpriced(_billable_models(brief, rundown))
     if not unpriced:
         return
+    # A resume restores the ceiling from the manifest and the CLI has no flag
+    # for "no ceiling", so "drop max_cost_usd" is advice a resume cannot follow.
+    remedy = (
+        f"Set {_price_env_names(unpriced)} to their rates"
+        if brief.resume
+        else f"Set {_price_env_names(unpriced)} to their rates, or drop max_cost_usd to run uncapped"
+    )
     raise ValueError(
         f"max_cost_usd={brief.max_cost_usd:.2f} cannot be enforced: no price is known for "
         f"{', '.join(repr(m) for m in unpriced)}, so their spend would not be counted at all. "
-        f"Set {_price_env_names(unpriced)} to their rates, or drop max_cost_usd to run uncapped."
+        f"{remedy}. A dry run still projects the episode and lists the unpriced models."
     )
+
+
+def _refuse_stem_names_that_collide(rundown: Rundown) -> None:
+    """A stem and an act checkpoint of the same run must not share a name.
+
+    Stems are `<slug>_<run>_stem_<host>.<fmt>` and checkpoints
+    `<slug>_<run>_<act>.mp3`, so an act literally named `stem_<host id>` puts
+    the two on one name. The stem write would then meet the checkpoint guard
+    and be refused — after the whole episode had been recorded and paid for.
+    Checked up front instead, where it costs nothing.
+    """
+    clashes = sorted({f"stem_{host.id}" for host in rundown.hosts} & {act.id for act in rundown.acts})
+    if clashes:
+        raise ValueError(
+            f"act id(s) {', '.join(repr(c) for c in clashes)} collide with the per-host stem names this run "
+            "would write; rename the act(s) or record without stems"
+        )
 
 
 def _manifest_name(run_id: str) -> str:
@@ -647,16 +812,39 @@ def _projected_usage(rundown: Rundown, acts: Sequence[ActBrief]) -> RealtimeUsag
 
 
 def project_run(rundown: Rundown, brief: SimulationBrief) -> CostReport:
-    """Project usage and cost for a rundown without recording anything."""
+    """Project usage and cost for a rundown without recording anything.
+
+    Priced at the episode model, but *reported* against every billable one: a
+    per-host override onto an unpriced model used to leave the projection
+    quoting a confident figure at `brief.model` while the real run could not
+    count those turns at all. Any unpriced billable model now empties the
+    dollar figure and is named, which is what a dry run is for.
+    """
     total = _projected_usage(rundown, rundown.acts)
-    cost = usage_cost(total, brief.model)
+    unpriced = _unpriced(_billable_models(brief, rundown))
+    cost = None if unpriced else usage_cost(total, brief.model)
     return CostReport(
         usd=None if cost is None else round(cost, 4),
         usage=total,
         limit_usd=brief.max_cost_usd,
-        unpriced_models=[] if cost is not None else [brief.model],
+        unpriced_models=unpriced,
         estimated=True,
     )
+
+
+def _replay_model(usage: RealtimeUsage, billable: Iterable[str], fallback: str) -> str:
+    """The model to charge a replayed act at: the dearest one it could have used.
+
+    A checkpoint stores one aggregated `usage` with no per-model split, while
+    the live run charged every turn at its own host's model (`HostSpec.model`
+    overrides the episode's). Replaying at the episode model under-counted each
+    act whose hosts were overridden onto a dearer model, so the restored ceiling
+    erred *open* by exactly that difference. Until the checkpoint carries a
+    per-model breakdown, the replay errs closed: the priced billable model that
+    makes this usage cost the most. A run with no overrides is unaffected.
+    """
+    priced = [(cost, model) for model in billable if (cost := usage_cost(usage, model)) is not None]
+    return max(priced)[1] if priced else fallback
 
 
 def _refuse_a_resume_that_cannot_finish(budget: CostBudget, run_id: str, remaining_acts: int) -> None:
@@ -718,23 +906,26 @@ async def _load_checkpoint(
     try:
         mp3 = await storage.read("audio", audio_name)
         meta = ActCheckpoint.model_validate_json((await storage.read("audio", meta_name)).decode())
-        # A sidecar this installation did not write is treated as corrupt, not
-        # as fatal: its `usage` is replayed straight into the shared budget and
-        # its turns become part of the finished episode, so re-recording the act
-        # is the right answer. Also catches negative token counts, which
-        # `RealtimeUsage` now rejects at validation above.
+        # A checkpoint that is not this run's, or not this installation's, is
+        # treated as corrupt, not as fatal: its `usage` is replayed straight
+        # into the shared budget and its turns become part of the finished
+        # episode, so re-recording the act is the right answer. (Negative token
+        # counts already failed `RealtimeUsage` validation above.)
+        #
+        # The bindings apply whenever the sidecar carries them — secret or not.
+        # They are free, and they catch the attack that needs no forgery: a
+        # genuine pair recorded under another run and copied over this run's
+        # act names, or an mp3 swapped out from under its own sidecar. Only a
+        # checkpoint written before the fields existed (empty) is exempt.
+        if meta.run_id and meta.run_id != run_id:
+            raise ValueError(f"checkpoint belongs to run {meta.run_id!r}, not {run_id!r}")
+        if meta.audio_sha256 and meta.audio_sha256 != hashlib.sha256(mp3).hexdigest():
+            raise ValueError("checkpoint audio does not match the digest in its sidecar")
+        # The signature is the layer for an *edited* sidecar, and the bindings
+        # are inside it, so a validly-signed checkpoint minted by the attacker's
+        # own run still cannot be re-addressed to this one.
         if not meta.verify():
             raise ValueError(f"checkpoint signature does not match ({RUN_SECRET_ENV} is set)")
-        if _run_secret() is not None:
-            # Only meaningful once there is a signature to make them binding —
-            # unsigned, these fields are as forgeable as the rest of the file.
-            # Together they stop a validly-signed checkpoint minted by the
-            # attacker's own run from being replayed onto this one, and stop the
-            # mp3 beside it from being swapped for different audio.
-            if meta.run_id != run_id:
-                raise ValueError(f"checkpoint belongs to run {meta.run_id!r}, not {run_id!r}")
-            if meta.audio_sha256 != hashlib.sha256(mp3).hexdigest():
-                raise ValueError("checkpoint audio does not match the digest its sidecar was signed with")
         # Decoding belongs inside the guard, not after it. A truncated write —
         # LocalStorageBackend.write is a plain open+write, so a crash leaves one
         # reachable — and a zero-audio act both fail here rather than at the
@@ -1127,6 +1318,10 @@ async def simulate_podcast(
             )
 
     if rundown is None:
+        # With only a premise, planning is itself a billed call — refuse a
+        # ceiling the episode model cannot honour before paying for it. The
+        # per-host models the planner may assign are checked again below.
+        check_ceiling_is_enforceable(effective)
         rundown = await resolve_rundown(effective)
     # Idempotent for anything `resolve_rundown` produced; the resume path skips
     # that call entirely and can be replaying a manifest written before voices
@@ -1138,6 +1333,8 @@ async def simulate_podcast(
     # over anything restored from the manifest) and the rundown that carries the
     # per-host model overrides. Still before any session opens.
     check_ceiling_is_enforceable(effective, rundown)
+    if effective.stems:
+        _refuse_stem_names_that_collide(rundown)
 
     if effective.filename is not None:
         # The final write runs this same check, but only after every act has
@@ -1227,7 +1424,11 @@ async def simulate_podcast(
             on_progress(f"resuming run {run_id}: reusing {len(reuse)}/{len(rundown.acts)} acts")
 
     todo = [act for act in rundown.acts if act.id not in reuse]
-    replayed = sum(usage_cost(a.result.usage, effective.model) or 0.0 for a in reuse.values())
+    billable = _billable_models(effective, rundown)
+    replay_models = {
+        act_id: _replay_model(act.result.usage, billable, effective.model) for act_id, act in reuse.items()
+    }
+    replayed = sum(usage_cost(act.result.usage, replay_models[act_id]) or 0.0 for act_id, act in reuse.items())
     remaining = usage_cost(_projected_usage(rundown, todo), effective.model)
     budget = CostBudget(
         effective.max_cost_usd,
@@ -1240,8 +1441,8 @@ async def simulate_podcast(
         # loop below. Marking and charging together under-reported the count the
         # abort tells the user to decide on.
         budget.mark_act_complete(existing.result.act_id)
-    for existing in reuse.values():
-        budget.charge(existing.result.usage, effective.model)
+    for act_id, existing in reuse.items():
+        budget.charge(existing.result.usage, replay_models[act_id])
     if effective.resume and todo:
         _refuse_a_resume_that_cannot_finish(budget, run_id, len(todo))
 
