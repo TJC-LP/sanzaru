@@ -299,85 +299,149 @@ charged at zero.
 
 ## gpt-live-1 (experimental)
 
-`--model gpt-live-1` records the hosts on OpenAI's **Live API** instead of the Realtime API.
-It is the same producer, the same rundown, the same checkpoints and resume — but the model
-underneath is a different kind of thing. The code lives in `audio/realtime/live_agent.py`;
-`producer.run_act` seats a `LiveAgent` or a `RealtimeAgent` per host by
-`is_live_model(host.model or episode.model)`, so one episode can mix them. Everything below
-was measured against the real API on 2026-09-15 (openai 3.14.0); the first design, built from
-the SDK types alone, recorded 11 empty turns, and each of these facts is why.
+`--model gpt-live-1` records the hosts on OpenAI's **Live API** instead of the Realtime API,
+behind the same rundown, checkpoints and resume. The model is full duplex — it hears and
+speaks at once and decides for itself when to talk — so the producer's half-duplex floor
+control is the wrong shape for it, and there are two ways to record a Live table:
 
-**A different API.** The Live connection is opened without a model (`client.live.connect()`)
-and configured with a single `session.start` — model, instructions (~2k tokens accepted,
-`session.started` back in under a second), voice, PCM format — that is immutable afterwards.
-There is no `session.update`. Steering goes out as `session.instructions.append` (500-token
-limit; notes are trimmed to ~1500 characters), audio in as `session.input_audio.append`, and the
-session is ended with `session.close`, answered by `session.closed` with the final usage. Every
-append is acknowledged (`session.instructions.appended` / `session.commentary.appended`, echoing
-the client `event_id`); two appends in flight at once are accepted. Voices are the Live built-in
-set (`LIVE_VOICES` in `types.py`), a superset of the realtime voices, so the default assignment
-still works.
+- **`duplex` (default, `--live-mode duplex`)** — every host hears every other host
+  continuously for the whole act and they take turns themselves. The producer steers with
+  *silent* notes on the act clock and the act is a live, time-aligned mix. `audio/realtime/duplex.py`.
+- **`cued` (`--live-mode cued`)** — the Realtime producer loop: one host is cued, its speech
+  collected and played to the others, next host. The fallback, and what a table mixing Realtime
+  and Live hosts always uses (only the producer can hold a Realtime host's floor).
+
+Everything below was measured against the real API (openai 3.14.0, 2026-09-15). The first
+design, built from the SDK types alone, recorded 11 empty turns; the cued loop that fixed it
+then exposed three seams in a real two-act episode — a steering note read aloud, a host
+repeating its previous line verbatim, and a false start on most turns — and duplex mode is
+the answer to those.
+
+### The API, as measured
+
+**One immutable `session.start`, then appends.** The connection is opened without a model
+(`client.live.connect()`); `session.start` carries model, instructions (~2k tokens accepted,
+`session.started` back in under a second), voice and PCM format, and none of it can change
+afterwards. Audio goes in on `session.input_audio.append`; `session.close` is answered by
+`session.closed` with the final usage. Every append is acknowledged (`*.appended`, echoing
+the client `event_id`) and two may be in flight at once. Voices are the Live built-in set
+(`LIVE_VOICES`), a superset of the realtime voices.
 
 **The session timeline only advances while input audio is streaming.** With nothing on
-`session.input_audio.append` the model never speaks, appended instructions are never applied,
-`usage.seconds` stays at 0.0, and at close the server returns one
-`context_injection_incomplete` error per pending append (20 of them in the failed run). So each
-`LiveAgent` runs a **clock task** from `session.started` to `session.close`: one 100 ms PCM16
-frame every 100 ms, silence when there is nothing to hear, otherwise frames from an inbox. The
-clock keeps ticking while the agent itself speaks. Two consequences:
+`input_audio.append` the model never speaks, appends are never applied, `usage.seconds`
+stays at 0.0, and at close the server returns one `context_injection_incomplete` error per
+pending append. Each `LiveAgent` therefore runs a **clock task** from `session.started` to
+`session.close`: one 100 ms PCM16 frame every 100 ms — silence when there is nothing to hear,
+otherwise a per-source mix of what other hosts are saying. Consequently **an act runs in real
+time**: a 90-second act takes about 90 seconds of wall clock. Acts still record in parallel.
 
-- **An act runs in real time.** A 1-minute act takes about a minute of wall clock (plus the
-  per-turn cue latency and end-of-turn silence). Acts still record in parallel, so a 30-minute
-  episode in six acts is ~5 minutes, not 30 — but the Realtime path's "30 minutes in ~1 minute"
-  does not apply here.
-- **Live hosts hear each other live, not by replay.** The host on the floor forwards each
-  output frame, from its first speech frame on (pauses included, leading silence dropped),
-  into the other live hosts' inboxes, where their clocks play it out at pace. `run_act`
-  therefore skips the post-turn `hear()` for live listeners of a live speaker — replaying would
-  double both the wall clock and what they heard. In a mixed episode a live host hearing a
-  Realtime host does go through `hear()`, which queues the turn and waits until the clock has
-  played it (so "heard" means heard before the host is cued), and a Realtime host hearing a live
-  host gets the trimmed speech replayed as before.
+**Output is a continuous frame stream that includes silence.** About ten
+`output_audio.delta` a second whether or not the model is talking; between and after speech
+the frames are exact zeros (a few RMS 1–200 frames on word edges, speech at 500–3500).
+"No delta for N seconds" never fires, so speech is detected by loudness
+(`SPEECH_RMS_THRESHOLD` 300).
 
-**Output is a continuous frame stream that includes silence.** About ten `output_audio.delta`
-a second whether or not the model is talking; between and after speech the frames are exact
-zeros (a handful of RMS 1–200 frames on word edges). "No delta for N seconds" never fires. Turn
-boundaries are therefore detected by **loudness**: a turn starts at the first frame whose PCM16
-RMS clears `SPEECH_RMS_THRESHOLD` (300 — measured speech sits at 500–3500), ends after
-`end_of_turn_silence_s` (1.2 s) of sub-threshold frames, or at `2 × turn_seconds` of speech —
-reported `truncated`, followed by a stop instruction, and anything said after is discarded. The
-returned PCM is trimmed to the speech, so `Turn.seconds` is talking time, not stream time.
-First speech was measured 0.6 s after the cue; if none arrives within `max(6 s, 3 × silence)`
-the turn is recorded empty with a warning rather than failing the act — the producer's stall
-timeout still owns genuine hangs. There is no token cap on a Live turn, so `--turn-tokens` has
-no effect; the length rule in the prompt and the 2× cap are what bound it.
+**`instructions.append` is not a silent channel; `thinking.append` is.** A producer note
+sent as `session.instructions.append` was spoken verbatim in a recording ("Now Gus has
+wrapped, so you can land the through-line and sign off"). The same shape of note on
+`session.thinking.append` was followed — the host opened the segment as asked — and never
+voiced; speech began ~4 s after the note. All steering now uses `thinking.append`
+(`LiveAgent.think`; `steer()` delegates to it), 500 tokens per note.
 
-**Billed by the minute, per host.** $0.05 per session-minute, metered per second, and no
-tokens at all. `usage.seconds` meters *streamed session time* (14.0 mid-run and 19.0 at a 20 s
-close in the probe), not spoken audio, and it is cumulative — never sum it across events. Every
-host's session is open for the whole act, listening included, so a two-host 6-minute act costs
-about `2 × 6 × $0.05 = $0.60` plus overhead, regardless of how many turns it holds. The dry run
-projects `target_seconds × hosts` as `usage.live_seconds` and prints it as session-minutes; that
-is a floor. Each turn charges the growth in the session's cumulative seconds, taken as the larger
-of the API's figure and the wall clock since `session.started` (the report lags the turn it lands
-after), and closing the session charges the remainder. `RealtimeUsage.live_seconds` is signed
-into checkpoints like the token counters (signature v2).
+**`usage.seconds` meters streamed session time**, not spoken audio, and it is cumulative
+(never sum it). $0.05 per session-minute per host, metered per second, no tokens: a two-host
+90-second act is ~$0.15 plus setup and close. The dry run projects `target_seconds × hosts` as
+`usage.live_seconds`; at run time each host charges the growth of its cumulative seconds (the
+larger of the API's figure and the wall clock since `session.started`), every 15 s in duplex
+mode and per turn in cued mode, with the remainder charged at close.
+`RealtimeUsage.live_seconds` is signed into checkpoints (signature v2).
 
-**Floor control is advisory.** The model is full duplex: it decides when to speak, with no
-`response.create` to ask and no `response.done` to wait for. The session instructions tell it to
-speak only when cued and to stay silent while it hears its co-hosts; `speak()` sends the cue (an
-instruction plus a short `session.commentary.append` nudge) and waits, bounded, for the acks
-before looking for speech — the acks were measured arriving *after* the first speech frame, so
-this never delays a turn. Speech the model produces while it does *not* hold the floor is
-discarded — counted at debug per turn and at info per act as "off-floor" seconds — because a
-full-duplex model may talk over the host it is hearing. Idle silence frames are not counted.
-`context_injection_incomplete` errors at close are logged as a warning naming the note that was
-lost (by its `event_id`), never raised: the audio is already recorded by then.
+### Duplex mode
 
-Still unverified against a live key: how reliably the model honours the cue in a long
-multi-turn act (the measured session was a single cued turn; it spoke ~11 s against a 6 s
-rule, so expect the 2× cap to matter), whether it ever echoes the commentary nudge aloud, and
-the tuning of the 1.2 s end-of-turn silence and the 300 RMS threshold on quieter voices.
+Every host's session is opened, configured with the act instructions plus a live-conversation
+contract (who opens, take turns naturally, never talk over someone mid-sentence, short
+acknowledgements are fine, silence is fine, never repeat a point, never read producer notes
+aloud), and from that moment each host's output frames are fed into every other host's input
+clock as they arrive — from its first speech frame on, pauses included. With three or more
+hosts the clock *mixes* the sources per frame, so two hosts talking at once reach a third as
+overlap rather than one after the other. No cues are sent. The models negotiate turn-taking.
+
+The producer's plan is laid out on the **act clock** (`duplex.plan_notes`) and delivered as
+`thinking.append` notes: at 0 s the opener is told to open (the cued loop's opening note) and the
+others to listen; talking points after the first are spread across the first 85 % of
+`target_seconds`, each handed to a rotating host to raise; the caller's `turn_notes` land at
+`target × index / max_turns` with their turn's host, `direction` rides in the instructions, and
+`closing_note` / the `max_turns − 1` takeover work exactly as in the cued loop; at 85 % the
+designated closer (whoever would have taken the last planned turn) is told to start landing
+and the others to give one short reply at most; at 100 % everyone is told the segment is over.
+A stall (everyone silent for 5 s mid-act) nudges the next host with the current point.
+
+**Collisions.** A host counts as speaking while a speech frame arrived in the last 0.3 s. When
+two or more are speaking, the overlap is accumulated into `collision_seconds` (reported per
+act), and once it has run 1.5 s the host whose speech began later gets a silent "you are
+talking over X — stop, let them finish, then respond" (6 s cooldown).
+
+**The act ends** when the close has been cued, the closer has spoken since, and everyone has
+been quiet for two end-of-turn silence gaps (2.4 s by default) — or, if the wrap note has gone
+out, when everyone is quiet for that long regardless. A hard cap of `target × 1.5 + 30 s`
+(never above the act wall budget) cuts a table that will not land, reported as
+`stop_reason="wall_clock"`.
+
+**Audio and transcript.** Every host's output stream is recorded from the same instant, a
+host whose first frame arrives late is padded for the gap, and the act is the streams mixed
+(`ActResult.mixed_pcm`), with the per-host streams kept as `stems`. Turns come from each host's
+timestamped `session.output_transcript.delta` fragments: grouped per host into utterances
+split on gaps over 1.2 s, moved onto the act clock, ordered by start, and emitted as ordinary
+`Turn`s with `seconds` from the timestamps and empty audio. Summaries, QC (which transcribes
+the mix) and checkpoints therefore work unchanged. The sidecar records `mode: "duplex"` and
+`collision_seconds`; a resumed duplex act is the mixed mp3 whole plus the sidecar's turns — the
+per-host stems are not on disk, so a `--stems` render of a resumed duplex act is silent for
+that act and says so.
+
+### Cued mode (fallback)
+
+The Realtime producer loop over Live sessions. Speech is detected by loudness; a turn starts at
+the first frame over threshold, ends after `end_of_turn_silence_s` (1.2 s) of quiet frames or at
+`2 × turn_seconds` of speech (`truncated`, followed by a stop instruction), and is trimmed to
+the speech. Anything a host says off the floor is discarded and counted. Three fixes came out
+of the recording that motivated duplex: steering notes go on the silent channel; the next host
+is cued only after a **settle gap** (1 s after the previous turn has finished playing into its
+ears — cueing at the instant its co-host stopped is what produced verbatim repeats two turns
+apart); and a **false start** at the head of a turn (speech before the first 0.5 s of sustained
+voice, at most 1 s of it) is trimmed. There is no token cap on a Live turn; `--turn-tokens` has
+no effect.
+
+### Still unverified
+
+How duplex behaves with three or more hosts (recorded with two); whether the 300 RMS threshold
+holds for quieter voices; and whether forwarding intra-turn pauses matters to the listening
+model. See the measured recordings below for what two hosts actually did.
+
+### Measured, same premise, both modes (2026-09-15)
+
+The episode that exposed the seams was re-recorded from an identical rundown ("Why Cats Knock
+Things Off Tables", two hosts, two 90 s acts, `--turn-seconds 10`):
+
+| | duplex (2 acts) | cued (act 1 only, for comparison) |
+|---|---|---|
+| audio / wall clock | 177 s in 113 s (acts parallel) | 99 s in 138 s |
+| utterances | 16 + 16 | 12 |
+| producer text spoken | none | none (was: one note read verbatim) |
+| repeated turns | none, exact or near | none (was: two near-verbatim repeats) |
+| false starts | none in the transcript | most turns still open with one ("Yeah, but Yeah, but…") |
+| overlap (`collision_seconds`) | 4.2 s, 2.1 s | n/a |
+| off-floor speech discarded | n/a | 0.1 s, 0.5 s (was: 1.8 s, 2.7 s) |
+| QC | pass, similarity 0.969 / 0.989 | warn, 0.854 (one talking point skipped) |
+| cost | $0.31 (367 session-seconds) | $0.20 (246 session-seconds) |
+
+Duplex handoffs sounded like conversation — act 2 opened on the question act 1 ended with, the
+episode closed "Bye." / "Bye!" — with the model yielding on its own after a collision ("And" /
+"That's when the universe" / then the full line). Two things to know when reading a duplex
+transcript: back-channel ("Mm.", "The deluxe") shows up as its own short turn, because the turns
+are grouped from timestamps rather than from who held a floor; and QC compares the API's own
+transcript against a transcription of the *mix*, so overlapping speech costs a little
+similarity. In cued mode the false start is in the model's own transcript as well as its audio,
+so the ≤1 s audio trim cannot remove it from the text.
 
 ---
 
@@ -555,7 +619,8 @@ worth watching past an hour.
 src/sanzaru/audio/realtime/
 ├── types.py      # rundown/act/turn/usage values, PCM16 helpers
 ├── agent.py      # one persona on one Realtime connection: configure / speak / hear / steer
-├── live_agent.py # the same surface on a Live (gpt-live) connection: full duplex, per-minute billing
+├── live_agent.py # the same surface on a Live (gpt-live) connection: input clock, loudness, per-minute billing
+├── duplex.py     # gpt-live default: everyone hears everyone, silent notes on the act clock, mixed act
 ├── producer.py   # floor control, coverage steering, act budgets, prompts
 ├── rundown.py    # pre-production: premise → parallel-recordable acts
 ├── budget.py     # shared cost ceiling, charged every turn

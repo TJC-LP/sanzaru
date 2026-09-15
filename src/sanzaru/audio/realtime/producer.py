@@ -54,6 +54,7 @@ from .types import (
     ActBrief,
     ActResult,
     HostSpec,
+    LiveMode,
     Turn,
     TurnAudio,
     extension_cap,
@@ -198,6 +199,11 @@ class SimulationSettings:
     live_turn_silence_s: float = DEFAULT_END_OF_TURN_SILENCE_S
     """Live hosts only: how long output audio must be absent before a turn is
     over. A Live turn has no end marker, so this is the boundary."""
+    live_mode: LiveMode = "duplex"
+    """How an all-Live table records: `duplex` (hosts hear each other
+    continuously, producer steers silently on the act clock — see `duplex.py`)
+    or `cued` (this module's floor-control loop). A table with any Realtime host
+    is always cued: only the producer can hold a Realtime host's floor."""
 
 
 # ---------- prompts ----------
@@ -575,6 +581,26 @@ async def run_act(
     """
     if not hosts:
         raise ValueError(f"act {brief.id!r} has no hosts")
+
+    if (
+        settings.live_mode == "duplex"
+        and len(hosts) >= 2
+        and all(is_live_model(h.model or settings.model) for h in hosts)
+    ):
+        # Lazy: `duplex` imports this module for its prompt and order helpers.
+        from .duplex import run_duplex_act
+
+        return await run_duplex_act(
+            brief,
+            hosts,
+            settings,
+            is_first_act=is_first_act,
+            is_last_act=is_last_act,
+            start_index=start_index,
+            connect=connect,
+            budget=budget,
+            on_turn=on_turn,
+        )
 
     connect_fn = connect or _default_connect
     result = ActResult(act_id=brief.id)

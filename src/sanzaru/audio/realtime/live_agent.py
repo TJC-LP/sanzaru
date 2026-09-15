@@ -30,10 +30,15 @@ a different animal. Four facts about it, all measured against the real API on
   `RealtimeUsage.live_seconds`; `finish()` reports what the close settles on
   top. Listening bills like talking, so every host's session costs the act.
 
-Live agents in one act hear each other *as they speak*: the agent on the floor
-forwards each output frame, from the first speech frame on, into its listeners'
-inboxes (`set_listeners`), where their clocks play it out at pace. That is what
-keeps an act at ~1x real time instead of speak-then-replay's 2x.
+Live agents in one act hear each other *as they speak*: an agent forwards its
+output frames into its listeners' inboxes (`set_listeners`), where their clocks
+mix them per frame and play them out at pace. In the *cued* loop that happens
+only while the agent holds the floor; in *duplex* mode (`always=True`, see
+`duplex.py`) it happens for the whole act, and the models negotiate turn-taking
+themselves — which is what the model is for. Producer notes go out on
+`session.thinking.append`: `session.instructions.append` was spoken aloud in a
+real recording ("Now Gus has wrapped, so you can land the through-line"), while a
+deliberately line-shaped thinking note was followed and never voiced.
 
 Every `openai.types.live` import is TYPE_CHECKING-only: the CLI startup-weight
 test forbids pulling `openai` in at `sanzaru.cli` import time.
@@ -53,7 +58,7 @@ from anyio.abc import TaskGroup
 from ...config import logger
 from ...exceptions import RealtimeAPIError
 from .agent import SpokenTurn
-from .types import HostSpec, RealtimeUsage
+from .types import HostSpec, LiveMode, RealtimeUsage
 
 if TYPE_CHECKING:
     from openai.resources.live.live import AsyncLiveConnection
@@ -110,6 +115,23 @@ model could echo without damage."""
 
 STOP_CUE = "PRODUCER: stop talking now. Say nothing more until your next cue."
 
+CUED_SETTLE_S = 1.0
+"""Cued loop: pause between the previous turn's fan-out draining and the next
+cue. A host cued the instant its co-host stopped answered the *previous*
+exchange — verbatim repeats two turns apart — because it had not absorbed the
+one it just heard."""
+
+FALSE_START_MIN_VOICE_S = 0.5
+FALSE_START_MAX_TRIM_S = 1.0
+"""Cued loop: a full-duplex model starts reacting to what it hears ("but", "So")
+and restarts on the cue. Speech at the head of a turn before the first
+`FALSE_START_MIN_VOICE_S` of sustained voice is trimmed, never more than
+`FALSE_START_MAX_TRIM_S` of it, so a genuine short opener survives."""
+
+SPEAKING_HOLD_S = 0.3
+"""How long after its last speech frame a host still counts as speaking, so a
+breath between words is not read as a yield."""
+
 INJECTION_INCOMPLETE = "context_injection_incomplete"
 """The error code the server returns, at close, for every append it had not
 finished applying. A warning naming the lost note, never a fault: the audio
@@ -129,6 +151,60 @@ def frame_rms(pcm: bytes) -> float:
         samples.frombytes(pcm[: len(pcm) - len(pcm) % 2])
         return (sum(s * s for s in samples) / len(samples)) ** 0.5
     return float(audioop.rms(pcm[: len(pcm) - len(pcm) % 2], 2))
+
+
+def mix_pcm16(frames: Sequence[bytes]) -> bytes:
+    """Sum PCM16 buffers sample by sample, clipping, padded to the longest."""
+    frames = [f for f in frames if f]
+    if not frames:
+        return b""
+    if len(frames) == 1:
+        return frames[0]
+    length = max(len(f) for f in frames)
+    length -= length % 2
+    try:
+        import audioop
+
+        mixed = frames[0][:length].ljust(length, b"\x00")
+        for other in frames[1:]:
+            mixed = audioop.add(mixed, other[:length].ljust(length, b"\x00"), 2)
+        return mixed
+    except ImportError:  # pragma: no cover - the extra is required for this feature
+        from array import array
+
+        total = array("h", bytes(length))
+        for other in frames:
+            samples = array("h")
+            samples.frombytes(other[:length].ljust(length, b"\x00"))
+            for index, value in enumerate(samples):
+                total[index] = max(-32768, min(32767, total[index] + value))
+        return total.tobytes()
+
+
+def trim_false_start(pcm: bytes, bytes_per_second: int, frame_bytes: int) -> bytes:
+    """Drop a false start at the head of a turn.
+
+    Scans `frame_bytes` windows from the start for the first run of
+    `FALSE_START_MIN_VOICE_S` consecutive speech frames and cuts everything
+    before it — but only when that run begins within `FALSE_START_MAX_TRIM_S`.
+    A turn that never settles into sustained voice is returned unchanged.
+    """
+    if frame_bytes <= 0 or len(pcm) < frame_bytes:
+        return pcm
+    need = max(1, round(FALSE_START_MIN_VOICE_S * bytes_per_second / frame_bytes))
+    limit = int(FALSE_START_MAX_TRIM_S * bytes_per_second)
+    run = 0
+    for offset in range(0, len(pcm) - frame_bytes + 1, frame_bytes):
+        if frame_rms(pcm[offset : offset + frame_bytes]) >= SPEECH_RMS_THRESHOLD:
+            run += 1
+            if run >= need:
+                start = offset - (need - 1) * frame_bytes
+                return pcm[start:] if 0 < start <= limit else pcm
+        else:
+            run = 0
+        if offset > limit + need * frame_bytes:
+            break
+    return pcm
 
 
 def _turn_taking_rules(turn_seconds: float) -> str:
@@ -176,11 +252,14 @@ class LiveAgent:
         sample_rate: int,
         end_of_turn_silence_s: float = DEFAULT_END_OF_TURN_SILENCE_S,
         start_wait_s: float | None = None,
+        settle_s: float = CUED_SETTLE_S,
+        mode: LiveMode = "cued",
     ) -> None:
         if end_of_turn_silence_s <= 0:
             raise ValueError("end_of_turn_silence_s must be positive")
         self.spec = spec
         self.model = model
+        self.mode: LiveMode = mode
         self._conn = connection
         self._turn_seconds = turn_seconds
         self._sample_rate = sample_rate
@@ -202,11 +281,16 @@ class LiveAgent:
         self._fault: RealtimeAPIError | None = None
         self._finished = False
 
-        # ---- ears: the input clock and its inbox ----
+        # ---- ears: the input clock and its inboxes ----
         self._clock_running = False
-        self._inbox = bytearray()
+        self._clock_started_at: float | None = None
+        self._inboxes: dict[str, bytearray] = {}
+        """One queue per source; the clock mixes a frame from each per tick, so
+        two hosts talking at once reach a third as overlap, not one after the
+        other."""
         self._frames_sent = 0
         self._listeners: list[LiveAgent] = []
+        self._forward_always = False
 
         # ---- mouth: the turn being collected ----
         self._on_floor = False
@@ -221,9 +305,22 @@ class LiveAgent:
         self._off_floor_bytes = 0
         self._off_floor_reported = 0
 
+        # ---- the whole-act view a duplex act needs ----
+        self._ever_spoke = False
+        self._last_speech_at: float | None = None
+        self._speech_onset_at: float | None = None
+        self._recording = False
+        self._record_t0 = 0.0
+        self._stream = bytearray()
+        self.transcript_deltas: list[tuple[int, int, str]] = []
+        """(start_ms, end_ms, text) on the session timeline, every fragment the
+        model reported, whoever held the floor."""
+
         # ---- injections awaiting their `*.appended` ----
         self._pending: dict[str, str] = {}
         self._event_counter = 0
+        self._settle_s = settle_s
+        self._ever_heard_a_turn = False
 
         # ---- billing ----
         self._reported_seconds = 0.0
@@ -251,13 +348,63 @@ class LiveAgent:
 
     @property
     def inbox_seconds(self) -> float:
-        """Audio queued for this agent's ears that the clock has not played yet."""
-        return len(self._inbox) / self._bytes_per_second
+        """Audio queued for this agent's ears that the clock has not played yet (longest source)."""
+        if not self._inboxes:
+            return 0.0
+        return max(len(queue) for queue in self._inboxes.values()) / self._bytes_per_second
 
-    def set_listeners(self, listeners: Sequence[LiveAgent]) -> None:
-        """Who hears this agent live: its output frames are fed to their inboxes
-        as they arrive, so the producer must not `hear()` them again."""
+    @property
+    def clock_started_at(self) -> float | None:
+        """`time.monotonic()` when the input clock began; the session timeline's zero."""
+        return self._clock_started_at
+
+    @property
+    def speaking(self) -> bool:
+        """Whether a speech frame arrived within the last `SPEAKING_HOLD_S`."""
+        return self._last_speech_at is not None and time.monotonic() - self._last_speech_at <= SPEAKING_HOLD_S
+
+    @property
+    def speech_onset_at(self) -> float | None:
+        """When the current (or last) stretch of speech began, monotonic."""
+        return self._speech_onset_at
+
+    @property
+    def last_speech_at(self) -> float | None:
+        return self._last_speech_at
+
+    @property
+    def ever_spoke(self) -> bool:
+        return self._ever_spoke
+
+    @property
+    def stream_pcm(self) -> bytes:
+        """Everything this host's session output since `start_recording()`, on the act clock."""
+        return bytes(self._stream)
+
+    def set_listeners(self, listeners: Sequence[LiveAgent], *, always: bool = False) -> None:
+        """Who hears this agent live.
+
+        Its output frames are fed to their inboxes as they arrive, so the
+        producer must not `hear()` them again. With `always`, forwarding runs
+        for the whole act from this host's first speech frame — duplex — rather
+        than only while it holds the floor.
+        """
         self._listeners = [agent for agent in listeners if agent is not self]
+        self._forward_always = always
+
+    def start_recording(self) -> None:
+        """Begin keeping this host's output stream, aligned to now.
+
+        Every duplex host starts recording at the same instant, so the streams
+        line up on one act clock; a host whose first frame arrives late is
+        padded with silence for the gap.
+        """
+        self._recording = True
+        self._record_t0 = time.monotonic()
+        self._stream = bytearray()
+
+    def stop_recording(self) -> None:
+        self._recording = False
 
     # ---------- lifecycle ----------
 
@@ -320,16 +467,9 @@ class LiveAgent:
         """
         silence = b"\x00" * self._frame_bytes
         next_tick = time.monotonic()
+        self._clock_started_at = next_tick
         while self._clock_running and not self._closed and self._fault is None:
-            if self._inbox:
-                frame = bytes(self._inbox[: self._frame_bytes])
-                del self._inbox[: self._frame_bytes]
-                if len(frame) < self._frame_bytes:
-                    frame += silence[len(frame) :]
-                if not self._inbox:
-                    self._notify()  # `hear()` may be waiting for the drain
-            else:
-                frame = silence
+            frame = self._next_input_frame(silence)
             try:
                 await self._send({"type": "session.input_audio.append", "audio": base64.b64encode(frame).decode()})
             except RealtimeAPIError:
@@ -338,16 +478,44 @@ class LiveAgent:
             next_tick += FRAME_MS / 1000
             await anyio.sleep(max(0.0, next_tick - time.monotonic()))
 
+    def _next_input_frame(self, silence: bytes) -> bytes:
+        """One frame for the ears: the per-source queues mixed, or silence."""
+        pieces: list[bytes] = []
+        drained = False
+        for source, queue in list(self._inboxes.items()):
+            if not queue:
+                continue
+            piece = bytes(queue[: self._frame_bytes])
+            del queue[: self._frame_bytes]
+            pieces.append(piece.ljust(self._frame_bytes, b"\x00"))
+            if not queue:
+                del self._inboxes[source]
+                drained = True
+        if drained and not self._inboxes:
+            self._notify()  # `hear()` may be waiting for the drain
+        if not pieces:
+            return silence
+        return pieces[0] if len(pieces) == 1 else mix_pcm16(pieces)
+
     def _handle(self, event: object) -> None:
         event_type = getattr(event, "type", "")
         if event_type == "session.output_audio.delta":
             self._handle_audio(base64.b64decode(getattr(event, "delta", "") or ""))
         elif event_type == "session.output_transcript.delta":
+            text = getattr(event, "delta", "") or ""
             if self._on_floor:
-                self._turn_text.append(getattr(event, "delta", "") or "")
+                self._turn_text.append(text)
+            start_ms = getattr(event, "start_ms", None)
+            end_ms = getattr(event, "end_ms", None)
+            if isinstance(start_ms, int) and isinstance(end_ms, int):
+                self.transcript_deltas.append((start_ms, end_ms, text))
         elif event_type == "session.usage.updated":
             self._note_usage(getattr(event, "usage", None))
-        elif event_type in ("session.instructions.appended", "session.commentary.appended"):
+        elif event_type in (
+            "session.instructions.appended",
+            "session.commentary.appended",
+            "session.thinking.appended",
+        ):
             self._pending.pop(str(getattr(event, "client_event_id", "") or ""), None)
             self._notify()
         elif event_type == "session.started":
@@ -367,6 +535,28 @@ class LiveAgent:
 
     def _handle_audio(self, pcm: bytes) -> None:
         loud = frame_rms(pcm) >= SPEECH_RMS_THRESHOLD
+        now = time.monotonic()
+        if loud:
+            if not self.speaking:
+                self._speech_onset_at = now
+            self._last_speech_at = now
+            self._ever_spoke = True
+        if self._recording:
+            if not self._stream:
+                # First frame since recording began: pad for the time the act
+                # clock ran before this session produced anything, so every
+                # host's stream shares one zero.
+                gap = int((now - self._record_t0) * self._bytes_per_second)
+                gap -= gap % 2
+                self._stream.extend(b"\x00" * max(0, gap))
+            self._stream.extend(pcm)
+        if self._forward_always:
+            # Duplex: everything from the first speech frame on, all act long.
+            if self._ever_spoke:
+                for listener in self._listeners:
+                    listener.feed(pcm, self.id)
+            self._notify()
+            return
         if not self._on_floor:
             if loud:
                 # Counted here, reported once per turn in `speak()`.
@@ -385,7 +575,7 @@ class LiveAgent:
             # silence is dropped, and the floor is released before trailing
             # silence runs long.
             for listener in self._listeners:
-                listener.feed(pcm)
+                listener.feed(pcm, self.id)
         self._notify()
 
     def _handle_error(self, error: object) -> None:
@@ -459,35 +649,74 @@ class LiveAgent:
 
     # ---------- the agent surface ----------
 
-    async def configure(self, instructions: str) -> None:
-        """Start the session with the persona, voice and PCM format for this act, then start the clock."""
+    async def configure(self, instructions: str, *, start_clock: bool = True) -> None:
+        """Start the session with the persona, voice and PCM format for this act.
+
+        By default the input clock starts as soon as `session.started` arrives,
+        which is what the cued loop wants. A duplex table passes
+        `start_clock=False` and calls `start_clock()` itself once *every* host
+        is up and wired: the model's timeline only moves with input audio, so
+        holding the clocks is what keeps the opener from speaking into a room
+        where the slower host is not yet listening and nobody is recording.
+        """
         if self._tg is None:
             raise RuntimeError(f"{self.name}: enter the LiveAgent (async with) before configure()")
         audio: dict[str, object] = {"format": {"type": "audio/pcm", "rate": self._sample_rate}}
         if self.spec.voice:
             audio["output"] = {"voice": self.spec.voice}
+        # The cued loop's "speak only when cued" contract; a duplex table gets
+        # its own rules from `duplex.build_duplex_rules` instead.
+        rules = _turn_taking_rules(self._turn_seconds) if self.mode == "cued" else ""
         session: dict[str, object] = {
             "model": self.model,
-            "instructions": instructions + _turn_taking_rules(self._turn_seconds),
+            "instructions": instructions + rules,
             "audio": audio,
         }
         await self._send({"type": "session.start", "session": session})
         if not await self._wait_until(lambda: self._started, SESSION_START_TIMEOUT_S):
             raise RealtimeAPIError(f"{self.name}: no session.started within {SESSION_START_TIMEOUT_S:.0f}s")
+        if start_clock:
+            self.start_clock()
+
+    def start_clock(self) -> None:
+        """Begin streaming input frames; the model's timeline starts here."""
+        if self._tg is None or not self._started:
+            raise RuntimeError(f"{self.name}: start_clock() needs an entered, started session")
+        if self._clock_running:
+            return
         self._clock_running = True
         self._tg.start_soon(self._run_clock)
 
-    async def steer(self, note: str) -> None:
-        """Inject a producer note the audience never hears."""
-        if len(note) > STEER_MAX_CHARS:
-            logger.warning("%s: steering note truncated from %d to %d chars", self.name, len(note), STEER_MAX_CHARS)
-            note = note[:STEER_MAX_CHARS]
-        await self._append("instructions", note, f"steer: {note[:60]!r}")
+    def check_alive(self) -> None:
+        """Raise the session's fault, or RealtimeAPIError if it has closed."""
+        self._check_alive()
 
-    def feed(self, pcm: bytes) -> None:
-        """Queue audio for this agent's ears without waiting; the clock plays it out."""
+    async def steer(self, note: str) -> None:
+        """Inject a producer note the audience never hears — on the silent channel."""
+        await self.think(note, label=f"steer: {note[:60]!r}")
+
+    async def think(self, note: str, *, label: str | None = None) -> None:
+        """`session.thinking.append`: context the model acts on but does not voice.
+
+        Verified live with a note written as a line ("Now Gus has wrapped, so
+        you can land the through-line and sign off"): the model followed it and
+        said something else. The same text on `instructions.append` was read
+        out verbatim in a recording. 500-token limit, trimmed like a steer.
+        """
+        if len(note) > STEER_MAX_CHARS:
+            logger.warning("%s: producer note truncated from %d to %d chars", self.name, len(note), STEER_MAX_CHARS)
+            note = note[:STEER_MAX_CHARS]
+        await self._append("thinking", note, label or f"note: {note[:60]!r}")
+
+    def feed(self, pcm: bytes, source: str = "") -> None:
+        """Queue audio for this agent's ears without waiting; the clock plays it out.
+
+        `source` keeps different speakers in different queues so the clock can
+        mix them frame by frame instead of playing one after the other.
+        """
         if pcm:
-            self._inbox.extend(pcm)
+            self._ever_heard_a_turn = True
+            self._inboxes.setdefault(source, bytearray()).extend(pcm)
 
     async def hear(self, pcm: bytes) -> None:
         """Feed another agent's audio into this one's ears, and wait until it has been heard.
@@ -502,9 +731,9 @@ class LiveAgent:
         """
         if not pcm:
             return
-        self._inbox.extend(pcm)
+        self.feed(pcm, "replay")
         bound = len(pcm) / self._bytes_per_second + 5.0
-        if not await self._wait_until(lambda: not self._inbox, bound):
+        if not await self._wait_until(lambda: not self._inboxes, bound):
             logger.warning("%s: %.1fs of audio still unplayed after %.0fs", self.name, self.inbox_seconds, bound)
 
     async def speak(self) -> SpokenTurn:
@@ -527,6 +756,9 @@ class LiveAgent:
         cap_bytes = int(TURN_AUDIO_CAP_FACTOR * self._turn_seconds * self._bytes_per_second)
         truncated = False
         try:
+            if self._ever_heard_a_turn:
+                # Let what it just heard settle before asking for an answer.
+                await anyio.sleep(self._settle_s)
             await self._append("instructions", TURN_CUE, "turn cue")
             await self._append("commentary", TURN_NUDGE, "turn nudge")
             # Bounded, and never gating: speech frames that arrive meanwhile
@@ -568,6 +800,12 @@ class LiveAgent:
             self._on_floor = False
 
         pcm = bytes(self._turn_pcm[start : min(self._speech_end, start + cap_bytes)])
+        trimmed = trim_false_start(pcm, self._bytes_per_second, self._frame_bytes)
+        if len(trimmed) < len(pcm):
+            logger.debug(
+                "%s: trimmed a %.1fs false start", self.name, (len(pcm) - len(trimmed)) / self._bytes_per_second
+            )
+        pcm = trimmed
         text = "".join(self._turn_text).strip()
         # The turn is over when everyone has heard it: a listener cued with
         # this speech still queued in front of it would answer too early.

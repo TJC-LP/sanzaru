@@ -325,10 +325,32 @@ class FakeLiveConnection:
         end_stream_mid_turn: bool = False,
         lose_injections_at_close: bool = False,
         ack_appends: bool = True,
+        timeline: Sequence[tuple[float, float]] = (),
+        reply_seconds: float = 0.0,
+        reply_after_silence_frames: int = 3,
+        max_replies: int = 1,
     ) -> None:
         import anyio
 
         self.sent: list[dict[str, object]] = []
+        self.sent_at: list[float] = []
+        # ---- duplex scripting: what this host says on the input-frame clock ----
+        # `timeline` is (start_s, duration_s) pairs of speech; `reply_seconds`
+        # makes the host answer for that long once it has heard speech followed
+        # by `reply_after_silence_frames` quiet frames — "speaks when the other
+        # stops". Either makes the fake ignore cues and drive itself.
+        self.timeline = list(timeline)
+        self.reply_seconds = reply_seconds
+        self.reply_after_silence_frames = reply_after_silence_frames
+        self.max_replies = max_replies
+        self._scripted = bool(self.timeline) or reply_seconds > 0
+        self._speaking = False
+        self._utterance_start_tick = 0
+        self._utterances = 0
+        self._heard_loud = False
+        self._quiet_input_frames = 0
+        self._reply_until_tick = -1
+        self._replies = 0
         self.seconds = seconds
         self.transcripts = list(transcripts or [])
         self.usage_seconds = list(usage_seconds)
@@ -370,14 +392,17 @@ class FakeLiveConnection:
     async def send(self, event: dict[str, object]) -> None:
         if self.closed:
             raise RuntimeError("send on a closed fake live connection")
+        import time
+
         self.sent.append(event)
+        self.sent_at.append(time.monotonic())
         event_type = event.get("type")
         if event_type == "session.start":
             if self.start_error is not None:
                 self._emit(FakeEvent("error", error=FakeEvent("err", code="bad", message=self.start_error)))
                 return
             self._emit(FakeEvent("session.started", session=FakeEvent("session", id="sess_1")))
-        elif event_type in ("session.instructions.append", "session.commentary.append"):
+        elif event_type in ("session.instructions.append", "session.commentary.append", "session.thinking.append"):
             from sanzaru.audio.realtime.live_agent import TURN_NUDGE
 
             event_id = str(event.get("event_id") or "")
@@ -394,10 +419,16 @@ class FakeLiveConnection:
 
             pcm = base64.b64decode(str(event["audio"]))
             self.input_frames += 1
-            if any(pcm):
+            loud = any(pcm)
+            if loud:
                 self.heard_speech_bytes += len(pcm)
-            self._on_input_frame()
+            if self._scripted:
+                self._on_scripted_frame(loud)
+            else:
+                self._on_input_frame()
         elif event_type == "session.close":
+            if self._scripted and self._speaking:
+                self._end_utterance(self.input_frames)
             for event_id in self._unacked:
                 self._emit(
                     FakeEvent(
@@ -460,6 +491,48 @@ class FakeLiveConnection:
             self._script_turn()
             return
         self._emit_frames(0.1, LIVE_SILENT_FRAME)
+
+    def _on_scripted_frame(self, heard_loud: bool) -> None:
+        """Duplex script: one output frame per input frame, speech or silence by the timeline."""
+        tick = self.input_frames - 1  # 0-based, 100ms each
+        t = tick / 10
+        if heard_loud:
+            self._heard_loud = True
+            self._quiet_input_frames = 0
+        else:
+            self._quiet_input_frames += 1
+        if (
+            self.reply_seconds > 0
+            and self._heard_loud
+            and self._quiet_input_frames >= self.reply_after_silence_frames
+            and self._replies < self.max_replies
+            and not self._speaking
+        ):
+            self._reply_until_tick = tick + round(self.reply_seconds * 10)
+            self._replies += 1
+            self._heard_loud = False
+        speaking = (
+            any(start <= t < start + duration for start, duration in self.timeline) or tick < self._reply_until_tick
+        )
+        if speaking and not self._speaking:
+            self._utterance_start_tick = tick
+        if not speaking and self._speaking:
+            self._end_utterance(tick)
+        self._speaking = speaking
+        self._emit_frames(0.1, LIVE_LOUD_FRAME if speaking else LIVE_SILENT_FRAME)
+
+    def _end_utterance(self, end_tick: int) -> None:
+        index = self._utterances
+        self._utterances += 1
+        text = self.transcripts[index] if index < len(self.transcripts) else f"utterance {index}"
+        self._emit(
+            FakeEvent(
+                "session.output_transcript.delta",
+                delta=text,
+                start_ms=self._utterance_start_tick * 100,
+                end_ms=end_tick * 100,
+            )
+        )
 
     def _script_turn(self) -> None:
         index = self.turn

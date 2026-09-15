@@ -16,7 +16,7 @@ from __future__ import annotations
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, StringConstraints, model_validator
 
@@ -132,6 +132,16 @@ of the realtime list, so `assign_voices` can keep drawing from `REALTIME_VOICES`
 whichever API a host ends up on."""
 
 LIVE_MODEL_PREFIX = "gpt-live"
+
+LiveMode = Literal["duplex", "cued"]
+"""How an all-Live table is recorded.
+
+`duplex`: every host hears every other host continuously and they negotiate
+turn-taking themselves; the producer steers with silent notes on the act clock
+and the act is a time-aligned mix of the hosts' streams. `cued`: the Realtime
+producer loop — one host is cued at a time, its speech is collected and fed to
+the others — kept as the fallback and used automatically for a mixed
+Realtime/Live table, where nothing but the producer can hold the floor."""
 
 
 def is_live_model(model: str) -> bool:
@@ -476,7 +486,17 @@ class TurnAudio:
 
 @dataclass(slots=True)
 class ActResult:
-    """Everything one recorded act produced."""
+    """Everything one recorded act produced.
+
+    Two shapes share this type. A *cued* act is a sequence of turns, each with
+    its own audio, and the act's sound is their concatenation. A *duplex* act
+    was recorded as N simultaneous streams: `mixed_pcm` is the act's sound,
+    `stems` the per-host streams it was mixed from (same length, aligned), and
+    `audio` still lists the turns — text and timing from the transcripts — but
+    with empty `pcm`, since the speech is already in the mix. `join_pcm()` and
+    `seconds` answer for both, which is what lets checkpointing, stitching,
+    summaries and QC stay shape-agnostic.
+    """
 
     act_id: str
     audio: list[TurnAudio] = field(default_factory=list)
@@ -504,6 +524,18 @@ class ActResult:
 
     A cost abort is not one of these — `CostCeilingError` cancels the act rather
     than ending it, so no result is ever built for it."""
+    mixed_pcm: bytes | None = None
+    """A duplex act's sound: the hosts' streams mixed, aligned on the act clock."""
+    stems: dict[str, bytes] = field(default_factory=dict)
+    """A duplex act's per-host streams (host id → PCM), each as long as the mix.
+    Empty for a cued act, and for a duplex act read back from a checkpoint —
+    only the mix is on disk."""
+    collision_seconds: float = 0.0
+    """Duplex only: how long two or more hosts were speaking at once."""
+
+    @property
+    def is_mixed(self) -> bool:
+        return self.mixed_pcm is not None
 
     def add_usage(self, model: str, usage: RealtimeUsage) -> None:
         """Record usage billed to `model`, in both the pooled and the per-model view."""
@@ -516,10 +548,14 @@ class ActResult:
 
     @property
     def seconds(self) -> float:
+        if self.mixed_pcm is not None:
+            return pcm_seconds(self.mixed_pcm)
         return sum(ta.turn.seconds for ta in self.audio)
 
     def join_pcm(self, gap_ms: int = 0) -> bytes:
-        """Concatenate the act's turns into one buffer."""
+        """The act's audio: the mix for a duplex act, the turns joined otherwise."""
+        if self.mixed_pcm is not None:
+            return self.mixed_pcm
         if gap_ms <= 0:
             return b"".join(ta.pcm for ta in self.audio)
         gap = pcm_silence(gap_ms)
@@ -538,3 +574,7 @@ class ActSummary(BaseModel):
     usage: RealtimeUsage = Field(default_factory=RealtimeUsage)
     reused: bool = False
     """True when the act was read back from a checkpoint instead of re-recorded."""
+    mode: str = "turns"
+    """`turns` for a cued/Realtime act, `duplex` for a mixed Live act."""
+    collision_seconds: float = 0.0
+    """Duplex only: seconds during which two or more hosts spoke at once."""

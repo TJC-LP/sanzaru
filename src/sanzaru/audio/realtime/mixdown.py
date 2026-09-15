@@ -14,14 +14,31 @@ imported from code already gated on the audio extra.
 from __future__ import annotations
 
 from collections.abc import Sequence
+from dataclasses import dataclass, field
 from io import BytesIO
 
 from pydub import AudioSegment  # type: ignore[import-untyped]
 
 from .types import REALTIME_CHANNELS, REALTIME_SAMPLE_RATE, REALTIME_SAMPLE_WIDTH
 
-# A stretch of the timeline: (speaker_id or None for a gap, PCM16 bytes).
-TimelineItem = tuple[str | None, bytes]
+
+@dataclass(frozen=True, slots=True)
+class MixedBlock:
+    """A stretch where several speakers were recorded at once (a duplex act).
+
+    `length` is the mix's byte length; `stems` holds each speaker's aligned
+    stream of exactly that length. A speaker with no stem — every host of a
+    duplex act read back from a checkpoint, where only the mix survives — gets
+    silence for the block, so the stems still line up with the master.
+    """
+
+    length: int
+    stems: dict[str, bytes] = field(default_factory=dict)
+
+
+# A stretch of the timeline: (speaker_id or None for a gap, PCM16 bytes), or a
+# block where speakers overlap.
+TimelineItem = tuple[str | None, bytes] | MixedBlock
 
 
 def pcm_to_segment(pcm: bytes) -> AudioSegment:
@@ -68,7 +85,14 @@ def render_stem(timeline: Sequence[TimelineItem], speaker_id: str, output_format
     length, so every stem lines up with the master sample-for-sample and can be
     dropped straight onto an editor timeline.
     """
-    parts = [pcm if owner == speaker_id else b"\x00" * len(pcm) for owner, pcm in timeline]
+    parts: list[bytes] = []
+    for item in timeline:
+        if isinstance(item, MixedBlock):
+            stem = item.stems.get(speaker_id, b"")
+            parts.append(stem[: item.length].ljust(item.length, b"\x00"))
+        else:
+            owner, pcm = item
+            parts.append(pcm if owner == speaker_id else b"\x00" * len(pcm))
     return encode_pcm(b"".join(parts), output_format, bitrate)
 
 

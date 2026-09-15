@@ -66,6 +66,7 @@ from ..audio.realtime import (
     run_act,
 )
 from ..audio.realtime.mixdown import (
+    MixedBlock,
     TimelineItem,
     decode_to_pcm,
     encode_pcm,
@@ -84,6 +85,7 @@ from ..audio.realtime.types import (
     MAX_TURN_TOKENS,
     Bitrate,
     Filename,
+    LiveMode,
     RunId,
     extension_cap,
 )
@@ -131,6 +133,12 @@ class SimulationBrief(BaseModel):
     turn_timeout_s: float = Field(default=0.0, ge=0, le=3600.0)
     """Wall clock a single turn may take before the act is declared stalled.
     0 → SANZARU_REALTIME_TURN_TIMEOUT, else derived from `turn_seconds`."""
+    live_mode: LiveMode = "duplex"
+    """gpt-live hosts only. `duplex`: every host hears every other host
+    continuously and they take turns themselves, steered by silent producer
+    notes; the act is a live mix. `cued`: one host at a time is cued by the
+    producer (the Realtime loop). A table mixing Realtime and Live hosts is
+    always cued. Ignored for Realtime models."""
 
     max_concurrent_sessions: int = Field(default=0, ge=0, le=64)
     """0 → SANZARU_REALTIME_MAX_SESSIONS, else DEFAULT_MAX_SESSIONS."""
@@ -386,6 +394,9 @@ _SIGNED_BRIEF_FIELDS: tuple[str, ...] = (
     "turn_seconds",
     "turn_tokens",
     "turn_timeout_s",
+    # Added while signature v2 was still unreleased, so no bump: it changes what
+    # gets recorded (a live mix vs cued turns), which is the signing criterion.
+    "live_mode",
     "max_concurrent_sessions",
     "act_gap_ms",
     "intro_silence_ms",
@@ -483,6 +494,21 @@ class ActCheckpoint(_SignedRecord):
     prices). Empty on a checkpoint written before the field existed; such an
     act replays at the dearest billable model, erring closed. Signed, for the
     same reason `usage` is: it is exactly what the restored ceiling counts."""
+    mode: str = "turns"
+    """`turns`: the mp3 is the turns concatenated and slices back into them by
+    duration. `duplex`: the mp3 is a live mix of overlapping hosts; the turns
+    describe it but cannot be cut from it, so the per-host streams are
+    checkpointed as their own files (`stems`) and the mix is carried whole."""
+    collision_seconds: float = 0.0
+    stems: dict[str, str] = Field(default_factory=dict)
+    """Duplex only: host id → checkpointed stem file beside the mix. Empty on a
+    duplex checkpoint written before stems were kept; such an act resumes with
+    its mix but cannot render stems, and `_write_stems` refuses to overwrite a
+    stem file the first run exported with the silence that would result."""
+    stem_sha256: dict[str, str] = Field(default_factory=dict)
+    """host id → digest of that stem file, checked on load like `audio_sha256`
+    and inside the signature, so a swapped stem is caught rather than mixed
+    into somebody's episode."""
 
     def signed_fields(self) -> list[object]:
         return [
@@ -490,6 +516,8 @@ class ActCheckpoint(_SignedRecord):
             self.act_id,
             self.audio_sha256,
             self.stop_reason,
+            self.mode,
+            [[host, self.stems[host], self.stem_sha256.get(host, "")] for host in sorted(self.stems)],
             [getattr(self.usage, name) for name in _SIGNED_USAGE_FIELDS],
             [
                 [model, [getattr(usage, name) for name in _SIGNED_USAGE_FIELDS]]
@@ -670,6 +698,11 @@ def _act_audio_name(slug: str, run_id: str, act_id: str) -> str:
 
 def _act_meta_name(slug: str, run_id: str, act_id: str) -> str:
     return f"{slug}_{run_id}_{act_id}.json"
+
+
+def _act_stem_name(slug: str, run_id: str, act_id: str, host_id: str) -> str:
+    """A duplex act's per-host stream, checkpointed beside its mix."""
+    return f"{slug}_{run_id}_{act_id}_stem_{host_id}.mp3"
 
 
 _MAX_PRESERVED_TAKES = 50
@@ -974,7 +1007,25 @@ async def _load_checkpoint(
         # reachable — and a zero-audio act both fail here rather than at the
         # read, and one bad act must not make every later --resume exit 1.
         pcm = await anyio.to_thread.run_sync(decode_to_pcm, mp3, "mp3")
-        parts = await anyio.to_thread.run_sync(slice_pcm_by_durations, pcm, [t.seconds for t in meta.turns])
+        stems: dict[str, bytes] = {}
+        if meta.mode == "duplex":
+            if not pcm:
+                raise ValueError("duplex checkpoint decoded to no audio")
+            parts = [b"" for _ in meta.turns]
+            for host_id, stem_name in meta.stems.items():
+                # Bound to the sidecar the same way the mix is: a stem that is
+                # missing or does not match its digest is a swapped or damaged
+                # file, and the act is re-recorded rather than shipped with it.
+                if not await storage.exists("audio", stem_name):
+                    raise ValueError(f"checkpoint stem {stem_name!r} is missing")
+                stem_mp3 = await storage.read("audio", stem_name)
+                expected = meta.stem_sha256.get(host_id, "")
+                if expected and expected != hashlib.sha256(stem_mp3).hexdigest():
+                    raise ValueError(f"checkpoint stem {stem_name!r} does not match the digest in its sidecar")
+                stem_pcm = await anyio.to_thread.run_sync(decode_to_pcm, stem_mp3, "mp3")
+                stems[host_id] = stem_pcm[: len(pcm)].ljust(len(pcm), b"\x00")
+        else:
+            parts = await anyio.to_thread.run_sync(slice_pcm_by_durations, pcm, [t.seconds for t in meta.turns])
     except Exception as exc:  # noqa: BLE001 — a corrupt checkpoint just means re-record
         logger.warning("Checkpoint for %s unusable (%s) - re-recording", brief_act.id, exc)
         return None
@@ -985,6 +1036,9 @@ async def _load_checkpoint(
         usage=meta.usage,
         usage_by_model=dict(meta.usage_by_model),
         stop_reason=meta.stop_reason,
+        mixed_pcm=pcm if meta.mode == "duplex" else None,
+        stems=stems,
+        collision_seconds=meta.collision_seconds,
     )
     return _RecordedAct(
         brief=brief_act,
@@ -992,7 +1046,7 @@ async def _load_checkpoint(
         mp3=mp3,
         reused=True,
         checkpoint=audio_name,
-        turn_pcm=parts,
+        turn_pcm=[] if meta.mode == "duplex" else parts,
     )
 
 
@@ -1031,8 +1085,15 @@ async def _record_act(
             ),
         )
 
-    turn_pcm = [ta.pcm for ta in result.audio]
+    turn_pcm = [] if result.is_mixed else [ta.pcm for ta in result.audio]
     mp3 = await anyio.to_thread.run_sync(encode_pcm, result.join_pcm(), "mp3", brief.output_bitrate)
+    # A duplex act's per-host streams cannot be recovered from its mix, so
+    # they are checkpointed as files of their own — otherwise a resume can only
+    # render silence where the first run rendered speech.
+    stem_files: dict[str, tuple[str, bytes]] = {}
+    for host_id, stem_pcm in result.stems.items():
+        stem_mp3 = await anyio.to_thread.run_sync(encode_pcm, stem_pcm, "mp3", brief.output_bitrate)
+        stem_files[host_id] = (_act_stem_name(slug, run_id, act.id, host_id), stem_mp3)
 
     audio_name = _act_audio_name(slug, run_id, act.id)
     meta = ActCheckpoint(
@@ -1044,6 +1105,10 @@ async def _record_act(
         turns=result.turns,
         run_id=run_id,
         audio_sha256=hashlib.sha256(mp3).hexdigest(),
+        mode="duplex" if result.is_mixed else "turns",
+        collision_seconds=result.collision_seconds,
+        stems={host_id: name for host_id, (name, _) in stem_files.items()},
+        stem_sha256={host_id: hashlib.sha256(data).hexdigest() for host_id, (_, data) in stem_files.items()},
     )
     # A checkpoint is two files, and `_load_checkpoint` requires both. A sibling
     # act failing — the cost ceiling, a stalled turn — cancels this task group at
@@ -1053,6 +1118,11 @@ async def _record_act(
     # pair (and the bookkeeping that says they are there) instead.
     with anyio.CancelScope(shield=True):
         await checkpoints.write_audio_file(audio_name, mp3, is_bookkeeping=True)
+        for name, data in stem_files.values():
+            # This run's own bookkeeping, like the mix: the clobber guard is
+            # for other tools writing over a checkpoint, not for the run
+            # re-recording its own act (`--qc-retry`).
+            await checkpoints.write_audio_file(name, data, is_bookkeeping=True)
         await checkpoints.write_audio_file(
             _act_meta_name(slug, run_id, act.id), _signed_json(meta).encode(), is_bookkeeping=True
         )
@@ -1189,8 +1259,21 @@ def _build_timeline(
     if intro_ms > 0:
         timeline.append((None, pcm_silence(intro_ms)))
     for index, act in enumerate(recorded):
-        for turn_audio, pcm in zip(act.result.audio, act.turn_pcm, strict=False):
-            timeline.append((turn_audio.turn.speaker_id, pcm))
+        if act.result.is_mixed:
+            # Overlapping hosts: one block, each stem aligned to the mix. A
+            # duplex act resumed from a checkpoint written before stems were
+            # kept has none, so its block is silence on every stem — the
+            # master still lines up, and `_write_stems` refuses to overwrite a
+            # previously exported stem with it.
+            if act.reused and not act.result.stems:
+                logger.warning(
+                    "act %s was resumed from a duplex checkpoint without stems: its block is silent on every stem",
+                    act.result.act_id,
+                )
+            timeline.append(MixedBlock(len(act.result.mixed_pcm or b""), dict(act.result.stems)))
+        else:
+            for turn_audio, pcm in zip(act.result.audio, act.turn_pcm, strict=False):
+                timeline.append((turn_audio.turn.speaker_id, pcm))
         if gap and index < len(recorded) - 1:
             timeline.append((None, gap))
     if outro_ms > 0:
@@ -1217,6 +1300,8 @@ def _summaries(recorded: Sequence[_RecordedAct]) -> list[ActSummary]:
             truncated_turns=sum(1 for t in act.result.turns if t.truncated),
             usage=act.result.usage,
             reused=act.reused,
+            mode="duplex" if act.result.is_mixed else "turns",
+            collision_seconds=act.result.collision_seconds,
         )
         for act in recorded
     ]
@@ -1242,10 +1327,26 @@ async def _write_stems(
         intro_ms=brief.intro_silence_ms,
         outro_ms=brief.outro_silence_ms,
     )
+    # Hosts whose track would carry silence where a recorded act should be —
+    # a duplex act resumed from a checkpoint that kept no stems. A stem file
+    # the first run exported for such a host is left alone: overwriting 40KB
+    # of recorded speech with silence is worse than a stale file.
+    incomplete = {
+        host.id for act in recorded if act.result.is_mixed for host in rundown.hosts if host.id not in act.result.stems
+    }
+    storage = get_storage()
     stems: dict[str, str] = {}
     for host in rundown.hosts:
-        data = await anyio.to_thread.run_sync(render_stem, timeline, host.id, brief.output_format, brief.output_bitrate)
         name = f"{slug}_{run_id}_stem_{host.id}.{brief.output_format}"
+        if host.id in incomplete and await storage.exists("audio", name):
+            logger.warning(
+                "stem %r already exists and this run can only render it with silence for a resumed duplex act - "
+                "keeping the existing file",
+                name,
+            )
+            stems[host.id] = name
+            continue
+        data = await anyio.to_thread.run_sync(render_stem, timeline, host.id, brief.output_format, brief.output_bitrate)
         await repo.write_audio_file(name, data)
         stems[host.id] = name
     return stems
@@ -1398,6 +1499,7 @@ async def simulate_podcast(
         max_turn_tokens=effective.turn_tokens,
         turn_seconds=effective.turn_seconds,
         turn_timeout_s=effective.turn_timeout_s,
+        live_mode=effective.live_mode,
     )
     resume_command = f"sanzaru podcast simulate --resume {run_id}"
 

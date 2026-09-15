@@ -1068,6 +1068,10 @@ later acts own, filled in automatically), and `handoff` (where to leave off).
   "planner_model": string,         // Text model for pre-production (default "gpt-5.5")
   "turn_seconds": number,          // Target upper bound per turn (default 15)
   "turn_tokens": number,           // Hard per-turn output cap; 0 = derive from turn_seconds
+  "live_mode": "duplex"|"cued",    // gpt-live-1 only. duplex (default): hosts hear each other
+                                   // continuously and take turns themselves; the producer steers
+                                   // with silent notes and the act is a live mix (acts run in real
+                                   // time). cued: one host cued at a time, the Realtime loop.
 
   "max_cost_usd": number,          // Abort once spend crosses this. STRONGLY RECOMMENDED.
   "max_concurrent_sessions": number, // Realtime sessions across all acts (default 6)

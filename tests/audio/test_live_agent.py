@@ -271,7 +271,7 @@ class TestUsage:
 
 
 class TestSteerAndHear:
-    async def test_steer_sends_an_instructions_append_and_truncates(self, fake_live, host, caplog):
+    async def test_steer_sends_a_silent_thinking_append_and_truncates(self, fake_live, host, caplog):
         conn = fake_live.Connection()
         async with _agent(conn, host) as agent:
             await agent.configure("persona")
@@ -279,7 +279,9 @@ class TestSteerAndHear:
             with caplog.at_level("WARNING", logger="sanzaru"):
                 await agent.steer("x" * (STEER_MAX_CHARS + 500))
 
-        notes = conn.sent_of("session.instructions.append")
+        # thinking.append, never instructions.append: the latter was read aloud.
+        assert conn.sent_of("session.instructions.append") == []
+        notes = conn.sent_of("session.thinking.append")
         assert notes[0]["content"] == "short note"
         assert notes[0]["delegation_id"] is None
         assert notes[0]["event_id"]
@@ -501,7 +503,7 @@ class TestRunActRouting:
         factory, handed = connect_factory(one, two)
         seated = mocker.spy(producer, "_make_agent")
         settings = SimulationSettings(
-            model="gpt-live-1", show_title="Live", turn_seconds=5.0, live_turn_silence_s=SILENCE
+            model="gpt-live-1", show_title="Live", turn_seconds=5.0, live_turn_silence_s=SILENCE, live_mode="cued"
         )
         budget = CostBudget(limit_usd=10.0)
 
@@ -591,7 +593,9 @@ class TestCuedBudgetCountsListeners:
         a = fake_live.Connection(seconds=0.3, usage_seconds=[20.0, 40.0], final_usage_seconds=45.0)
         b = fake_live.Connection(seconds=0.3, usage_seconds=[20.0], final_usage_seconds=30.0)
         factory, _ = connect_factory(a, b)
-        settings = SimulationSettings(model="gpt-live-1", turn_seconds=5.0, live_turn_silence_s=SILENCE)
+        settings = SimulationSettings(
+            model="gpt-live-1", turn_seconds=5.0, live_turn_silence_s=SILENCE, live_mode="cued"
+        )
         budget = CostBudget(limit_usd=10.0)
 
         result = await run_act(brief, hosts, settings, connect=factory, budget=budget)

@@ -103,6 +103,7 @@ src/sanzaru/
 │   │   ├── types.py    # HostSpec/ActBrief/Rundown/Turn/RealtimeUsage + PCM16 helpers
 │   │   ├── agent.py    # one persona on one connection: configure/speak/hear/steer
 │   │   ├── live_agent.py # same surface on the full-duplex Live API (gpt-live-1, per-minute billing)
+│   │   ├── duplex.py   # gpt-live default: chain-fed hosts, silent notes on the act clock, mixed act
 │   │   ├── producer.py # floor control, coverage steering, act budgets, prompts
 │   │   ├── rundown.py  # pre-production: premise → parallel-recordable acts
 │   │   ├── budget.py   # shared cost ceiling, charged every turn
@@ -328,26 +329,33 @@ Non-obvious things that are easy to break:
   paying to re-record: `_refuse_a_resume_that_cannot_finish` projects the remaining acts and
   stops first, and the CLI's ceiling envelope prints a resume command with a raised
   `--max-cost` (`CostBudget.suggested_limit_usd`).
-- **`gpt-live-1` is a different API wearing the same agent surface.** `is_live_model()` (prefix
-  `gpt-live`) routes a host to `live_agent.LiveAgent` — `client.live.connect()` with no model on
-  the URL, one immutable `session.start`, steering via `session.instructions.append` (every append
-  is acked with `*.appended`, matched by `event_id`). Measured facts that the design rests on:
-  **the session timeline only advances while input audio streams** (no input → no speech, no
-  applied instructions, and one `context_injection_incomplete` error per pending append at close),
-  so every agent runs a 100 ms input clock from `session.started` to `session.close` and *an act
-  runs in real time* (parallel across acts); **output is a continuous frame stream including
-  exact-zero silence frames**, so turns are bounded by loudness (`SPEECH_RMS_THRESHOLD` 300;
-  speech measures 500–3500), end after `end_of_turn_silence_s` of quiet frames or at
-  `2 × turn_seconds` (`truncated`), and are trimmed to the speech; **live hosts hear each other
-  live** — the speaker forwards frames into listeners' inboxes via `set_listeners`, so `run_act`
-  must not `hear()` them again; the model is full duplex with no `response.create`/`done`, so floor
-  control is advisory and off-floor *speech* is discarded and counted. It bills **$0.05 per
-  session-minute per host**, no tokens: `usage.seconds` meters streamed session time and is
-  cumulative (never sum it); `RealtimeUsage.live_seconds` carries the per-turn delta (max of
-  reported and wall clock), `finish()` charges the tail, `ModelPrices.per_minute` prices it,
-  `project_usage(model=...)` projects `target_seconds × hosts`, `live_seconds` is in
-  `_SIGNED_USAGE_FIELDS` (hence `SIGNATURE_VERSION` 2), and `SANZARU_REALTIME_PRICE_*` accepts an
-  optional 7th value (`per_minute`).
+- **`gpt-live-1` is a different API, and its default mode is a different protocol.**
+  `is_live_model()` (prefix `gpt-live`) routes a host to `live_agent.LiveAgent`:
+  `client.live.connect()` with no model on the URL, one immutable `session.start`, every append
+  acked with `*.appended` (matched by `event_id`). Measured facts the design rests on: **the
+  session timeline only advances while input audio streams** (no input → no speech, no applied
+  notes, one `context_injection_incomplete` per pending append at close), so every agent runs a
+  100 ms input clock from `session.started` to `session.close` — *an act runs in real time*,
+  parallel across acts; **output is a continuous stream with exact-zero silence frames**, so
+  speech is detected by loudness (`SPEECH_RMS_THRESHOLD` 300; speech is 500–3500);
+  **`instructions.append` is spoken aloud, `thinking.append` is not** — all producer notes go
+  through `LiveAgent.think()`. `SimulationSettings.live_mode` (default `duplex`, CLI
+  `--live-mode`) picks the protocol for an all-Live table: `duplex.run_duplex_act` opens every
+  host, chain-feeds each host's output frames into every other host's clock for the whole act
+  (per-source mixing for N>2), sends the producer's plan as thinking notes on the *act clock*
+  (`plan_notes`: opener at 0, points spread to 85 %, close to the designated closer at 85 %, wrap
+  at 100 %), counts overlap into `collision_seconds` and tells the later starter to yield after
+  1.5 s, ends on quiet after the close or at `target × 1.5 + 30 s`, and returns an `ActResult`
+  with `mixed_pcm` + per-host `stems` + `Turn`s grouped from timestamped transcript deltas
+  (`group_utterances`). `join_pcm()`/`seconds` prefer the mix, `_build_timeline` emits a
+  `MixedBlock`, the sidecar carries `mode`/`collision_seconds`, and a resumed duplex act is the
+  mix whole (no stems). `cued` keeps the floor-control loop (used automatically for a mixed
+  Realtime/Live table) with a 1 s settle gap before each cue and a ≤1 s false-start trim. Billing
+  is **$0.05 per session-minute per host**: `usage.seconds` meters streamed session time and is
+  cumulative (never sum it); `RealtimeUsage.live_seconds` carries deltas (max of reported and
+  wall clock), `ModelPrices.per_minute` prices it, `project_usage(model=...)` projects
+  `target_seconds × hosts`, `live_seconds` and `live_mode` are signed (`SIGNATURE_VERSION` 2), and
+  `SANZARU_REALTIME_PRICE_*` accepts an optional 7th value (`per_minute`).
 - **Every turn runs under `anyio.fail_after`.** Nothing in the Realtime protocol bounds a turn, and
   a stalled session would hold a `CapacityLimiter` slot forever inside a blocking tool. The bound
   is 6x `turn_seconds` (min 60s), overridable via `SANZARU_REALTIME_TURN_TIMEOUT` /
