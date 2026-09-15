@@ -157,24 +157,46 @@ jobs:
         # by the time this runs, so the only credential in play is the job's
         # own GITHUB_TOKEN. The body arrives via `env`, never interpolated into
         # the script, and is scrubbed of anything token-shaped before posting.
-        if: steps.claude-review.outputs.structured_output != ''
+        # The output is parsed with jq inside the script, not with fromJSON()
+        # in an expression: an expression-level parse failure aborts the job
+        # with an opaque template error, while jq lets the step say what it got.
+        id: post-review
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-          REVIEW: ${{ fromJSON(steps.claude-review.outputs.structured_output).review }}
+          STRUCTURED_OUTPUT: ${{ steps.claude-review.outputs.structured_output }}
         run: |
+          review="$(printf '%s' "$STRUCTURED_OUTPUT" | jq -r '.review // empty' 2>/dev/null || true)"
+          if [ -z "$review" ]; then
+            echo "posted=false" >> "$GITHUB_OUTPUT"
+            echo "No review in the action's structured output (length ${#STRUCTURED_OUTPUT})."
+            exit 0
+          fi
           {
-            printf '%s\n\n' "$REVIEW"
+            printf '%s\n\n' "$review"
             printf -- '---\n_Automated review by Claude Code · [workflow run](%s)_\n' "$RUN_URL"
           } | sed -E \
               -e 's/\b(gh[opsur]|github_pat)_[A-Za-z0-9_]{20,}/[redacted]/g' \
               -e 's/sk-ant-[A-Za-z0-9_-]{20,}/[redacted]/g' \
             > review.md
           gh pr comment "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --body-file review.md
+          echo "posted=true" >> "$GITHUB_OUTPUT"
 
       - name: Fail if no review was produced
-        if: steps.claude-review.outputs.structured_output == ''
+        if: steps.post-review.outputs.posted != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
-          echo "::error::Claude finished without structured output; no review was posted."
+          # claude-code-action refuses to run on a PR whose copy of this workflow
+          # differs from the default branch's (its own anti-tamper check), so a
+          # PR that edits this file cannot be reviewed by it. That is expected,
+          # not a failure; every other silent no-review is.
+          if gh pr diff "$PR_NUMBER" --repo "$GITHUB_REPOSITORY" --name-only \
+               | grep -qx '.github/workflows/claude-code-review.yml'; then
+            echo "::warning::This PR changes the review workflow itself; claude-code-action skips such PRs until the change is on the default branch. No review was posted."
+            exit 0
+          fi
+          echo "::error::Claude finished without a review in its structured output; nothing was posted."
           exit 1
