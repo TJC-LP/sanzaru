@@ -165,6 +165,49 @@ class TestPodcastRundown:
         result = runner.invoke(cli, ["podcast", "rundown", "p", "--host", ":marin:x"])
         assert result.exit_code == 2
 
+    def test_refuses_to_write_the_rundown_through_a_symlink(self, runner, mocker, tmp_path):
+        """CWE-59: `-o` is outside the media sandbox, so security.py never sees
+        it. A link planted at the target used to make the write truncate whatever
+        it pointed at, with the operator's privileges — and the refusal came
+        *after* the planner call, so the paid-for plan went out with the error."""
+        from sanzaru.audio.realtime.types import Rundown
+
+        planner = mocker.patch(
+            "sanzaru.audio.realtime.rundown.plan_rundown", return_value=Rundown.model_validate(RUNDOWN)
+        )
+        victim = tmp_path / "bashrc"
+        victim.write_text("# the operator's shell")
+        target = tmp_path / "rundown.json"
+        target.symlink_to(victim)
+
+        result = runner.invoke(cli, ["podcast", "rundown", "a premise", "-o", str(target)])
+
+        assert result.exit_code == 2
+        assert _envelope(result.stdout)["error"]["type"] == "usage"
+        assert victim.read_text() == "# the operator's shell"
+        planner.assert_not_called()  # refused before anything was billed
+
+    def test_an_act_title_cannot_drive_the_terminal(self, runner, mocker):
+        """CWE-150: act titles are planner prose, steerable through the premise.
+
+        stdout is JSON and escapes controls on its own; stderr is where a raw
+        ESC would have been live terminal control.
+        """
+        from sanzaru.audio.realtime.types import Rundown
+
+        hostile = dict(RUNDOWN)
+        hostile["acts"] = [{**RUNDOWN["acts"][0], "title": "One\x1b]0;pwned\x07\x1b[2Kquiet"}, RUNDOWN["acts"][1]]
+        mocker.patch("sanzaru.audio.realtime.rundown.plan_rundown", return_value=Rundown.model_validate(hostile))
+
+        result = runner.invoke(cli, ["podcast", "rundown", "a premise"])
+
+        assert result.exit_code == 0
+        assert "\x1b" not in result.stderr
+        assert "\x07" not in result.stderr
+        assert "pwned" in result.stderr  # escaped, not swallowed
+        # The envelope keeps the real title; JSON escaping already makes it inert.
+        assert _envelope(result.stdout)["result"]["acts"][0]["title"].startswith("One\x1b")
+
 
 # ---------- podcast simulate ----------
 

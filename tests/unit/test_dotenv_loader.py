@@ -1,6 +1,8 @@
 # SPDX-License-Identifier: MIT
 """A discovered .env must not be able to redirect the operator's credentials."""
 
+import os
+
 import pytest
 
 from sanzaru.dotenv_loader import load_local_dotenv
@@ -8,11 +10,29 @@ from sanzaru.dotenv_loader import load_local_dotenv
 pytestmark = pytest.mark.unit
 
 
+@pytest.fixture(autouse=True)
+def _isolated_environ():
+    """Snapshot/restore os.environ around every test.
+
+    `monkeypatch.delenv(name, raising=False)` records nothing when the variable
+    is already absent, so values the loader then sets with `setdefault` would
+    outlive the test: a leaked `SANZARU_MEDIA_PATH` made later tests
+    order-dependent and had `get_path()` mkdir a real media tree.
+    """
+    saved = dict(os.environ)
+    for name in list(os.environ):
+        if name.startswith(("OPENAI_", "SANZARU_", "DATABRICKS_", "ELEVENLABS_")):
+            del os.environ[name]
+    yield
+    os.environ.clear()
+    os.environ.update(saved)
+
+
 def _write_env(directory, body: str):
     (directory / ".env").write_text(body)
 
 
-def test_a_planted_base_url_is_ignored(tmp_path, monkeypatch, caplog):
+def test_a_planted_base_url_is_ignored(tmp_path, caplog):
     """The exfiltration vector: one line pointing the SDK at an attacker's host.
 
     AsyncOpenAI reads OPENAI_BASE_URL from the environment itself, so loading it
@@ -20,13 +40,9 @@ def test_a_planted_base_url_is_ignored(tmp_path, monkeypatch, caplog):
     bearer token, to whoever wrote the file (CWE-427).
     """
     _write_env(tmp_path, "OPENAI_API_KEY=sk-real\nOPENAI_BASE_URL=https://attacker.example/v1\n")
-    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
 
     with caplog.at_level("WARNING", logger="sanzaru"):
         load_local_dotenv(tmp_path)
-
-    import os
 
     assert "OPENAI_BASE_URL" not in os.environ
     # The legitimate half of the documented workflow still loads.
@@ -55,56 +71,58 @@ def test_a_planted_base_url_is_ignored(tmp_path, monkeypatch, caplog):
         "SANZARU_HTTP_TOKEN",
         "SANZARU_IDENTITY_HEADER",
         "SANZARU_REQUIRE_USER_CONTEXT",
+        # Joined into the volume URL unsanitized: `..` walks into another tenant.
+        "DATABRICKS_VIDEO_DIR",
+        "DATABRICKS_IMAGE_DIR",
+        "DATABRICKS_AUDIO_DIR",
     ],
 )
 def test_credential_and_transport_variables_are_ignored(tmp_path, monkeypatch, key):
-    _write_env(tmp_path, f"{key}=attacker-value\n")
     monkeypatch.delenv(key, raising=False)
+    _write_env(tmp_path, f"{key}=attacker-value\n")
 
     load_local_dotenv(tmp_path)
-
-    import os
 
     assert key not in os.environ, f"{key} must not be settable from a discovered .env"
 
 
-def test_a_variable_nobody_thought_of_defaults_to_ignored(tmp_path, monkeypatch):
+def test_a_variable_nobody_thought_of_defaults_to_ignored(tmp_path):
     """The property an allowlist buys: unknown names fail safe."""
     _write_env(tmp_path, "SOME_FUTURE_REDIRECT_VAR=attacker\n")
-    monkeypatch.delenv("SOME_FUTURE_REDIRECT_VAR", raising=False)
 
     load_local_dotenv(tmp_path)
-
-    import os
 
     assert "SOME_FUTURE_REDIRECT_VAR" not in os.environ
 
 
-def test_realtime_price_overrides_still_load(tmp_path, monkeypatch):
-    """Open-ended by design (one per model), and not a credential concern."""
-    key = "SANZARU_REALTIME_PRICE_GPT_REALTIME_2_1"
-    _write_env(tmp_path, f"{key}=4,0.4,32,0.4,64,24\n")
-    monkeypatch.delenv(key, raising=False)
+def test_a_price_override_cannot_come_from_the_file(tmp_path, caplog):
+    """The price table is what `--max-cost` is enforced against.
 
-    load_local_dotenv(tmp_path)
+    `SANZARU_REALTIME_PRICE_*` used to be allowlisted as a prefix on the theory
+    that stale pricing is a reporting concern. It is also the spend control: a
+    planted `0,0,0,0,0,0` makes every turn cost $0.00 and the ceiling never
+    trips. A price override is exported, like everything else that decides
+    where money goes.
+    """
+    key = "SANZARU_REALTIME_PRICE_GPT_REALTIME"
+    _write_env(tmp_path, f"{key}=0,0,0,0,0,0\n")
 
-    import os
+    with caplog.at_level("WARNING", logger="sanzaru"):
+        load_local_dotenv(tmp_path)
 
-    assert os.environ[key] == "4,0.4,32,0.4,64,24"
+    assert key not in os.environ
+    assert key in caplog.text  # dropped out loud, so the operator knows to export it
 
 
-def test_the_documented_variables_still_load(tmp_path, monkeypatch):
+def test_the_documented_variables_still_load(tmp_path):
     """setup.sh writes exactly these two; the feature has to keep working."""
-    _write_env(tmp_path, "OPENAI_API_KEY=sk-abc\nSANZARU_MEDIA_PATH=/tmp/media\n")
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
-    monkeypatch.delenv("SANZARU_MEDIA_PATH", raising=False)
+    media = tmp_path / "media"
+    _write_env(tmp_path, f"OPENAI_API_KEY=sk-abc\nSANZARU_MEDIA_PATH={media}\n")
 
     load_local_dotenv(tmp_path)
-
-    import os
 
     assert os.environ["OPENAI_API_KEY"] == "sk-abc"
-    assert os.environ["SANZARU_MEDIA_PATH"] == "/tmp/media"
+    assert os.environ["SANZARU_MEDIA_PATH"] == str(media)
 
 
 def test_a_real_exported_value_outranks_the_file(tmp_path, monkeypatch):
@@ -113,24 +131,46 @@ def test_a_real_exported_value_outranks_the_file(tmp_path, monkeypatch):
 
     load_local_dotenv(tmp_path)
 
-    import os
-
     assert os.environ["OPENAI_API_KEY"] == "sk-exported"
 
 
-def test_no_ancestor_walk(tmp_path, monkeypatch):
+def test_matching_is_case_sensitive(tmp_path, caplog):
+    """A case-folded match would accept `openai_api_key=` and then set it under
+    that spelling, which nothing on POSIX reads — a silently dead variable. As
+    an unknown key it is named in the warning instead."""
+    _write_env(tmp_path, "openai_api_key=sk-lower\n")
+
+    with caplog.at_level("WARNING", logger="sanzaru"):
+        load_local_dotenv(tmp_path)
+
+    assert "openai_api_key" not in os.environ
+    assert "OPENAI_API_KEY" not in os.environ
+    assert "'openai_api_key'" in caplog.text
+
+
+def test_ignored_key_names_are_quoted_in_the_warning(tmp_path, caplog):
+    """The key names come from the attacker-authored file, and logging is the
+    one stderr channel `note()`'s scrub does not cover."""
+    _write_env(tmp_path, "EVIL\x1b]0;pwned\x07KEY=1\n")
+
+    with caplog.at_level("WARNING", logger="sanzaru"):
+        load_local_dotenv(tmp_path)
+
+    assert "\x1b" not in caplog.text
+    assert "\x07" not in caplog.text
+    assert "'EVIL\\x1b]0;pwned\\x07KEY'" in caplog.text  # legible as what it was
+
+
+def test_no_ancestor_walk(tmp_path):
     """Only ./.env is read — a file one directory up is not this run's config."""
     workspace = tmp_path / "workspace"
     project = workspace / "project"
     project.mkdir(parents=True)
-    _write_env(workspace, "SANZARU_PLANTED=yes\n")
-    monkeypatch.delenv("SANZARU_PLANTED", raising=False)
+    _write_env(workspace, "SANZARU_MEDIA_PATH=/planted\n")
 
     load_local_dotenv(project)
 
-    import os
-
-    assert "SANZARU_PLANTED" not in os.environ
+    assert "SANZARU_MEDIA_PATH" not in os.environ
 
 
 def test_a_missing_or_unreadable_env_is_not_fatal(tmp_path):

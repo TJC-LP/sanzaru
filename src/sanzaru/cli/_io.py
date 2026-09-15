@@ -30,7 +30,9 @@ Rules:
   a directory is a parent of what gets written, not the write target (``-o
   /tmp`` must work on macOS, where /tmp is a link). The direct-write case
   (no relocation) is checked at plan time, because the write itself happens
-  down in the storage backend.
+  down in the storage backend — whose own ``O_NOFOLLOW`` opener
+  (``storage/local.py``, ``_no_follow``) is what closes the race between that
+  check and the write. This module has no second chance at it.
 """
 
 from __future__ import annotations
@@ -73,10 +75,21 @@ def read_content_arg(value: str, arg_name: str) -> str:
     return value
 
 
-# O_NOFOLLOW is POSIX; Windows has no symlink-following open to refuse.
-_NOFOLLOW = getattr(os, "O_NOFOLLOW", 0)
 # FreeBSD answers O_NOFOLLOW on a link with EMLINK where Linux/macOS say ELOOP.
 _NOFOLLOW_ERRNOS = (errno.ELOOP, errno.EMLINK)
+
+
+def _open_flags(flags: int) -> int:
+    """Add the platform flags every artifact open here needs.
+
+    ``O_NOFOLLOW`` is POSIX; Windows has no symlink-following open to refuse,
+    so it degrades to nothing there. ``O_BINARY`` is the reverse: Windows-only,
+    and *required* — ``open(path)`` adds it for you, but ``os.fdopen`` on an fd
+    from ``os.open`` does not, and without it the CRT hands back a text-mode
+    handle that turns every ``0x0A`` in an mp3 into ``0x0D 0x0A``. Read at call
+    time rather than import time so a test can pin the flag reaching the open.
+    """
+    return flags | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_BINARY", 0)
 
 
 def _refuse_symlink(path: pathlib.Path, what: str) -> None:
@@ -107,7 +120,7 @@ def _open_no_follow(path: pathlib.Path, flags: int, what: str) -> int:
     what still holds if the link appears between that check and this open.
     """
     try:
-        return os.open(path, flags | _NOFOLLOW, 0o644)
+        return os.open(path, _open_flags(flags), 0o644)
     except OSError as exc:
         if exc.errno in _NOFOLLOW_ERRNOS:
             raise CLIError(
@@ -123,6 +136,22 @@ def write_output_bytes(path: pathlib.Path, data: bytes) -> None:
     _refuse_symlink(path, "-o target")
     with os.fdopen(_open_no_follow(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, "-o target"), "wb") as handle:
         handle.write(data)
+
+
+def prepare_output_path(output: str) -> pathlib.Path:
+    """Pre-flight a bare ``-o FILE`` destination *before* anything is paid for.
+
+    For commands that write with `write_output_bytes` directly rather than
+    through `plan_output` (``podcast rundown -o``). The write itself still
+    refuses a link — that is the race backstop — but a refusal there comes
+    after the API call, so the planner has been billed and its output thrown
+    away with the error. Every other ``-o`` command refuses at plan time; this
+    is the same check at the same moment.
+    """
+    target = pathlib.Path(output).expanduser()
+    _refuse_symlink(target, "-o")
+    target.parent.mkdir(parents=True, exist_ok=True)
+    return target
 
 
 def _relocate(source: pathlib.Path, target: pathlib.Path) -> None:
@@ -200,21 +229,19 @@ def _media_library_twin(path_type: PathType, name: str) -> pathlib.Path | None:
     """The same basename in the configured media dir, if there is one.
 
     Local backends only: asking a remote default backend (Databricks) would
-    cost a network round trip per input to decorate a warning.
+    cost a network round trip per input to decorate a warning. Read-only —
+    `peek_media_path` rather than `get_path`, which would mkdir the media
+    subdirectory as a side effect of resolving an *input*.
     """
-    if os.getenv("STORAGE_BACKEND", "local").strip().lower() != "local":
-        return None
+    from ..config import peek_media_path
+    from ..storage.factory import configured_backend_type
 
-    from ..config import get_path, is_path_configured
-
-    if not is_path_configured(path_type):
+    if configured_backend_type() != "local":
         return None
-    try:
-        twin = get_path(path_type) / name
-    except (RuntimeError, OSError):
-        # A misconfigured media dir is not this function's error to raise; the
-        # bare name would have failed on its own further down.
+    media_dir = peek_media_path(path_type)
+    if media_dir is None:
         return None
+    twin = media_dir / name
     return twin if twin.is_file() else None
 
 
@@ -232,22 +259,34 @@ def _check_bare_name_capture(value: str, local: pathlib.Path, path_type: PathTyp
       were built on.
 
     Not silenced by ``--quiet``: this is not progress, it is the CLI saying two
-    different files answer to the name that was typed.
+    different files answer to the name that was typed. Two candidates that are
+    one file — the CLI run from inside the media directory itself, the most
+    ordinary workflow there is — are not two files, and say nothing.
     """
     if local.is_symlink():
+        # The link target is attacker-authored in this threat model; repr keeps
+        # a newline in it from becoming a second stderr line of our own.
         raise CLIError(
             "usage",
             f"{arg_name}: {value!r} in the current directory is a symbolic link "
-            f"(-> {os.readlink(local)}) — refusing to resolve a bare filename through it. "
+            f"(-> {os.readlink(local)!r}) — refusing to resolve a bare filename through it. "
             f"Write ./{value} to read the link's target deliberately.",
             exit_code=EXIT_USAGE,
         )
     twin = _media_library_twin(path_type, local.name)
-    if twin is not None:
-        note(
-            f"warning: {arg_name} {value!r} names two files — reading {local.resolve()} "
-            f"(current directory), NOT {twin} (media library). Pass a path to choose."
-        )
+    if twin is None:
+        return
+    resolved = local.resolve()
+    try:
+        if os.path.samefile(resolved, twin):
+            return
+    except OSError:
+        pass  # one of them vanished between the checks; the warning is the honest answer
+    note(
+        f"warning: {arg_name} {value!r} names two files — reading {resolved} "
+        f"(current directory), NOT {twin} (media library). "
+        f"Write ./{value} for the local file, or {twin} for the library copy."
+    )
 
 
 def resolve_input(session: PathSession, value: str, path_type: PathType, arg_name: str) -> str:
@@ -400,17 +439,43 @@ async def finalize_output(session: PathSession, plan: OutputPlan, written_filena
         assert plan.final_dir is not None
         data = await storage.read(plan.path_type, written_filename)
         final = plan.final_dir / (plan.final_name or written_filename)
-        await anyio.to_thread.run_sync(write_output_bytes, final, data)
+        try:
+            await anyio.to_thread.run_sync(write_output_bytes, final, data)
+        except CLIError as exc:
+            raise _naming_the_survivor(exc, storage.resolve_display_path(plan.path_type, written_filename)) from exc
         return str(final)
 
     if plan.final_dir is not None:
         # A cross-device relocation degrades to a full copy — keep it off the loop.
         source_dir = session.overrides[plan.path_type]
         final = plan.final_dir / (plan.final_name or written_filename)
-        await anyio.to_thread.run_sync(_relocate, source_dir / written_filename, final)
+        try:
+            await anyio.to_thread.run_sync(_relocate, source_dir / written_filename, final)
+        except CLIError as exc:
+            raise _naming_the_survivor(exc, str(source_dir / written_filename)) from exc
         return str(final)
 
     return storage.resolve_display_path(plan.path_type, written_filename)
+
+
+def _naming_the_survivor(exc: CLIError, location: str) -> CLIError:
+    """A refused relocation is not a lost artifact — say where it still is.
+
+    By the time `finalize_output` refuses, the tool has already written (and
+    the operator already paid for) the artifact: under an unguessable
+    ``sanzaru_tmp_*`` name in the inputs' directory, or in the media library
+    for the default-backend copy. The refusal itself only ever named the path
+    it would not write through, so the file was effectively orphaned. Same
+    exit code — the remedy is still a usage change, naming the real path — but
+    the envelope's ``file.path`` and the message now point at the survivor.
+    """
+    return CLIError(
+        exc.error_type,
+        f"{exc} The artifact was still written and is at {location}.",
+        exit_code=exc.exit_code,
+        resume=exc.resume,
+        extra={**(exc.extra or {}), "file": {"path": location}},
+    )
 
 
 #: Every spelling the tool layer uses for "the file I wrote". Each one is the

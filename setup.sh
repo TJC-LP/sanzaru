@@ -23,8 +23,19 @@ echo "  sanzaru Setup"
 echo "============================================"
 echo ""
 
+# A symlink at ./.env is refused outright rather than written through. Every
+# step below — the truncate, the chmod, the heredoc — would otherwise land the
+# API key in whatever the link names, and `-f` is false for a dangling link, so
+# the overwrite prompt would not even fire. The check is `-L`, which does not
+# follow the link; `-e` below does, so the prompt still covers a plain file.
+if [ -L .env ]; then
+    echo "❌ .env is a symbolic link — refusing to write the API key through it."
+    echo "   Remove the link (or run setup from a different directory) and try again."
+    exit 1
+fi
+
 # Check if .env already exists
-if [ -f .env ]; then
+if [ -e .env ]; then
     echo "⚠️  .env file already exists!"
     read -p "Do you want to overwrite it? (y/N): " overwrite
     if [[ ! $overwrite =~ ^[Yy]$ ]]; then

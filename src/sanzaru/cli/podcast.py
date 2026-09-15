@@ -13,7 +13,6 @@ anyone spends realtime money on it.
 from __future__ import annotations
 
 import json
-import pathlib
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
@@ -25,6 +24,7 @@ from ._io import (
     finalize_output,
     install_overrides,
     plan_output,
+    prepare_output_path,
     read_content_arg,
     reconcile_output_name,
     write_output_bytes,
@@ -327,19 +327,23 @@ async def podcast_rundown(
         **({"model": model} if model else {}),
     )
 
+    # Refuse a symlink at the -o path *before* the planner is billed. Every
+    # other -o command decides this at plan time; deciding it after the call
+    # threw the paid-for rundown away with the error.
+    target = prepare_output_path(output) if output is not None else None
+
     started = time.monotonic()
     if not state.quiet:
         note(f"planning {acts} acts / {target_minutes:.0f} min with {request.model}")
     rundown = await plan_rundown(request)
 
     payload: dict[str, object] = rundown.model_dump(mode="json")
-    if output is not None:
+    if target is not None:
         # The file is the pure rundown so it can be piped straight back into
         # `simulate` (and hand-edited) — the envelope alone carries `file`.
         # write_output_bytes, not write_text: this is a `-o` destination like
-        # any other, and must not be written through a symlink planted there.
-        target = pathlib.Path(output).expanduser()
-        target.parent.mkdir(parents=True, exist_ok=True)
+        # any other, and must not be written through a symlink planted there
+        # (the pre-flight above is the readable error; this is the backstop).
         write_output_bytes(target, json.dumps(payload, indent=2).encode("utf-8"))
         payload = dict(payload)
         payload["file"] = {"path": str(target.resolve())}
