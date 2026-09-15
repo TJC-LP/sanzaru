@@ -6,7 +6,9 @@ description: Generate videos (Sora), images (gpt-image-2.5), speech/transcriptio
 # Sanzaru CLI for agents
 
 `sanzaru <group> <verb>` wraps OpenAI's Sora video, gpt-image-2.5, TTS/Whisper, and podcast APIs
-for shell use. Requires `OPENAI_API_KEY` in the environment. Start with:
+for shell use. Requires `OPENAI_API_KEY` in the environment. This skill is the **shell surface**;
+the same server's MCP tools are covered by `sanzaru-mcp`, and how to *write* the prompts (Sora
+anatomy, the reference-image golden rule) by `prompt-guidance`. Start with:
 
 ```bash
 sanzaru capabilities   # no API key needed: version, enabled features, command map

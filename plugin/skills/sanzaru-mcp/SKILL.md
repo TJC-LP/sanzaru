@@ -1,0 +1,107 @@
+---
+name: sanzaru-mcp
+description: Use sanzaru's MCP tools (create_video, create_image, generate_image, wait_for, create_audio, generate_podcast, simulate_podcast, view_media …) correctly — which tool for which job, how to wait for async ids in one call instead of polling, model choices, and the mistakes that waste renders. Load when the sanzaru MCP server is connected and you are about to call its tools. For shell/agent-CLI use load sanzaru-cli instead; for how to *write* Sora and image prompts load prompt-guidance.
+---
+
+# Sanzaru MCP tools
+
+How to drive the sanzaru MCP server. This skill is about the **tool surface**: which tool,
+which arguments, how to wait. For prompt craft (what to say to Sora or an image model) load
+`prompt-guidance`; for the shell CLI load `sanzaru-cli`.
+
+## Tool Quick Reference
+
+| Category | Tool | Pattern | Description |
+|----------|------|---------|-------------|
+| **Jobs** | `wait_for` | **blocking** | Wait for any mix of `video_*`/`resp_*` ids in ONE call; `download=true` saves them too. Use this instead of polling `get_*_status` |
+| **Video** | `create_video` | async | Create Sora video (returns a `video_*` id — then `wait_for` it) |
+| | `get_video_status` | one-off | Single status check (progress 0-100%); prefer `wait_for` for waiting |
+| | `download_video` | sync | Download completed video/thumbnail/spritesheet |
+| | `list_videos` | sync | List video jobs with pagination |
+| | `list_local_videos` | sync | List downloaded video files |
+| | `delete_video` | sync | Permanently delete a video from OpenAI |
+| | `remix_video` | async | Create new video by remixing an existing one |
+| **Image** | `generate_image` | **sync** | Images API — returns the finished image (RECOMMENDED for one-shots) |
+| | `edit_image` | **sync** | Edit/compose images (up to 16 inputs, optional mask) |
+| | `create_image` | async | Responses API — refinement chains (`previous_response_id`) and parallel batches; `model` picks the mainline model (`gpt-6-astra` default, `gpt-5.6-sol`/`terra`/`luna`) |
+| | `get_image_status` | one-off | Single status check; prefer `wait_for` for waiting |
+| | `download_image` | sync | Download completed image |
+| **Reference** | `list_reference_images` | sync | List available images for Sora |
+| | `prepare_reference_image` | sync | Resize image to exact Sora dimensions (`crop` / `pad` / `rescale`) |
+| **Audio** | `create_audio` | sync | Text-to-speech — OpenAI (named voices) or ElevenLabs (voice id) |
+| | `transcribe_audio` | sync | Transcription (long files are windowed automatically) |
+| | `chat_with_audio` | sync | Audio understanding / Q&A over a file |
+| | `list_audio_files` | sync | List and filter audio files (substring or glob `pattern`, not regex) |
+| **Podcast** | `generate_podcast` | sync | Multi-voice episode from a script; `render_mode` `segments` (exact gaps) or `dialogue` (model paces the turns); `verify` checks the audio says the script |
+| | `simulate_podcast` | sync | **No script** — realtime or gpt-live-1 agents converse from a rundown. Highest quality, real money: call with `dry_run: true` first and set `max_cost_usd` |
+| **Viewer** | `view_media` | sync | Opens a video/audio/image inline (MCP App) |
+
+## Which image tool
+
+| Need | Tool |
+|------|------|
+| One image from a prompt | `generate_image` — synchronous, nothing to wait for |
+| Edit or compose existing images | `edit_image` — synchronous; defaults to `gpt-image-2.5-sunburst` (editing precision) |
+| Several images in parallel, or a refinement chain | `create_image` → `wait_for` |
+
+`generate_image`/`create_image` default to `gpt-image-2.5-flare`. Both 2.5 variants accept
+`background="transparent"` (png/webp) and `quality` up to `"xhigh"`/`"max"`; gpt-image-2 refuses
+those before any request. `input_fidelity` is honoured only by gpt-image-1/1.5.
+
+## Waiting on jobs — one call, not a loop
+
+`create_video`, `remix_video` and `create_image` return an id immediately. Do **not** call
+`get_video_status` / `get_image_status` in a loop. Hand the ids to `wait_for`, which blocks
+server-side, reports progress to the client on every poll, and returns every job's final
+state in one round trip:
+
+```
+# Video: create → wait_for (downloads too) → done
+video = create_video(prompt="...", size="1280x720")
+wait_for([video.id], download=True)          # returns when finished; file is on disk
+
+# Several jobs at once, mixed types
+a = create_video(prompt="...")
+b = create_image(prompt="...")
+result = wait_for([a.id, b.id], download=True)
+# result.jobs[i]: status, done, timed_out, progress (video), download (filename)
+
+# Image (Images API): SYNCHRONOUS — nothing to wait for
+result = generate_image(prompt="...")  # Returns the finished image
+```
+
+`wait_for` **returns on its deadline instead of failing**: a job still running comes back with
+`timed_out=true` and its last status. Call `wait_for` again with the same ids to keep waiting
+(default deadline 240 s, max 1800 s). A bad id fails only its own entry, never the batch.
+Use `get_*_status` only for a one-off check when you are not going to wait.
+
+## Sora-specific arguments
+
+- `seconds` is a **string**: `"4"`, `"8"` or `"12"` — never an integer.
+- `size`: `"1280x720"` / `"720x1280"` on both models; `"1792x1024"` / `"1024x1792"` on `sora-2-pro` only.
+- `input_reference_filename` must match `size` exactly — run `prepare_reference_image` first.
+  With a reference image, the prompt describes **motion only** (see `prompt-guidance`).
+
+## Podcasts
+
+- `generate_podcast` is scripted TTS. Use `verify: true` when the words matter; it re-renders a
+  segment whose tail went missing, once.
+- `simulate_podcast` records agents actually talking. Always `dry_run: true` first (plans, projects
+  cost, spends nothing), then set `max_cost_usd`. gpt-realtime bills tokens; `gpt-live-1` bills
+  $0.05 per host-minute and runs in **duplex** mode by default (hosts hear each other live). Every
+  act is checkpointed; the result carries a `resume_command` if the run stops early.
+
+## Common Pitfalls
+
+1. **Polling by hand** — `create_video` and `create_image` are async; call `wait_for(ids, download=True)` once instead of looping over `get_*_status`, and don't `download_*` before the job is done
+2. **Using `create_image` when `generate_image` is simpler** — a single image needs no async job
+3. **Dimension mismatch** — the reference image MUST match the target video size exactly; use `prepare_reference_image`
+4. **Integer seconds** — `seconds` must be a string: `"8"` not `8`
+5. **Transparent output on gpt-image-2** — it raises; the 2.5 defaults support it
+6. **Regex in `list_audio_files`** — `pattern` is substring or glob; regex syntax is refused with an error naming the syntax
+7. **Recording a simulated podcast without a dry run** — it is the most expensive thing sanzaru does
+
+## Deep Reference
+
+- [Workflows](reference/WORKFLOWS.md) — step-by-step tool sequences for common tasks
+- `prompt-guidance` skill — how to write the prompts (Sora anatomy, the reference-image golden rule, camera and lighting vocabulary)

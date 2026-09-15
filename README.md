@@ -118,7 +118,7 @@ reference: [`docs/cli.md`](docs/cli.md).
 
 ### Claude Code Plugin (Recommended)
 
-Install as a plugin — auto-configures the MCP server + includes prompting guidance:
+Install as a plugin — auto-configures the MCP server and ships three skills: `sanzaru-mcp` (the tool surface, incl. `wait_for`), `sanzaru-cli` (the shell surface), `prompt-guidance` (how to write Sora/image prompts):
 
 ```bash
 /plugin marketplace add TJC-LP/sanzaru

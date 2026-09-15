@@ -1,6 +1,6 @@
 {
   "name": "sanzaru",
-  "description": "MCP server for OpenAI multimodal APIs: Sora video, gpt-image-2, TTS (OpenAI or ElevenLabs), transcription, scripted podcasts, and simulated podcasts where realtime agents actually converse. Ships prompting guidance and an agent CLI skill.",
+  "description": "MCP server for OpenAI multimodal APIs: Sora video, gpt-image-2.5, TTS (OpenAI or ElevenLabs), transcription, scripted podcasts, and simulated podcasts where realtime or gpt-live-1 agents actually converse. Ships three skills: sanzaru-mcp (the tool surface), sanzaru-cli (the shell surface), prompt-guidance (how to write the prompts).",
   "version": "0.11.0",
   "author": {
     "name": "TJC L.P.",
