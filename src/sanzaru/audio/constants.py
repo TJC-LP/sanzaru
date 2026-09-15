@@ -147,32 +147,41 @@ CHAT_WITH_AUDIO_FORMATS = {".mp3", ".wav"}
 # cannot take into ones it can, and .aac/.opus/.aiff are the reason anyone calls
 # it. What matters for the vulnerability is only that the demuxer cannot
 # dereference an embedded path.
-DECODABLE_AUDIO_EXTENSIONS: frozenset[str] = frozenset(
-    {
-        "aac",
-        "aif",
-        "aifc",
-        "aiff",
-        "amr",
-        "au",
-        "caf",
-        "flac",
-        "m4a",
-        "m4b",
-        "mka",
-        "mov",
-        "mp3",
-        "mp4",
-        "mpeg",
-        "mpga",
-        "oga",
-        "ogg",
-        "opus",
-        "wav",
-        "webm",
-        "wma",
-    }
-)
+#
+# A *map*, not a set, because an extension is not a demuxer name. ffmpeg has no
+# demuxer called `wma`, `mka`, `aif`, `m4b`, `mpga`, `oga` or `opus` — those
+# files are read by `asf`, `matroska`, `aiff`, `mov`, `mp3` and `ogg` — so an
+# allowlist that passed the extension straight through as `format=` admitted a
+# `.wma` and then failed at ffmpeg with "Unknown input format". Names are the
+# comma-separated aliases `ffmpeg -demuxers` prints, each verified to load.
+AUDIO_DEMUXER_BY_EXTENSION: dict[str, str] = {
+    "aac": "aac",
+    "aif": "aiff",
+    "aifc": "aiff",
+    "aiff": "aiff",
+    "amr": "amr",
+    "au": "au",
+    "caf": "caf",
+    "flac": "flac",
+    "m4a": "m4a",
+    "m4b": "mov",
+    "mka": "matroska",
+    "mov": "mov",
+    "mp3": "mp3",
+    "mp4": "mp4",
+    "mpeg": "mpeg",
+    "mpga": "mp3",
+    "oga": "ogg",
+    "ogg": "ogg",
+    "opus": "ogg",
+    "wav": "wav",
+    "webm": "webm",
+    "wma": "asf",
+}
+
+#: The extensions of :data:`AUDIO_DEMUXER_BY_EXTENSION` — the membership set
+#: for "can this file be handed to ffmpeg at all".
+DECODABLE_AUDIO_EXTENSIONS: frozenset[str] = frozenset(AUDIO_DEMUXER_BY_EXTENSION)
 
 #: What a caller may name as a convert/compress *output*. Deliberately the
 #: narrow set: an output name is a file this server creates, and there is no
@@ -184,23 +193,25 @@ SAFE_AUDIO_EXTENSIONS: frozenset[str] = frozenset(
 
 
 def safe_audio_format(name_or_suffix: str, *, allowed: frozenset[str] | None = None) -> str:
-    """Return the demuxer/format name for an allowlisted audio extension.
+    """Return the ffmpeg format name for an allowlisted audio extension.
 
     Accepts either a filename (``track.mp3``) or a bare/dotted suffix
-    (``mp3`` / ``.mp3``) and returns the lowercased extension. Raises
-    ``ValueError`` for anything outside `allowed`, so a planted playlist file
-    (``evil.hls``, ``evil.concat``) is refused before ``AudioSegment.from_file``
-    can invoke a demuxer that opens other local files.
+    (``mp3`` / ``.mp3``). Raises ``ValueError`` for anything outside `allowed`,
+    so a planted playlist file (``evil.hls``, ``evil.concat``) is refused before
+    ``AudioSegment.from_file`` can invoke a demuxer that opens other local
+    files. The return value is what ``format=`` wants — ``wma`` comes back as
+    ``asf``, ``opus`` as ``ogg`` — not the extension that was checked.
 
     `allowed` defaults to the decodable set, which is the one that matters for
     the demuxer; pass :data:`SAFE_AUDIO_EXTENSIONS` when validating a name this
-    server is about to *create*.
+    server is about to *create*. Consumed by ``AudioProcessor.load_audio_file``
+    and the convert/compress services.
     """
     permitted = DECODABLE_AUDIO_EXTENSIONS if allowed is None else allowed
     ext = name_or_suffix.rsplit(".", 1)[-1].lower() if "." in name_or_suffix else name_or_suffix.lower()
     if ext not in permitted:
         raise ValueError(f"unsupported audio format {ext!r}; allowed: {', '.join(sorted(permitted))}")
-    return ext
+    return AUDIO_DEMUXER_BY_EXTENSION.get(ext, ext)
 
 
 # Enhancement Prompts
