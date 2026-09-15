@@ -392,9 +392,11 @@ Options: `-p/--premise`, `--acts`, `-m/--target-minutes`, `--title`, `--style`, 
 
 `--model gpt-live-1` (experimental) records on the full-duplex Live API instead: billed
 **$0.05 per session-minute per host** with no tokens (the dry run prints session-minutes rather
-than token counts), floor control is advisory (the model is asked to wait for its cue; anything it
-says out of turn is discarded and logged), turn ends are inferred from ~1.2s of silence, and
-`--turn-tokens` has no effect — a turn is cut at 2× `--turn-seconds` of audio. See
+than token counts); the act runs in **real time** (a 1-minute act takes about a minute, acts still
+parallel) because the Live session only advances while input audio streams; floor control is
+advisory (the model is asked to wait for its cue; anything it says out of turn is discarded and
+logged); turn ends are detected by loudness after ~1.2s of near-silent output; and `--turn-tokens`
+has no effect — a turn is cut at 2× `--turn-seconds` of speech. See
 [`docs/audio/simulated-podcasts.md`](audio/simulated-podcasts.md#gpt-live-1-experimental).
 
 Exit codes are the usual contract plus one: **6** means the cost ceiling stopped the run — the

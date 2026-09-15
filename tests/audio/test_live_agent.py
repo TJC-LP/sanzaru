@@ -5,19 +5,21 @@ no websocket, no spend. The fake answers the agent's own client events with
 scripted server events, so these cover the protocol the agent actually speaks.
 """
 
-import base64
-
+import anyio
 import pytest
 
 from sanzaru.audio.realtime import producer
 from sanzaru.audio.realtime.agent import RealtimeAgent
 from sanzaru.audio.realtime.budget import CostBudget
 from sanzaru.audio.realtime.live_agent import (
+    FRAME_MS,
+    SPEECH_RMS_THRESHOLD,
     STEER_MAX_CHARS,
     STOP_CUE,
     TURN_CUE,
     TURN_NUDGE,
     LiveAgent,
+    frame_rms,
 )
 from sanzaru.audio.realtime.pricing import ModelPrices, prices_for, project_usage, usage_cost
 from sanzaru.audio.realtime.producer import SimulationSettings, run_act
@@ -35,6 +37,9 @@ pytestmark = pytest.mark.audio
 
 SILENCE = 0.05
 """A silence gap short enough to keep the suite fast; the default is 1.2s."""
+
+BYTES_PER_SECOND = 24000 * 2
+FRAME_BYTES = BYTES_PER_SECOND * FRAME_MS // 1000
 
 
 @pytest.fixture
@@ -121,21 +126,48 @@ class TestConfigure:
             await agent.configure("persona")
 
 
+@pytest.mark.unit
+class TestFrameRms:
+    def test_silence_is_zero_and_speech_is_loud(self):
+        from conftest import LIVE_LOUD_FRAME, LIVE_SILENT_FRAME
+
+        assert frame_rms(LIVE_SILENT_FRAME) == 0.0
+        assert frame_rms(LIVE_LOUD_FRAME) == pytest.approx(8000.0)
+        assert frame_rms(b"") == 0.0
+        assert frame_rms(b"\x01") == 0.0
+        assert 200 < SPEECH_RMS_THRESHOLD < 500
+
+
 class TestSpeak:
-    async def test_collects_audio_and_transcript_until_the_silence_gap(self, fake_live, host):
-        conn = fake_live.Connection(seconds=1.5, transcripts=["hello there friend"])
+    async def test_collects_speech_and_transcript_and_ends_on_silence(self, fake_live, host):
+        conn = fake_live.Connection(seconds=1.5, transcripts=["hello there friend"], lead_silence_s=0.3)
         async with _agent(conn, host) as agent:
             await agent.configure("persona")
             spoken = await agent.speak()
 
+        # Leading and trailing silence are trimmed: `seconds` is speech.
         assert spoken.seconds == pytest.approx(1.5)
+        assert spoken.pcm[:2] != b"\x00\x00"
+        assert spoken.pcm[-2:] != b"\x00\x00"
         assert spoken.text == "hello there friend"
         assert spoken.truncated is False
-        # The cue is an instruction, the nudge is commentary; both go out.
-        cues = [e["content"] for e in conn.sent_of("session.instructions.append")]
-        assert cues == [TURN_CUE]
+        # The cue is an instruction, the nudge is commentary; both go out,
+        # each with an event_id so the ack (or the loss) can be matched.
+        cues = conn.sent_of("session.instructions.append")
+        assert [e["content"] for e in cues] == [TURN_CUE]
         assert [e["content"] for e in conn.sent_of("session.commentary.append")] == [TURN_NUDGE]
-        assert all(e["delegation_id"] is None for e in conn.sent_of("session.instructions.append"))
+        assert all(e["delegation_id"] is None and e["event_id"] for e in cues)
+
+    async def test_the_turn_only_starts_once_input_frames_are_flowing(self, fake_live, host):
+        # Mirrors the real server: nothing comes out until audio goes in. The
+        # clock is what makes the cue land; without it this turn would be empty.
+        conn = fake_live.Connection(seconds=0.5)
+        async with _agent(conn, host) as agent:
+            await agent.configure("persona")
+            before = conn.input_frames
+            spoken = await agent.speak()
+            assert conn.input_frames > before
+        assert spoken.seconds == pytest.approx(0.5)
 
     async def test_hard_cap_truncates_and_sends_a_stop_cue(self, fake_live, host):
         # 3s of audio against a 1s turn: the cap is 2 x turn_seconds.
@@ -148,29 +180,31 @@ class TestSpeak:
         assert spoken.seconds == pytest.approx(2.0)
         assert STOP_CUE in [e["content"] for e in conn.sent_of("session.instructions.append")]
 
-    async def test_off_floor_audio_is_discarded_but_counted(self, fake_live, host):
-        conn = fake_live.Connection(seconds=1.0, pre_cue_seconds=0.75)
+    async def test_off_floor_speech_is_discarded_but_counted(self, fake_live, host):
+        conn = fake_live.Connection(seconds=1.0, pre_cue_seconds=0.7)
         async with _agent(conn, host) as agent:
             await agent.configure("persona")
-            # Let the out-of-turn audio land before the cue goes out.
-            import anyio
-
-            await anyio.sleep(0.05)
+            # Let the clock tick a few times: the out-of-turn speech plays on
+            # the first frame, then idle zero frames follow — those must not
+            # count.
+            await anyio.sleep(0.35)
+            assert agent.off_floor_seconds == pytest.approx(0.7)
             spoken = await agent.speak()
 
             assert spoken.seconds == pytest.approx(1.0)
-            assert agent.off_floor_seconds == pytest.approx(0.75)
+            assert agent.off_floor_seconds == pytest.approx(0.7)
 
-    async def test_no_audio_after_the_cue_is_an_empty_turn_not_an_error(self, fake_live, host, caplog):
+    async def test_silence_after_the_cue_is_an_empty_turn_not_an_error(self, fake_live, host, caplog):
+        # The stream keeps flowing (zero frames), the model just says nothing.
         conn = fake_live.Connection(silent=True)
-        async with _agent(conn, host, start_wait_s=0.1) as agent:
+        async with _agent(conn, host, start_wait_s=0.3) as agent:
             await agent.configure("persona")
             with caplog.at_level("WARNING", logger="sanzaru"):
                 spoken = await agent.speak()
 
         assert spoken.pcm == b""
         assert spoken.truncated is False
-        assert "no audio within" in caplog.text
+        assert "no speech within" in caplog.text
 
     async def test_a_session_closed_mid_turn_raises(self, fake_live, host):
         conn = fake_live.Connection(seconds=2.0, close_mid_turn=True)
@@ -193,8 +227,6 @@ class TestSpeak:
             await agent.configure("persona")
             await agent.speak()
             conn.emit_error("rate limited")
-            import anyio
-
             await anyio.sleep(0.01)
             with pytest.raises(RealtimeAPIError, match="rate limited"):
                 await agent.speak()
@@ -209,6 +241,10 @@ class TestUsage:
             second = await agent.speak()
             tail = await agent.finish()
 
+        # Both turns carry speech — a second turn that returned on the first
+        # turn's speech count would read as empty here.
+        assert first.seconds == pytest.approx(1.0)
+        assert second.seconds == pytest.approx(1.0)
         assert first.usage.live_seconds == pytest.approx(30.0)
         assert second.usage.live_seconds == pytest.approx(60.0)
         assert tail.live_seconds == pytest.approx(10.0)
@@ -244,20 +280,126 @@ class TestSteerAndHear:
                 await agent.steer("x" * (STEER_MAX_CHARS + 500))
 
         notes = conn.sent_of("session.instructions.append")
-        assert notes[0] == {"type": "session.instructions.append", "content": "short note", "delegation_id": None}
+        assert notes[0]["content"] == "short note"
+        assert notes[0]["delegation_id"] is None
+        assert notes[0]["event_id"]
         assert len(str(notes[1]["content"])) == STEER_MAX_CHARS
         assert "truncated" in caplog.text
 
-    async def test_hear_chunks_the_audio(self, fake_live, host):
+    async def test_lost_injections_at_close_warn_by_name_and_do_not_raise(self, fake_live, host, caplog):
+        conn = fake_live.Connection(seconds=0.3, lose_injections_at_close=True)
+        async with _agent(conn, host) as agent:
+            await agent.configure("persona")
+            await agent.steer("land the plane")
+            spoken = await agent.speak()
+            with caplog.at_level("WARNING", logger="sanzaru"):
+                tail = await agent.finish()
+
+        assert spoken.seconds == pytest.approx(0.3)
+        assert tail.live_seconds >= 0.0
+        assert "lost: steer: 'land the plane'" in caplog.text
+        assert "lost: turn cue" in caplog.text
+        assert "lost: turn nudge" in caplog.text
+
+
+class TestClock:
+    async def test_frames_keep_flowing_while_idle(self, fake_live, host):
         conn = fake_live.Connection()
         async with _agent(conn, host) as agent:
             await agent.configure("persona")
-            await agent.hear(b"\x00" * (40 * 1024))
-            await agent.hear(b"")
+            await anyio.sleep(0.35)
+            assert agent.frames_sent >= 3
+            assert conn.input_frames == agent.frames_sent
+            # Idle frames are silence, one frame each.
+            frames = conn.sent_of("session.input_audio.append")
+            assert frames
+            assert conn.heard_speech_bytes == 0
+        # The clock stops with the session: no frames after close.
+        after_close = [
+            e for e in conn.sent[conn.sent.index({"type": "session.close"}) :] if e.get("type") != "session.close"
+        ]
+        assert after_close == []
 
-        appends = conn.sent_of("session.input_audio.append")
-        assert [len(base64.b64decode(str(e["audio"]))) for e in appends] == [32 * 1024, 8 * 1024]
-        assert conn.heard_bytes == 40 * 1024
+    async def test_the_clock_starts_only_after_session_started(self, fake_live, host):
+        conn = fake_live.Connection(start_error="bad voice")
+        async with _agent(conn, host) as agent:
+            with pytest.raises(RealtimeAPIError):
+                await agent.configure("persona")
+            await anyio.sleep(0.25)
+        assert conn.input_frames == 0
+
+    async def test_hear_plays_out_at_pace_and_returns_once_heard(self, fake_live, host):
+        from conftest import LIVE_LOUD_FRAME
+
+        conn = fake_live.Connection()
+        async with _agent(conn, host) as agent:
+            await agent.configure("persona")
+            speech = LIVE_LOUD_FRAME * 3  # 0.3s
+            started = anyio.current_time()
+            await agent.hear(speech)
+            await agent.hear(b"")
+            elapsed = anyio.current_time() - started
+
+        # Three frames at 100ms each, not one burst.
+        assert 0.2 <= elapsed < 1.5
+        assert agent.inbox_seconds == 0.0
+        assert conn.heard_speech_bytes == len(speech)
+        loud_frames = [
+            e
+            for e in conn.sent_of("session.input_audio.append")
+            if any(__import__("base64").b64decode(str(e["audio"])))
+        ]
+        assert len(loud_frames) == 3
+        assert all(len(__import__("base64").b64decode(str(e["audio"]))) == FRAME_BYTES for e in loud_frames)
+
+
+class TestFanOut:
+    async def test_listeners_hear_the_speaker_live(self, fake_live, host):
+        speaker_conn = fake_live.Connection(seconds=0.3)
+        listener_conn = fake_live.Connection()
+        listener = LiveAgent(
+            HostSpec(id="rory", name="Rory", voice="cedar"),
+            listener_conn,
+            model="gpt-live-1",
+            turn_seconds=10.0,
+            sample_rate=24000,
+            end_of_turn_silence_s=SILENCE,
+        )
+        async with _agent(speaker_conn, host) as speaker, listener:
+            await speaker.configure("persona")
+            await listener.configure("persona")
+            speaker.set_listeners([speaker, listener])  # self is dropped
+
+            spoken = await speaker.speak()
+
+            # By the time the turn is over, the listener's clock has played it.
+            assert listener.inbox_seconds == 0.0
+            assert listener_conn.heard_speech_bytes == len(spoken.pcm) == int(0.3 * BYTES_PER_SECOND)
+            # And the listener recorded none of it as its own speech.
+            assert listener.off_floor_seconds == 0.0
+
+    async def test_only_frames_from_the_first_speech_frame_on_are_forwarded(self, fake_live, host):
+        speaker_conn = fake_live.Connection(seconds=0.2, lead_silence_s=0.5, trail_silence_s=0.1)
+        listener_conn = fake_live.Connection()
+        listener = LiveAgent(
+            HostSpec(id="rory", name="Rory", voice="cedar"),
+            listener_conn,
+            model="gpt-live-1",
+            turn_seconds=10.0,
+            sample_rate=24000,
+            end_of_turn_silence_s=SILENCE,
+        )
+        async with _agent(speaker_conn, host) as speaker, listener:
+            await speaker.configure("persona")
+            await listener.configure("persona")
+            speaker.set_listeners([listener])
+            fed_before = listener_conn.input_frames
+            await speaker.speak()
+            # 0.2s speech + 0.1s trailing silence forwarded; 0.5s lead dropped.
+            # The listener's idle silence frames are indistinguishable from
+            # forwarded trailing silence, so count only the speech.
+            assert listener_conn.heard_speech_bytes == int(0.2 * BYTES_PER_SECOND)
+            assert listener_conn.input_frames > fed_before
 
 
 # ---------- pricing ----------
@@ -347,13 +489,15 @@ def hosts():
 
 @pytest.fixture
 def brief():
-    return ActBrief(id="act1", title="Open", topic="the topic", target_seconds=2.0, max_turns=2)
+    # Two 0.3s turns land it: the close is due once one more average turn
+    # would reach the target.
+    return ActBrief(id="act1", title="Open", topic="the topic", target_seconds=0.6, max_turns=2)
 
 
 class TestRunActRouting:
     async def test_run_act_seats_live_agents_for_gpt_live_1(self, fake_live, connect_factory, brief, hosts, mocker):
-        one = fake_live.Connection(seconds=1.0, usage_seconds=[20.0, 40.0], final_usage_seconds=45.0)
-        two = fake_live.Connection(seconds=1.0, usage_seconds=[20.0], final_usage_seconds=30.0)
+        one = fake_live.Connection(seconds=0.3, usage_seconds=[20.0, 40.0], final_usage_seconds=45.0)
+        two = fake_live.Connection(seconds=0.3, usage_seconds=[20.0], final_usage_seconds=30.0)
         factory, handed = connect_factory(one, two)
         seated = mocker.spy(producer, "_make_agent")
         settings = SimulationSettings(
@@ -365,16 +509,17 @@ class TestRunActRouting:
 
         assert [type(agent) for agent in seated.spy_return_list] == [LiveAgent, LiveAgent]
         assert [turn.speaker_id for turn in result.turns] == ["avery", "rory"]
-        assert result.seconds == pytest.approx(2.0)
+        assert result.seconds == pytest.approx(0.6)
         # Both hosts' sessions billed for the whole act: 45 + 30 seconds.
         assert result.usage.live_seconds == pytest.approx(75.0)
         assert budget.spent_usd == pytest.approx(75.0 / 60 * 0.05)
         for conn in handed:
             assert conn.sent[0]["type"] == "session.start"
             assert conn.sent[-1] == {"type": "session.close"}
-        # Rory heard Avery's turn (1s of PCM16/24k), and vice versa.
-        assert two.heard_bytes == 24000 * 2
-        assert one.heard_bytes == 24000 * 2
+        # Rory heard Avery's 0.3s turn exactly once — live, not live *and*
+        # replayed — and vice versa.
+        assert two.heard_speech_bytes == int(0.3 * BYTES_PER_SECOND)
+        assert one.heard_speech_bytes == int(0.3 * BYTES_PER_SECOND)
 
     async def test_run_act_still_seats_realtime_agents_for_gpt_realtime(
         self, fake_realtime, connect_factory, brief, hosts, mocker
@@ -396,7 +541,9 @@ class TestRunActRouting:
             HostSpec(id="avery", name="Avery", voice="marin", model="gpt-live-1"),
             HostSpec(id="rory", name="Rory", voice="cedar"),
         ]
-        factory, _ = connect_factory(fake_live.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
+        live_conn = fake_live.Connection(seconds=0.3)
+        rt_conn = fake_realtime.Connection(seconds=0.3)
+        factory, _ = connect_factory(live_conn, rt_conn)
         seated = mocker.spy(producer, "_make_agent")
         settings = SimulationSettings(model="gpt-realtime-2.1", turn_seconds=5.0, live_turn_silence_s=SILENCE)
 
@@ -404,6 +551,10 @@ class TestRunActRouting:
 
         assert [type(agent) for agent in seated.spy_return_list] == [LiveAgent, RealtimeAgent]
         assert len(result.turns) == 2
+        # The realtime host got the live turn replayed; the live host heard
+        # the realtime turn through its clock, at pace.
+        assert rt_conn.heard_bytes > 0
+        assert live_conn.heard_speech_bytes == int(0.3 * BYTES_PER_SECOND)
 
     def test_default_connect_dials_the_live_api_for_live_models(self, mocker):
         client = mocker.Mock()

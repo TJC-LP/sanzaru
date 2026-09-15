@@ -287,15 +287,26 @@ class FakeRealtimeConnection:
             yield self._pending.pop(0)
 
 
+LIVE_FRAME_BYTES = 24000 * 2 // 10
+"""One 100ms PCM16/24kHz frame, the unit both the agent's clock and the fake speak in."""
+LIVE_SILENT_FRAME = b"\x00" * LIVE_FRAME_BYTES
+LIVE_LOUD_FRAME = (b"\x40\x1f\xc0\xe0" * (LIVE_FRAME_BYTES // 4))[:LIVE_FRAME_BYTES]
+"""A +/-8000 square wave: RMS 8000, far above SPEECH_RMS_THRESHOLD."""
+
+
 class FakeLiveConnection:
-    """Stands in for AsyncLiveConnection.
+    """Stands in for AsyncLiveConnection, behaving the way the real server was measured to.
 
     The agent only touches `send()` and async iteration. Server events are
-    scripted as reactions to what the agent sends: `session.start` is answered
-    with `session.started` (or an `error`), the turn cue with one turn's worth
-    of audio/transcript deltas and a cumulative usage update, `session.close`
-    with `session.closed`. Iteration blocks on a memory stream rather than
-    ending when the script runs out, because the real socket does too.
+    scripted as reactions to what the agent sends, and — like the real API —
+    nothing comes out until input audio comes in: `session.start` is answered
+    with `session.started` (or an `error`); every append is acknowledged with
+    its `*.appended`; the turn cue is *armed* and only plays once the next
+    `session.input_audio.append` arrives; every idle input frame is answered
+    with one zero output frame, so the output is a continuous stream that
+    includes silence; `session.close` is answered with `session.closed`.
+    Iteration blocks on a memory stream rather than ending when the script runs
+    out, because the real socket does too.
     """
 
     def __init__(
@@ -305,13 +316,15 @@ class FakeLiveConnection:
         transcripts: list[str] | None = None,
         usage_seconds: Sequence[float] = (),
         final_usage_seconds: float | None = None,
-        marker: bytes = b"\x01\x02",
-        delta_seconds: float = 0.5,
+        lead_silence_s: float = 0.2,
+        trail_silence_s: float = 0.3,
         start_error: str | None = None,
         pre_cue_seconds: float = 0.0,
         silent: bool = False,
         close_mid_turn: bool = False,
         end_stream_mid_turn: bool = False,
+        lose_injections_at_close: bool = False,
+        ack_appends: bool = True,
     ) -> None:
         import anyio
 
@@ -320,17 +333,25 @@ class FakeLiveConnection:
         self.transcripts = list(transcripts or [])
         self.usage_seconds = list(usage_seconds)
         self.final_usage_seconds = final_usage_seconds
-        self.marker = marker
-        self.delta_seconds = delta_seconds
+        self.lead_silence_s = lead_silence_s
+        self.trail_silence_s = trail_silence_s
         self.start_error = start_error
-        # Audio the model produces right after starting, before any cue: what a
-        # full-duplex model talking out of turn looks like.
+        # Speech the model produces right after the first input frame, before
+        # any cue: what a full-duplex model talking out of turn looks like.
         self.pre_cue_seconds = pre_cue_seconds
         self.silent = silent
         self.close_mid_turn = close_mid_turn
         self.end_stream_mid_turn = end_stream_mid_turn
+        self.lose_injections_at_close = lose_injections_at_close
+        self.ack_appends = ack_appends
         self.turn = 0
         self.closed = False
+        self.input_frames = 0
+        self.heard_speech_bytes = 0
+        """Non-silent input bytes: what this host actually heard someone say."""
+        self._cue_armed = False
+        self._pre_cue_pending = pre_cue_seconds > 0
+        self._unacked: list[str] = []
         send_stream, receive_stream = anyio.create_memory_object_stream[FakeEvent](max_buffer_size=1_000_000)
         self._events = send_stream
         self._incoming = receive_stream
@@ -341,10 +362,8 @@ class FakeLiveConnection:
         return [event for event in self.sent if event.get("type") == event_type]
 
     @property
-    def heard_bytes(self) -> int:
-        import base64
-
-        return sum(len(base64.b64decode(str(e["audio"]))) for e in self.sent_of("session.input_audio.append"))
+    def input_bytes(self) -> int:
+        return self.input_frames * LIVE_FRAME_BYTES
 
     # ---- the connection surface ----
 
@@ -358,16 +377,39 @@ class FakeLiveConnection:
                 self._emit(FakeEvent("error", error=FakeEvent("err", code="bad", message=self.start_error)))
                 return
             self._emit(FakeEvent("session.started", session=FakeEvent("session", id="sess_1")))
-            if self.pre_cue_seconds:
-                self._emit_audio(self.pre_cue_seconds)
-        elif event_type == "session.commentary.append":
+        elif event_type in ("session.instructions.append", "session.commentary.append"):
             from sanzaru.audio.realtime.live_agent import TURN_NUDGE
 
+            event_id = str(event.get("event_id") or "")
+            if self.ack_appends and not self.lose_injections_at_close:
+                self._emit(FakeEvent(f"{event_type}ed", client_event_id=event_id, start_ms=0, end_ms=0))
+            else:
+                self._unacked.append(event_id)
             # The nudge is the last frame of a cue, so answering it is the
             # earliest a real server could start the turn.
             if event.get("content") == TURN_NUDGE:
-                self._script_turn()
+                self._cue_armed = True
+        elif event_type == "session.input_audio.append":
+            import base64
+
+            pcm = base64.b64decode(str(event["audio"]))
+            self.input_frames += 1
+            if any(pcm):
+                self.heard_speech_bytes += len(pcm)
+            self._on_input_frame()
         elif event_type == "session.close":
+            for event_id in self._unacked:
+                self._emit(
+                    FakeEvent(
+                        "error",
+                        error=FakeEvent(
+                            "err",
+                            code="context_injection_incomplete",
+                            message="The session closed before the estimated context injection completed.",
+                            client_event_id=event_id,
+                        ),
+                    )
+                )
             usage = self.final_usage_seconds
             if usage is None:
                 usage = self.usage_seconds[-1] if self.usage_seconds else 0.0
@@ -401,21 +443,29 @@ class FakeLiveConnection:
             self.closed = True
             self._events.close()
 
-    def _emit_audio(self, seconds: float) -> None:
+    def _emit_frames(self, seconds: float, frame: bytes) -> None:
         import base64
 
-        remaining = seconds
-        while remaining > 1e-9:
-            chunk = min(self.delta_seconds, remaining)
-            frames = int(chunk * 24000)
-            pcm = (self.marker * frames)[: frames * 2]
-            self._emit(FakeEvent("session.output_audio.delta", delta=base64.b64encode(pcm).decode()))
-            remaining -= chunk
+        for _ in range(round(seconds * 10)):
+            self._emit(FakeEvent("session.output_audio.delta", delta=base64.b64encode(frame).decode()))
+
+    def _on_input_frame(self) -> None:
+        """The timeline moved: play whatever is due, else one silent frame."""
+        if self._pre_cue_pending:
+            self._pre_cue_pending = False
+            self._emit_frames(self.pre_cue_seconds, LIVE_LOUD_FRAME)
+            return
+        if self._cue_armed:
+            self._cue_armed = False
+            self._script_turn()
+            return
+        self._emit_frames(0.1, LIVE_SILENT_FRAME)
 
     def _script_turn(self) -> None:
         index = self.turn
         self.turn += 1
         if self.silent:
+            self._emit_frames(0.1, LIVE_SILENT_FRAME)
             return
         if isinstance(self.seconds, (int, float)):
             turn_seconds = float(self.seconds)
@@ -423,17 +473,22 @@ class FakeLiveConnection:
             durations = list(self.seconds) or [1.0]
             turn_seconds = float(durations[min(index, len(durations) - 1)])
         if self.close_mid_turn or self.end_stream_mid_turn:
-            self._emit_audio(min(self.delta_seconds, turn_seconds))
+            self._emit_frames(0.1, LIVE_LOUD_FRAME)
             if self.close_mid_turn:
                 self._emit(FakeEvent("session.closed", reason="expired", usage=FakeEvent("usage", seconds=0.0)))
             self._end_stream()
             return
-        self._emit_audio(turn_seconds)
+        self._emit_frames(self.lead_silence_s, LIVE_SILENT_FRAME)
+        self._emit_frames(turn_seconds, LIVE_LOUD_FRAME)
         text = self.transcripts[index] if index < len(self.transcripts) else f"turn {index}"
         for word in text.split(" "):
             self._emit(FakeEvent("session.output_transcript.delta", delta=word + " ", start_ms=0, end_ms=0))
         if index < len(self.usage_seconds):
+            # Before the trailing silence: the agent ends the turn on the first
+            # sub-threshold frame, and this is what makes a turn's usage delta
+            # deterministic in tests (the real report lags; wall clock covers).
             self._emit(FakeEvent("session.usage.updated", usage=FakeEvent("usage", seconds=self.usage_seconds[index])))
+        self._emit_frames(self.trail_silence_s, LIVE_SILENT_FRAME)
 
 
 class _FakeRealtime:

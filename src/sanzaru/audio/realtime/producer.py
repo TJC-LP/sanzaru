@@ -595,6 +595,14 @@ async def run_act(
                 await stack.enter_async_context(agent)
             agents.append(agent)
 
+        # Live hosts hear each other as they speak: the one on the floor feeds
+        # its frames straight into the others' input clocks. That is what keeps
+        # a live act at ~1x real time rather than speak-then-replay's 2x, and
+        # it is why the post-turn `hear()` below skips them.
+        live_agents = [agent for agent in agents if isinstance(agent, LiveAgent)]
+        for live in live_agents:
+            live.set_listeners(live_agents)
+
         for agent in agents:
             others = [h for h in hosts if h.id != agent.id]
             await agent.configure(
@@ -769,9 +777,21 @@ async def run_act(
                         budget.charge(spoken.usage, agent.model)
 
                     # Everyone else hears it. This is what makes it a
-                    # conversation rather than N monologues interleaved.
-                    for other in agents:
-                        if other is not agent:
+                    # conversation rather than N monologues interleaved. Live
+                    # listeners of a live speaker already heard it live.
+                    listeners = [
+                        other
+                        for other in agents
+                        if other is not agent and not (isinstance(agent, LiveAgent) and isinstance(other, LiveAgent))
+                    ]
+                    if any(isinstance(other, LiveAgent) for other in listeners):
+                        # A live host plays a turn out at real-time pace, so a
+                        # mixed table hears it in parallel rather than in series.
+                        async with anyio.create_task_group() as hear_group:
+                            for other in listeners:
+                                hear_group.start_soon(other.hear, spoken.pcm)
+                    else:
+                        for other in listeners:
                             await other.hear(spoken.pcm)
             except TimeoutError as exc:
                 raise RealtimeAPIError(

@@ -3,29 +3,37 @@
 
 Same public surface as `RealtimeAgent` — `configure`, `steer`, `hear`, `speak` —
 so `producer.run_act` can seat either at the table, but the model underneath is
-a different animal and three things about it shape everything here:
+a different animal. Four facts about it, all measured against the real API on
+2026-09-15 (see the docs' "gpt-live-1" section), shape everything here:
 
+- **The session timeline only advances while input audio is streaming.** With
+  nothing on `session.input_audio.append`, the model never speaks, appended
+  instructions are never applied, and at close the server returns one
+  `context_injection_incomplete` error per pending append. So every agent runs
+  a *clock task* that streams 100ms PCM16 frames at real-time pace for the whole
+  session — silence when there is nothing to hear, otherwise frames from the
+  inbox that `hear()` / fan-out fill. An act therefore runs in real time.
 - **It is full duplex.** There is no `response.create` for the model's own
-  speech and no `response.done` after it: the model decides when to talk, the
-  way a person on a call does. The producer's floor control is therefore
-  *advisory* — the session instructions tell the model to speak only when cued
-  and to stay silent otherwise, and `speak()` sends that cue. Audio the model
-  produces while it does *not* hold the floor is discarded (counted and logged
-  as off-floor seconds), because a full-duplex model may well talk over the
-  host it is hearing.
-- **A turn has no end marker.** Output audio simply stops arriving. The end of
-  a turn is inferred: no new audio for `end_of_turn_silence_s` after some audio
-  has arrived, or `2 x turn_seconds` of audio collected (reported `truncated`).
-- **It bills by the session-minute, not the token.** `session.usage.updated`
-  carries the session's *cumulative* seconds; each `speak()` reports the delta
-  since the previous turn as `RealtimeUsage.live_seconds`, and `finish()` reports
-  whatever the close settles on top. Listening time bills like talking time, so
-  every host's session costs the whole act.
+  speech and no `response.done` after it. The producer's floor control is
+  *advisory*: the session instructions tell the model to speak only when cued,
+  `speak()` sends the cue, and speech the model produces while it does *not*
+  hold the floor is discarded (counted and logged as off-floor seconds).
+- **Output is a continuous frame stream that includes silence**: ~10 deltas a
+  second whether or not the model is talking, exact-zero frames between and
+  after speech. "No delta for N seconds" never fires. A turn is therefore
+  bounded by *loudness*: it starts at the first frame whose RMS clears
+  `SPEECH_RMS_THRESHOLD`, ends after `end_of_turn_silence_s` of frames below it
+  (or at `2 x turn_seconds` of speech, reported `truncated`), and the returned
+  PCM is trimmed to the speech.
+- **`usage.seconds` meters streamed session time**, not spoken audio, and it is
+  cumulative. Each `speak()` reports the delta since the previous turn as
+  `RealtimeUsage.live_seconds`; `finish()` reports what the close settles on
+  top. Listening bills like talking, so every host's session costs the act.
 
-The socket is drained continuously by a reader task the agent owns, because
-events arrive whether or not anyone is in `speak()` — usage updates, the other
-side's transcript, the model talking out of turn. Entering the agent as an
-async context manager starts the reader; leaving it closes the session.
+Live agents in one act hear each other *as they speak*: the agent on the floor
+forwards each output frame, from the first speech frame on, into its listeners'
+inboxes (`set_listeners`), where their clocks play it out at pace. That is what
+keeps an act at ~1x real time instead of speak-then-replay's 2x.
 
 Every `openai.types.live` import is TYPE_CHECKING-only: the CLI startup-weight
 test forbids pulling `openai` in at `sanzaru.cli` import time.
@@ -35,6 +43,7 @@ from __future__ import annotations
 
 import base64
 import time
+from collections.abc import Callable, Sequence
 from types import TracebackType
 from typing import TYPE_CHECKING, cast
 
@@ -51,21 +60,36 @@ if TYPE_CHECKING:
     from openai.types.live.client_event_param import ClientEventParam
 
 
+FRAME_MS = 100
+"""Input clock period and frame length. The API's own output deltas arrive at
+about this cadence, so listeners' inboxes neither starve nor pile up."""
+
+SPEECH_RMS_THRESHOLD = 300
+"""PCM16 RMS above which an output frame counts as speech. Measured on
+gpt-live-1: speech frames land at 500-3500, silence frames are exact zeros with
+a handful of 1-200 frames on the edges of words. 300 sits in the gap."""
+
 DEFAULT_END_OF_TURN_SILENCE_S = 1.2
-"""How long output audio must be absent, after some has arrived, before the
-turn is over. Below ~1s a mid-sentence breath ends the turn; well above it every
-turn carries that much dead air before the next host is cued."""
+"""How much sub-threshold audio, after speech, ends the turn. Below ~1s a
+mid-sentence breath ends it; well above it every turn carries that much dead
+air before the next host is cued."""
 
 START_WAIT_FACTOR = 3.0
-START_WAIT_FLOOR_S = 4.0
-"""How long `speak()` waits for the first audio after cueing: `START_WAIT_FACTOR`
-silence gaps, never under `START_WAIT_FLOOR_S`. The model has just been fed a
-whole turn of audio and has to decide it is done hearing it before it answers."""
+START_WAIT_FLOOR_S = 6.0
+"""How long `speak()` waits for the first *speech* frame after cueing:
+`START_WAIT_FACTOR` silence gaps, never under `START_WAIT_FLOOR_S`. Measured
+first speech was 0.6s after the cue; the floor covers a model that first
+finishes hearing the turn it was just played."""
 
 TURN_AUDIO_CAP_FACTOR = 2.0
-"""A turn is cut at this many `turn_seconds` of audio. There is no token cap on
+"""A turn is cut at this many `turn_seconds` of speech. There is no token cap on
 a Live turn, so this is the only mechanical bound on a monologue; the prompt's
 length rule is what actually shapes turns."""
+
+ACK_WAIT_S = 2.0
+"""Bound on waiting for `*.appended` after a cue. Acks were measured ~1.1s
+behind the cue — *after* the first speech frame — so this never gates speech
+detection, which only reads state the reader already collected."""
 
 SESSION_START_TIMEOUT_S = 30.0
 SESSION_CLOSE_TIMEOUT_S = 10.0
@@ -73,10 +97,6 @@ SESSION_CLOSE_TIMEOUT_S = 10.0
 STEER_MAX_CHARS = 1500
 """`session.instructions.append` takes at most 500 tokens. A note is a sentence
 or two, so this only ever trims a runaway caller `turn_note`."""
-
-HEAR_CHUNK_BYTES = 32 * 1024
-"""Audio per `session.input_audio.append`; a whole 15s turn (720 KiB) in one
-WebSocket frame is legal but needlessly large."""
 
 TURN_CUE = (
     "PRODUCER: it is your turn now. Respond to what you just heard, make your point, then stop and stay "
@@ -89,6 +109,26 @@ be spoken to. Commentary is speakable context, so it is kept to something the
 model could echo without damage."""
 
 STOP_CUE = "PRODUCER: stop talking now. Say nothing more until your next cue."
+
+INJECTION_INCOMPLETE = "context_injection_incomplete"
+"""The error code the server returns, at close, for every append it had not
+finished applying. A warning naming the lost note, never a fault: the audio
+is already recorded by then."""
+
+
+def frame_rms(pcm: bytes) -> float:
+    """RMS of a PCM16 mono buffer; 0.0 for anything shorter than one sample."""
+    if len(pcm) < 2:
+        return 0.0
+    try:
+        import audioop  # audioop-lts on 3.13+, part of the [audio] extra
+    except ImportError:  # pragma: no cover - the extra is required for this feature
+        from array import array
+
+        samples = array("h")
+        samples.frombytes(pcm[: len(pcm) - len(pcm) % 2])
+        return (sum(s * s for s in samples) / len(samples)) ** 0.5
+    return float(audioop.rms(pcm[: len(pcm) - len(pcm) % 2], 2))
 
 
 def _turn_taking_rules(turn_seconds: float) -> str:
@@ -121,9 +161,9 @@ def _describe_error(error: object) -> str:
 class LiveAgent:
     """A persona bound to a Live API connection.
 
-    Enter it (`async with agent:`) before `configure()`; the reader task lives
-    for exactly that scope. Between `configure()` and `finish()` it behaves like
-    `RealtimeAgent`.
+    Enter it (`async with agent:`) before `configure()`; the reader and clock
+    tasks live for exactly that scope. Between `configure()` and `finish()` it
+    behaves like `RealtimeAgent`.
     """
 
     def __init__(
@@ -145,6 +185,7 @@ class LiveAgent:
         self._turn_seconds = turn_seconds
         self._sample_rate = sample_rate
         self._bytes_per_second = sample_rate * 2  # PCM16 mono
+        self._frame_bytes = self._bytes_per_second * FRAME_MS // 1000
         self._silence_s = end_of_turn_silence_s
         self._start_wait_s = (
             start_wait_s
@@ -161,13 +202,30 @@ class LiveAgent:
         self._fault: RealtimeAPIError | None = None
         self._finished = False
 
+        # ---- ears: the input clock and its inbox ----
+        self._clock_running = False
+        self._inbox = bytearray()
+        self._frames_sent = 0
+        self._listeners: list[LiveAgent] = []
+
+        # ---- mouth: the turn being collected ----
         self._on_floor = False
         self._turn_pcm = bytearray()
         self._turn_text: list[str] = []
-        self._audio_events = 0
+        self._speech_start: int | None = None
+        """Offset in `_turn_pcm` of the first speech frame this turn."""
+        self._speech_end = 0
+        """Offset just past the last speech frame this turn."""
+        self._frame_events = 0
+        self._speech_events = 0
         self._off_floor_bytes = 0
         self._off_floor_reported = 0
 
+        # ---- injections awaiting their `*.appended` ----
+        self._pending: dict[str, str] = {}
+        self._event_counter = 0
+
+        # ---- billing ----
         self._reported_seconds = 0.0
         self._billed_seconds = 0.0
 
@@ -183,8 +241,23 @@ class LiveAgent:
 
     @property
     def off_floor_seconds(self) -> float:
-        """Audio the model produced while another host held the floor, discarded."""
+        """Speech the model produced while another host held the floor, discarded."""
         return self._off_floor_bytes / self._bytes_per_second
+
+    @property
+    def frames_sent(self) -> int:
+        """Input frames the clock has streamed so far."""
+        return self._frames_sent
+
+    @property
+    def inbox_seconds(self) -> float:
+        """Audio queued for this agent's ears that the clock has not played yet."""
+        return len(self._inbox) / self._bytes_per_second
+
+    def set_listeners(self, listeners: Sequence[LiveAgent]) -> None:
+        """Who hears this agent live: its output frames are fed to their inboxes
+        as they arrive, so the producer must not `hear()` them again."""
+        self._listeners = [agent for agent in listeners if agent is not self]
 
     # ---------- lifecycle ----------
 
@@ -213,9 +286,10 @@ class LiveAgent:
                 # graceful close so the server finalizes the session.
                 await self.finish()
         finally:
+            self._clock_running = False
             tg.cancel_scope.cancel()
-            # Never hand the task group the caller's exception: the reader
-            # swallows its own, so this only unwinds the cancellation.
+            # Never hand the task group the caller's exception: the reader and
+            # clock swallow their own, so this only unwinds the cancellation.
             await tg.__aexit__(None, None, None)
 
     async def _read_forever(self) -> None:
@@ -232,25 +306,50 @@ class LiveAgent:
             if not self._closed:
                 self._closed = True
                 self._close_reason = self._close_reason or "connection closed without session.closed"
+            self._clock_running = False
             self._notify()
+
+    async def _run_clock(self) -> None:
+        """Stream one input frame every `FRAME_MS` for as long as the session lives.
+
+        The timeline only moves with input audio, so this runs from
+        `session.started` to `session.close` regardless of who holds the floor —
+        including while this agent itself is speaking. Frames come from the
+        inbox when there is something to hear and are silence otherwise. Never
+        raises: a failed send is already recorded as the agent's fault.
+        """
+        silence = b"\x00" * self._frame_bytes
+        next_tick = time.monotonic()
+        while self._clock_running and not self._closed and self._fault is None:
+            if self._inbox:
+                frame = bytes(self._inbox[: self._frame_bytes])
+                del self._inbox[: self._frame_bytes]
+                if len(frame) < self._frame_bytes:
+                    frame += silence[len(frame) :]
+                if not self._inbox:
+                    self._notify()  # `hear()` may be waiting for the drain
+            else:
+                frame = silence
+            try:
+                await self._send({"type": "session.input_audio.append", "audio": base64.b64encode(frame).decode()})
+            except RealtimeAPIError:
+                break
+            self._frames_sent += 1
+            next_tick += FRAME_MS / 1000
+            await anyio.sleep(max(0.0, next_tick - time.monotonic()))
 
     def _handle(self, event: object) -> None:
         event_type = getattr(event, "type", "")
         if event_type == "session.output_audio.delta":
-            pcm = base64.b64decode(getattr(event, "delta", "") or "")
-            if self._on_floor:
-                self._turn_pcm.extend(pcm)
-                self._audio_events += 1
-                self._notify()
-            else:
-                # Counted here, reported once per turn in `speak()`: deltas
-                # arrive many times a second.
-                self._off_floor_bytes += len(pcm)
+            self._handle_audio(base64.b64decode(getattr(event, "delta", "") or ""))
         elif event_type == "session.output_transcript.delta":
             if self._on_floor:
                 self._turn_text.append(getattr(event, "delta", "") or "")
         elif event_type == "session.usage.updated":
             self._note_usage(getattr(event, "usage", None))
+        elif event_type in ("session.instructions.appended", "session.commentary.appended"):
+            self._pending.pop(str(getattr(event, "client_event_id", "") or ""), None)
+            self._notify()
         elif event_type == "session.started":
             self._started = True
             self._started_at = time.monotonic()
@@ -259,15 +358,50 @@ class LiveAgent:
             self._note_usage(getattr(event, "usage", None))
             self._close_reason = str(getattr(event, "reason", "unknown"))
             self._closed = True
+            self._clock_running = False
             self._notify()
         elif event_type == "error":
-            if self._fault is None:
-                self._fault = RealtimeAPIError(
-                    f"{self.name}: live error: {_describe_error(getattr(event, 'error', event))}"
-                )
-            self._notify()
+            self._handle_error(getattr(event, "error", event))
         elif event_type == "info":
             logger.debug("%s: live info: %s", self.name, getattr(event, "message", event))
+
+    def _handle_audio(self, pcm: bytes) -> None:
+        loud = frame_rms(pcm) >= SPEECH_RMS_THRESHOLD
+        if not self._on_floor:
+            if loud:
+                # Counted here, reported once per turn in `speak()`.
+                self._off_floor_bytes += len(pcm)
+            return
+        if loud and self._speech_start is None:
+            self._speech_start = len(self._turn_pcm)
+        self._turn_pcm.extend(pcm)
+        self._frame_events += 1
+        if loud:
+            self._speech_end = len(self._turn_pcm)
+            self._speech_events += 1
+        if self._speech_start is not None:
+            # From the first speech frame on, pauses included: the listeners
+            # should hear the delivery, not the words butted together. Leading
+            # silence is dropped, and the floor is released before trailing
+            # silence runs long.
+            for listener in self._listeners:
+                listener.feed(pcm)
+        self._notify()
+
+    def _handle_error(self, error: object) -> None:
+        code = getattr(error, "code", None)
+        if code == INJECTION_INCOMPLETE:
+            lost = self._pending.pop(str(getattr(error, "client_event_id", "") or ""), None)
+            logger.warning(
+                "%s: the session closed before a producer note was applied - lost: %s",
+                self.name,
+                lost or "(an unidentified append)",
+            )
+            self._notify()
+            return
+        if self._fault is None:
+            self._fault = RealtimeAPIError(f"{self.name}: live error: {_describe_error(error)}")
+        self._notify()
 
     def _note_usage(self, usage: object) -> None:
         seconds = getattr(usage, "seconds", None)
@@ -292,9 +426,16 @@ class LiveAgent:
             what = "session closed before the turn finished" if while_speaking else "session is closed"
             raise RealtimeAPIError(f"{self.name}: live {what} ({self._close_reason})")
 
-    async def _wait_for_change(self) -> None:
-        event = self._changed
-        await event.wait()
+    async def _wait_until(self, done: Callable[[], bool], timeout: float, *, while_speaking: bool = False) -> bool:
+        """True once `done()` holds, False after `timeout`; raises if the session dies."""
+        with anyio.move_on_after(timeout):
+            while not done():
+                self._check_alive(while_speaking=while_speaking)
+                event = self._changed
+                await event.wait()
+            return True
+        self._check_alive(while_speaking=while_speaking)
+        return False
 
     async def _send(self, event: dict[str, object]) -> None:
         self._check_alive()
@@ -307,10 +448,19 @@ class LiveAgent:
                 self._fault = RealtimeAPIError(f"{self.name}: live send failed ({event.get('type')}): {exc}")
             raise self._fault from exc
 
+    async def _append(self, kind: str, content: str, label: str) -> None:
+        """Send an `instructions`/`commentary` append and remember it until acked."""
+        self._event_counter += 1
+        event_id = f"{self.id}-{self._event_counter}"
+        self._pending[event_id] = label
+        await self._send(
+            {"type": f"session.{kind}.append", "event_id": event_id, "content": content, "delegation_id": None}
+        )
+
     # ---------- the agent surface ----------
 
     async def configure(self, instructions: str) -> None:
-        """Start the session with the persona, voice and PCM format for this act."""
+        """Start the session with the persona, voice and PCM format for this act, then start the clock."""
         if self._tg is None:
             raise RuntimeError(f"{self.name}: enter the LiveAgent (async with) before configure()")
         audio: dict[str, object] = {"format": {"type": "audio/pcm", "rate": self._sample_rate}}
@@ -322,35 +472,47 @@ class LiveAgent:
             "audio": audio,
         }
         await self._send({"type": "session.start", "session": session})
-        try:
-            with anyio.fail_after(SESSION_START_TIMEOUT_S):
-                while not self._started:
-                    self._check_alive()
-                    await self._wait_for_change()
-        except TimeoutError as exc:
-            raise RealtimeAPIError(f"{self.name}: no session.started within {SESSION_START_TIMEOUT_S:.0f}s") from exc
+        if not await self._wait_until(lambda: self._started, SESSION_START_TIMEOUT_S):
+            raise RealtimeAPIError(f"{self.name}: no session.started within {SESSION_START_TIMEOUT_S:.0f}s")
+        self._clock_running = True
+        self._tg.start_soon(self._run_clock)
 
     async def steer(self, note: str) -> None:
         """Inject a producer note the audience never hears."""
         if len(note) > STEER_MAX_CHARS:
             logger.warning("%s: steering note truncated from %d to %d chars", self.name, len(note), STEER_MAX_CHARS)
             note = note[:STEER_MAX_CHARS]
-        await self._send({"type": "session.instructions.append", "content": note, "delegation_id": None})
+        await self._append("instructions", note, f"steer: {note[:60]!r}")
+
+    def feed(self, pcm: bytes) -> None:
+        """Queue audio for this agent's ears without waiting; the clock plays it out."""
+        if pcm:
+            self._inbox.extend(pcm)
 
     async def hear(self, pcm: bytes) -> None:
-        """Feed another agent's audio into this one's ears."""
+        """Feed another agent's audio into this one's ears, and wait until it has been heard.
+
+        Awaiting the drain — rather than returning once queued — is what makes
+        "heard" mean heard: the producer cues this host right after, and a host
+        cued while a turn is still queued in front of it would answer what it
+        has not yet been played. Live listeners of a live speaker never come
+        through here (they are fed frame by frame while the speaker talks);
+        this is the path for a live host hearing a Realtime host in a mixed
+        episode, and it costs the turn's length in wall clock, once.
+        """
         if not pcm:
             return
-        for offset in range(0, len(pcm), HEAR_CHUNK_BYTES):
-            chunk = pcm[offset : offset + HEAR_CHUNK_BYTES]
-            await self._send({"type": "session.input_audio.append", "audio": base64.b64encode(chunk).decode()})
+        self._inbox.extend(pcm)
+        bound = len(pcm) / self._bytes_per_second + 5.0
+        if not await self._wait_until(lambda: not self._inbox, bound):
+            logger.warning("%s: %.1fs of audio still unplayed after %.0fs", self.name, self.inbox_seconds, bound)
 
     async def speak(self) -> SpokenTurn:
-        """Take the floor: cue the model, then collect audio until it stops."""
+        """Take the floor: cue the model, then collect its speech until it stops."""
         self._check_alive()
         if self._off_floor_bytes != self._off_floor_reported:
             logger.debug(
-                "%s: discarded %.1fs of audio spoken out of turn since the last cue",
+                "%s: discarded %.1fs of speech out of turn since the last cue",
                 self.name,
                 (self._off_floor_bytes - self._off_floor_reported) / self._bytes_per_second,
             )
@@ -358,56 +520,72 @@ class LiveAgent:
         self._on_floor = True
         self._turn_pcm = bytearray()
         self._turn_text = []
+        self._speech_start = None
+        self._speech_end = 0
+        self._frame_events = 0
+        self._speech_events = 0
         cap_bytes = int(TURN_AUDIO_CAP_FACTOR * self._turn_seconds * self._bytes_per_second)
         truncated = False
         try:
-            await self._send({"type": "session.instructions.append", "content": TURN_CUE, "delegation_id": None})
-            await self._send({"type": "session.commentary.append", "content": TURN_NUDGE, "delegation_id": None})
+            await self._append("instructions", TURN_CUE, "turn cue")
+            await self._append("commentary", TURN_NUDGE, "turn nudge")
+            # Bounded, and never gating: speech frames that arrive meanwhile
+            # are collected by the reader and found by the wait below.
+            if not await self._wait_until(lambda: not self._pending, ACK_WAIT_S, while_speaking=True):
+                logger.debug("%s: %d append(s) unacknowledged after %.1fs", self.name, len(self._pending), ACK_WAIT_S)
 
-            if not await self._wait_for_audio(self._start_wait_s):
+            if not await self._wait_until(lambda: self._speech_events > 0, self._start_wait_s, while_speaking=True):
                 # Not raised: the producer's stall timeout owns hangs, and a
                 # model that declined to speak is a quiet turn, not a dead one.
                 logger.warning(
-                    "%s: no audio within %.1fs of the cue - recording an empty turn", self.name, self._start_wait_s
+                    "%s: no speech within %.1fs of the cue - recording an empty turn", self.name, self._start_wait_s
                 )
                 return SpokenTurn(pcm=b"", text="", usage=self._take_usage(), truncated=False)
 
+            # Set by the reader on the first speech frame, which the wait above
+            # saw; fixed for the rest of the turn.
+            start = self._speech_start if self._speech_start is not None else 0
             while True:
-                if len(self._turn_pcm) >= cap_bytes:
+                if self._speech_end - start >= cap_bytes:
                     truncated = True
                     logger.warning(
-                        "%s: turn cut at %.0fs of audio (%.0fx turn_seconds) - the model is not honouring the "
+                        "%s: turn cut at %.0fs of speech (%.0fx turn_seconds) - the model is not honouring the "
                         "length rule; whatever it says next is discarded",
                         self.name,
-                        len(self._turn_pcm) / self._bytes_per_second,
+                        (self._speech_end - start) / self._bytes_per_second,
                         TURN_AUDIO_CAP_FACTOR,
                     )
-                    await self._send(
-                        {"type": "session.instructions.append", "content": STOP_CUE, "delegation_id": None}
-                    )
+                    await self._append("instructions", STOP_CUE, "stop cue")
                     break
-                if not await self._wait_for_audio(self._silence_s):
+                trailing = (len(self._turn_pcm) - self._speech_end) / self._bytes_per_second
+                if trailing >= self._silence_s:
+                    break
+                if not await self._wait_for_frame(self._silence_s):
+                    # The stream itself went quiet — should not happen on a
+                    # live session, but it is as much an end as silence is.
                     break
         finally:
             self._on_floor = False
 
-        pcm = bytes(self._turn_pcm[:cap_bytes])
+        pcm = bytes(self._turn_pcm[start : min(self._speech_end, start + cap_bytes)])
         text = "".join(self._turn_text).strip()
+        # The turn is over when everyone has heard it: a listener cued with
+        # this speech still queued in front of it would answer too early.
+        await self._wait_for_listeners()
         return SpokenTurn(pcm=pcm, text=text, usage=self._take_usage(), truncated=truncated)
 
-    async def _wait_for_audio(self, timeout: float) -> bool:
-        """True once a new audio delta lands, False after `timeout` without one.
+    async def _wait_for_frame(self, timeout: float) -> bool:
+        """True when the next on-floor output frame lands, False after `timeout`."""
+        seen = self._frame_events
+        return await self._wait_until(lambda: self._frame_events != seen, timeout, while_speaking=True)
 
-        Raises `RealtimeAPIError` if the session faults or closes while waiting.
-        """
-        seen = self._audio_events
-        with anyio.move_on_after(timeout):
-            while self._audio_events == seen:
-                self._check_alive(while_speaking=True)
-                await self._wait_for_change()
-            return True
-        self._check_alive(while_speaking=True)
-        return False
+    async def _wait_for_listeners(self) -> None:
+        if not self._listeners:
+            return
+        backlog = max(listener.inbox_seconds for listener in self._listeners)
+        with anyio.move_on_after(backlog + 2.0):
+            while any(listener.inbox_seconds > 0 for listener in self._listeners):
+                await anyio.sleep(FRAME_MS / 1000)
 
     # ---------- billing ----------
 
@@ -415,9 +593,10 @@ class LiveAgent:
         """Seconds this session has run up so far.
 
         The larger of what the API has reported and the wall clock since
-        `session.started`. The API's figure lags the turn it is reported after,
-        and billing is per session-minute, so wall clock is the honest floor;
-        erring high here is what keeps the cost ceiling fail-closed.
+        `session.started`. The two track each other once input is streaming
+        (measured 19.0 reported at a 20s close), but the report lags the turn
+        it lands after; billing is per session-minute, so wall clock is the
+        honest floor, and erring high keeps the cost ceiling fail-closed.
         """
         wall = 0.0 if self._started_at is None else time.monotonic() - self._started_at
         return max(self._reported_seconds, wall)
@@ -430,7 +609,7 @@ class LiveAgent:
         return RealtimeUsage(live_seconds=delta)
 
     async def finish(self) -> RealtimeUsage:
-        """Close the session and report the seconds not yet charged.
+        """Stop the clock, close the session, and report the seconds not yet charged.
 
         Bounded: a server that never sends `session.closed` still gets the
         session charged at the wall clock, not forgiven.
@@ -438,17 +617,18 @@ class LiveAgent:
         if self._finished:
             return RealtimeUsage()
         self._finished = True
+        self._clock_running = False
         if not self._closed and self._fault is None:
             try:
                 await self._conn.send(cast("ClientEventParam", {"type": "session.close"}))
-                with anyio.move_on_after(SESSION_CLOSE_TIMEOUT_S):
-                    while not self._closed and self._fault is None:
-                        await self._wait_for_change()
+                await self._wait_until(lambda: self._closed, SESSION_CLOSE_TIMEOUT_S)
+            except RealtimeAPIError:
+                pass  # closed underneath us; the usage below is still right
             except Exception as exc:
                 logger.debug("%s: session.close failed (%s) - charging the wall clock", self.name, exc)
         if self._off_floor_bytes:
             logger.info(
-                "%s: discarded %.1fs of audio spoken out of turn over the act",
+                "%s: discarded %.1fs of speech spoken out of turn over the act",
                 self.name,
                 self.off_floor_seconds,
             )
