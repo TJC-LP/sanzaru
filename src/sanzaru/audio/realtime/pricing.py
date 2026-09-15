@@ -97,6 +97,15 @@ TRANSCRIBE_USD_PER_MINUTE = 0.0045
 """gpt-transcribe, used only by the QC pass."""
 
 
+def price_env_name(model: str) -> str:
+    """The `SANZARU_REALTIME_PRICE_<MODEL>` variable that would price `model`.
+
+    One spelling rule, used by the override reader and by every message that
+    tells a user which variable to set: upper-cased, with `-` and `.` as `_`.
+    """
+    return "SANZARU_REALTIME_PRICE_" + model.upper().replace("-", "_").replace(".", "_")
+
+
 def _env_override(model: str) -> ModelPrices | None:
     """Read `SANZARU_REALTIME_PRICE_<MODEL>` — six comma-separated USD/1M values.
 
@@ -109,7 +118,7 @@ def _env_override(model: str) -> ModelPrices | None:
     variable wanted it to take effect, and silently billing them at list price is
     the one outcome they were trying to avoid.
     """
-    key = "SANZARU_REALTIME_PRICE_" + model.upper().replace("-", "_").replace(".", "_")
+    key = price_env_name(model)
     raw = os.getenv(key)
     if not raw:
         return None

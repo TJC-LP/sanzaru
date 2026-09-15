@@ -347,6 +347,21 @@ Three things this depends on, all of them deliberate:
   and leave an mp3 with no sidecar for the next resume to discard.
 - Checkpoints are **not** deleted after a successful run — the storage backend has no delete
   operation. They are safe to remove by hand once you have the episode.
+- **A resume trusts only its own bookkeeping.** Everything above is read back *by name* out of a
+  flat directory, and the manifest is the run's configuration — ceiling, models, output name,
+  the whole rundown — so a file somebody else wrote there is their configuration for your
+  invocation. Two layers, and only the second is opt-in:
+  - The manifest must carry the run id it is resumed as (`written for a different run` is a
+    refusal, exit 2). Each act checkpoint carries its `run_id` and the SHA-256 of its mp3, and
+    both are checked whenever present — a genuine pair copied in from another run, a truncated
+    write, or an mp3 swapped under its sidecar is re-recorded, never replayed. Checkpoints written
+    before those fields existed have them empty and still replay.
+  - With `SANZARU_RUN_SECRET` set, manifests and checkpoints are HMAC-signed. An edited or foreign
+    manifest is refused (`not signed by this installation`); an edited checkpoint is treated like
+    any corrupt one and re-recorded. The signature covers a fixed, versioned tuple of the fields a
+    resume acts on (`sig_version`), not the whole record, so a sanzaru upgrade that adds a field
+    does not invalidate signed runs in flight. Enabling the secret *does* invalidate the unsigned
+    files already on disk — switch it on between runs, not during one.
 
 A resumed act is decoded from its mp3 checkpoint, so it carries one extra generation of
 encoding. Acts recorded in the same run go to the mixer as raw PCM with no round-trip.

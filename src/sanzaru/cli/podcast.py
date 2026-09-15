@@ -507,6 +507,7 @@ async def podcast_simulate(
         from ..tools import simulate_podcast as sim
     except ImportError as exc:
         raise CLIError("config", f"{_AUDIO_DEP_MESSAGE} ({exc})", exit_code=EXIT_CONFIG) from exc
+    from ..audio.realtime.budget import UnpricedModelError
     from ..exceptions import CostCeilingError
 
     state = get_state(ctx)
@@ -629,6 +630,28 @@ async def podcast_simulate(
         # in an ExceptionGroup — and if several acts trip it in the same
         # scheduling window, one error per act.
         ceiling = find_in_group(raised, CostCeilingError)
+        if ceiling is not None and isinstance(ceiling, UnpricedModelError):
+            # Not "ceiling reached" but "ceiling could not count": a raised
+            # --max-cost changes nothing, the model still has no price on the
+            # next turn. The remedy is the price variable, then a plain resume.
+            resume_command = f"sanzaru podcast simulate --resume {run_id}"
+            raise CLIError(
+                "cost_limit",
+                f"{ceiling} — {len(ceiling.completed_acts)} act(s) checkpointed and safe. Raising --max-cost "
+                f"cannot help; set {ceiling.price_env} (text_in,cached_text_in,audio_in,cached_audio_in,"
+                f"audio_out,text_out per 1M tokens) and then resume: {resume_command}",
+                exit_code=EXIT_PARTIAL,
+                resume=resume_command,
+                extra={
+                    "spent_usd": round(ceiling.spent_usd, 4),
+                    "limit_usd": ceiling.limit_usd,
+                    "suggested_limit_usd": None,
+                    "unpriced_model": ceiling.model,
+                    "price_env": ceiling.price_env,
+                    "completed_acts": ceiling.completed_acts,
+                    "run_id": run_id,
+                },
+            ) from ceiling
         if ceiling is None:
             # Any other failure — a stalled turn, a dropped session — still
             # leaves the finished acts checkpointed. The run id is the only way
@@ -711,6 +734,13 @@ def _note_dry_run(result: SimulatedPodcastResult, quiet: bool) -> None:
     else:
         unpriced = ", ".join(result.cost.unpriced_models)
         note(f"no price known for {unpriced or 'this model'} — set SANZARU_REALTIME_PRICE_* to estimate cost")
+        if result.cost.limit_usd is not None:
+            # The dry run projects regardless; the recording will not. Say so
+            # here, where it is free to learn, rather than at exit 2 later.
+            note(
+                f"--max-cost {result.cost.limit_usd:g} cannot be enforced over an unpriced model: recording "
+                "with it will be refused (exit 2) until the price is set, or run without a ceiling"
+            )
     note("nothing was recorded; drop --dry-run to record")
 
 

@@ -310,6 +310,17 @@ sanzaru: projected cost ~$0.20 (estimate, not a quote)
 sanzaru: nothing was recorded; drop --dry-run to record
 ```
 
+A dry run always projects, `--max-cost` or not. When a billable model — the episode's, or a
+per-host `model` override in the rundown — has no known price, the projection reports it under
+`cost.unpriced_models` and leaves `cost.usd` empty instead of quoting a figure it cannot stand
+behind. That is also where you learn that the *recording* will be refused: a ceiling over a model
+whose spend cannot be counted is not enforced silently, it exits **2** before anything is billed
+(before the planner call, when only a premise was given). Set
+`SANZARU_REALTIME_PRICE_<MODEL>` (`text_in,cached_text_in,audio_in,cached_audio_in,audio_out,text_out`
+per 1M tokens) or record without a ceiling. If an unpriced model slips past that check and is
+charged mid-run anyway, the run stops with exit 6 and the envelope names `unpriced_model` and
+`price_env` — its `resume` command carries no `--max-cost`, because raising the cap cannot help.
+
 Then record with a ceiling. `--max-cost` is checked after every turn across every parallel act:
 
 ```bash
@@ -362,6 +373,15 @@ checkpoints always stay in the media dir, so the printed resume command works ve
 the resume itself wins. Because the restored ceiling also counts the spend replayed from the
 checkpoints, the ceiling abort prints a resume command with a *raised* `--max-cost`, and a resume
 that cannot fit under the restored one stops before it records anything.
+
+A resume trusts only bookkeeping written for *that* run. The manifest must carry the run id it is
+being resumed as, and each act checkpoint carries its run id and a digest of its mp3 — a pair copied
+in from another run, or an mp3 swapped under its sidecar, is re-recorded rather than replayed. On a
+shared media directory set `SANZARU_RUN_SECRET` as well: manifests and checkpoints are then
+HMAC-signed and an edited or foreign one is refused (`not signed by this installation`, exit 2 for a
+manifest; a checkpoint is re-recorded). The signature covers a fixed, versioned set of fields, so
+upgrading sanzaru does not invalidate signed runs in flight; enabling the secret does invalidate
+the unsigned files that already exist, so switch it on between runs.
 
 Options: `-p/--premise`, `--acts`, `-m/--target-minutes`, `--title`, `--style`, `--host`,
 `--model`, `--planner-model`, `--turn-seconds`, `--turn-tokens`, `--max-cost`, `--max-sessions`,

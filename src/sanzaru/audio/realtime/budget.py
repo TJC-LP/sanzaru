@@ -16,8 +16,9 @@ from __future__ import annotations
 
 import math
 
+from ...config import logger
 from ...exceptions import CostCeilingError
-from .pricing import usage_cost
+from .pricing import price_env_name, usage_cost
 from .types import RealtimeUsage
 
 CEILING_HEADROOM = 1.25
@@ -27,6 +28,37 @@ A resume re-charges the acts it read off disk, so the new ceiling has to cover
 the *whole* episode rather than the part that is left — and the projection that
 produced this number is an estimate, not a quote. A quarter over absorbs the
 usual overshoot without turning the suggestion into a blank cheque."""
+
+
+class UnpricedModelError(CostCeilingError):
+    """The ceiling stopped the run because it could not count a turn at all.
+
+    A subclass, not a message variant, because the two failures want opposite
+    advice. "Ceiling reached" is answered by resuming with a raised `--max-cost`;
+    here a raised cap changes nothing — the model still has no price on the next
+    turn — so the CLI must point at `SANZARU_REALTIME_PRICE_<MODEL>` (or at
+    dropping the ceiling) instead. `suggested_limit_usd` is None for the same
+    reason: there is no ceiling that fixes this.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        model: str,
+        spent_usd: float,
+        limit_usd: float,
+        completed_acts: list[str],
+    ) -> None:
+        super().__init__(
+            message,
+            spent_usd=spent_usd,
+            limit_usd=limit_usd,
+            completed_acts=completed_acts,
+            suggested_limit_usd=None,
+        )
+        self.model = model
+        self.price_env = price_env_name(model)
 
 
 class CostBudget:
@@ -85,6 +117,33 @@ class CostBudget:
         cost = usage_cost(usage, model)
         if cost is None:
             self._unpriced_models.add(model)
+            # Uncapped runs keep the documented degrade path: a model should
+            # still be usable the day it ships, and with no ceiling there is
+            # nothing to enforce anyway. But when the caller *asked* for a
+            # ceiling, silently exempting every turn billed to an unpriced
+            # model turned max_cost_usd off entirely — and `HostSpec.model` is
+            # free text inside the caller-supplied rundown, so choosing a valid
+            # but unpriced realtime model was all it took (CWE-636).
+            if self.limit_usd is not None:
+                raise UnpricedModelError(
+                    f"cannot enforce the ${self.limit_usd:.2f} ceiling: no price is known for {model!r}, "
+                    f"so its spend cannot be counted. Set {price_env_name(model)} to its rates, "
+                    f"or run without a ceiling.",
+                    model=model,
+                    spent_usd=self._spent,
+                    limit_usd=self.limit_usd,
+                    completed_acts=self.completed_acts,
+                )
+            return
+        # Never backwards. Token counts arrive from two places that can carry
+        # negative values — a hand-edited act checkpoint replayed on resume, and
+        # the realtime peer itself — and a single negative charge drove the
+        # accumulator so far below zero that the ceiling could not trip again
+        # for the rest of the run (CWE-1284). `RealtimeUsage` now rejects
+        # negatives outright; this is the second door on the same room, because
+        # the arithmetic here is what the safety property actually rests on.
+        if cost < 0:
+            logger.warning("Ignoring negative cost %.6f for model %r - usage counts cannot be negative", cost, model)
             return
         self._spent += cost
         if self.limit_usd is not None and self._spent > self.limit_usd:

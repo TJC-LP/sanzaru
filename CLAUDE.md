@@ -330,6 +330,11 @@ Non-obvious things that are easy to break:
 - **The cost ceiling is charged every turn** via a shared `CostBudget`, and arrives at the CLI
   inside an `ExceptionGroup` — possibly one per act. `find_in_group()` in `cli/_runtime.py` is what
   makes that still exit 6 with a resume hint instead of an opaque "3 parallel tasks failed".
+  Replayed checkpoints are charged at the *dearest* priced billable model (`_replay_model`): a
+  checkpoint stores one aggregated `usage` with no per-model split while the live run charged
+  each turn at its host's model, so replaying at the episode model let per-host overrides onto a
+  dearer model under-count the restored ceiling. Erring closed is the short-term answer; the real
+  one is a per-model breakdown in the checkpoint.
 
 ### Runtime Path Configuration
 Paths are validated lazily via the `get_path()` function when tools are called:
@@ -453,6 +458,15 @@ they are easy to "simplify" away.
   translation of `*`, which is the property `compile_name_filter` relies on;
   regex-only metacharacters raise rather than fail open, because a caller on the
   old contract recovers from an error and not from an empty list.
+- **Run checkpoints are protected by looking, not by their filename.** A
+  name-shaped rule for `<slug>_<runid>_<actid>.mp3` cannot be written without
+  false positives — eight hex characters is also what a date looks like, and it
+  rejected `interview_20250826_part1.mp3`. `write_audio_file` instead probes for
+  the act sidecar (one ranged read of its head) and refuses the mp3/wav *and*
+  the sidecar itself — an unguarded sidecar defeated the guard in two calls,
+  since the mp3 check reads it. `is_bookkeeping=True` is the run's own opt-out,
+  which `--qc-retry` and the manifest write need. `reject_reserved_name` covers
+  only `simrun_*.json`, which is unambiguous, and the write applies it too.
 - **`/media` serves an allowlisted content type or `application/octet-stream`,
   always with `nosniff` + `Content-Disposition: attachment`.** The response type
   used to come from `mimetypes.guess_type()` of a caller-chosen name, which made a
@@ -474,6 +488,32 @@ they are easy to "simplify" away.
 - **The identity header must appear exactly once.** `Headers.get()` returns the
   *first* copy, and an appending proxy forwards the client's copy first — so two
   copies (or a malformed one) are a 400, never "bind the first" or "bind nobody".
+- **A resume only trusts bookkeeping written for *this* run.** `RunManifest` is the
+  resumed run's configuration (ceiling, models, filename, rundown), so `run_id` must
+  match and, when `SANZARU_RUN_SECRET` is set, the HMAC must verify. An
+  `ActCheckpoint` carries its `run_id` and a digest of its mp3, and
+  `_load_checkpoint` checks both whenever they are non-empty — **secret or not**,
+  because the cheap attack needs no forgery (copy a genuine pair from your own
+  run over the victim's act names). They are inside the signed tuple too: on a
+  shared installation the attacker can have this code mint them a validly signed
+  checkpoint, so a signature that binds neither the run nor the audio proves
+  nothing. The signature covers an *explicit, versioned tuple* (`signed_fields`,
+  `SIGNATURE_VERSION`), never `model_dump_json()`: signing the whole dump made any
+  later defaulted field invalidate every signed file, stranding paid acts on the
+  first upgrade — the same failure class the pricing refusal was moved out of a
+  validator to avoid. `compare_digest` is fed bytes, since a non-ASCII `sig` makes
+  the str form raise TypeError instead of returning False.
+- **A ceiling that cannot price a model refuses instead of proceeding** — in
+  `check_ceiling_is_enforceable`, called from the tool body (once on the brief
+  alone before the planner is billed, again once the rundown's per-host models
+  are known), and again at `charge()`, which raises `UnpricedModelError` so the
+  CLI does not answer it with a `--max-cost` hint that cannot work. Deliberately
+  *not* a pydantic validator: `RunManifest.brief` is a `SimulationBrief`, so
+  raising during validation made reading a manifest fail and turned a missing
+  price into an unresumable run with paid acts stranded. The `charge()` copy is
+  what covers resume, since `model_copy(update=...)` does not re-run validators.
+  A dry run is exempt — it spends nothing and its projection is how you discover
+  the model is unpriced (`project_run` reports `unpriced_models`, `usd=None`).
 
 ## Prompting Sora with Reference Images
 
@@ -584,6 +624,8 @@ SANZARU_REALTIME_MAX_SESSIONS=6       # concurrent realtime sessions across all 
 SANZARU_REALTIME_TURN_TIMEOUT=120     # per-turn stall bound; default 6x turn_seconds, min 60s
 SANZARU_REALTIME_ACT_BUDGET=3000      # per-act wall clock; default 3000s, under the 60-min close
 # Override stale list pricing: text_in,cached_text_in,audio_in,cached_audio_in,audio_out,text_out
+# Also the way to make an unlisted model usable *with* max_cost_usd: a ceiling
+# over a model nothing can price is refused, not silently un-enforced.
 SANZARU_REALTIME_PRICE_GPT_REALTIME_2_1=4,0.4,32,0.4,64,24
 
 # HTTP transport security (ignored on stdio). None of these load from `.env` —
@@ -602,6 +644,10 @@ SANZARU_IDENTITY_HEADER=x-forwarded-email  # opt-in: trust this proxy-injected h
                                        # a request carrying two copies is refused (400).
 SANZARU_REQUIRE_USER_CONTEXT=1         # Databricks backend: refuse (403) rather than fall back
                                        # to the shared volume root when a request has no identity
+
+# Signs simulated-podcast manifests and checkpoints so `--resume` refuses
+# bookkeeping this installation did not write. Set it on shared filesystems.
+SANZARU_RUN_SECRET="..."
 ```
 
 **For MCP servers (Claude Desktop):**

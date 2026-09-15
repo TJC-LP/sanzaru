@@ -453,6 +453,81 @@ class TestFfmpegDemuxerIsNotChosenByTheFile:
 
 
 @pytest.mark.unit
+class TestCheckpointAudioIsNotClobberable:
+    """One flat directory, caller-chosen names, and a truncating write.
+
+    Recognising a checkpoint by *name* cannot be done without false positives
+    (eight hex characters is also a date), so the guard looks for the act
+    sidecar sitting beside the target instead.
+    """
+
+    @pytest.fixture
+    def repo(self, tmp_path: Path, mocker: MockerFixture):
+        from sanzaru.infrastructure import FileSystemRepository
+        from sanzaru.storage.local import LocalStorageBackend
+
+        media = (tmp_path / "audio").resolve()
+        media.mkdir()
+        mocker.patch(
+            "sanzaru.infrastructure.file_system.get_storage",
+            return_value=LocalStorageBackend(path_overrides={"audio": media}),
+        )
+        return FileSystemRepository(), media
+
+    @staticmethod
+    def _plant_checkpoint(media: Path, stem: str) -> None:
+        import json
+
+        (media / f"{stem}.mp3").write_bytes(b"VICTIM-PAID-AUDIO")
+        (media / f"{stem}.json").write_text(
+            json.dumps(
+                {
+                    "act_id": "act1",
+                    "title": "Act 1",
+                    "stop_reason": "complete",
+                    "usage": {"output_audio_tokens": 10},
+                    "turns": [],
+                }
+            )
+        )
+
+    async def test_another_run_cannot_overwrite_act_audio(self, repo):
+        from sanzaru.exceptions import AudioFileError
+
+        file_repo, media = repo
+        self._plant_checkpoint(media, "Show_a1b2c3d4_act1")
+
+        with pytest.raises(AudioFileError, match="refusing to overwrite"):
+            await file_repo.write_audio_file("Show_a1b2c3d4_act1.mp3", b"ATTACKER")
+
+        assert (media / "Show_a1b2c3d4_act1.mp3").read_bytes() == b"VICTIM-PAID-AUDIO"
+
+    async def test_the_run_may_still_re_record_its_own_act(self, repo):
+        """--qc-retry re-records an act that is already on disk."""
+        file_repo, media = repo
+        self._plant_checkpoint(media, "Show_a1b2c3d4_act1")
+
+        await file_repo.write_audio_file("Show_a1b2c3d4_act1.mp3", b"RETAKE", is_bookkeeping=True)
+
+        assert (media / "Show_a1b2c3d4_act1.mp3").read_bytes() == b"RETAKE"
+
+    async def test_a_date_stamped_recording_is_not_protected(self, repo):
+        """The false positive a name-shaped rule produced: YYYYMMDD is 8 hex digits."""
+        file_repo, media = repo
+        (media / "interview_20250826_part1.mp3").write_bytes(b"old")
+        (media / "interview_20250826_part1.json").write_text('{"notes": "my own metadata"}')
+
+        await file_repo.write_audio_file("interview_20250826_part1.mp3", b"new take")
+
+        assert (media / "interview_20250826_part1.mp3").read_bytes() == b"new take"
+
+    async def test_an_ordinary_new_write_is_untouched(self, repo):
+        file_repo, media = repo
+        await file_repo.write_audio_file("brand_new.mp3", b"fresh")
+        assert (media / "brand_new.mp3").read_bytes() == b"fresh"
+
+
+@pytest.mark.unit
 class TestConversionStillAcceptsUnsupportedFormats:
     """`convert_audio` exists to turn formats the API cannot take into ones it
     can, so gating its *input* on the transcription allowlist broke the tool's
