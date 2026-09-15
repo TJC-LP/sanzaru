@@ -11,7 +11,7 @@ from sanzaru.cli import cli
 pytest.importorskip("pydub", reason="audio CLI tests exercise modules that import pydub")
 
 from sanzaru.audio.models import AudioProcessingResult, ChatResult, TranscriptionResult, TTSResult  # noqa: E402
-from sanzaru.tools.podcast import PodcastResult  # noqa: E402
+from sanzaru.tools.podcast import PodcastResult, SegmentVerdict  # noqa: E402
 
 
 @pytest.mark.integration
@@ -317,6 +317,108 @@ def test_podcast_generate_from_stdin_script(mocker, tmp_path):
     # bytes lived at file.path under the -o name. One name, and it is the real one.
     assert parsed["result"]["output_file"] == "episode.mp3"
     assert (tmp_path / "episode.mp3").read_bytes() == b"audio"
+
+
+def _verified_result(verdicts: list[SegmentVerdict], verified: bool) -> PodcastResult:
+    return PodcastResult(
+        output_file="ep.mp3",
+        title="Verify",
+        segment_count=len(verdicts),
+        estimated_duration_seconds=3.0,
+        speakers=["Host"],
+        transcript="Host: ...",
+        verified=verified,
+        segment_verdicts=verdicts,
+    )
+
+
+def _run_generate_with(mocker, tmp_path, result: PodcastResult):
+    script = {"speakers": [{"name": "Host", "voice": "ash"}], "segments": [{"speaker": "Host", "text": "Hi."}]}
+    mocker.patch("sanzaru.tools.podcast.generate_podcast", mocker.AsyncMock(return_value=result))
+    mocker.patch("sanzaru.cli.podcast.finalize_output", mocker.AsyncMock(return_value=str(tmp_path / "ep.mp3")))
+    return CliRunner().invoke(cli, ["podcast", "generate", "-", "--verify"], input=json.dumps(script))
+
+
+@pytest.mark.integration
+def test_podcast_generate_reports_unchecked_segments_as_unknown_not_missing(mocker, tmp_path):
+    """Finding 09, the user-facing half. A segment nobody could transcribe is
+    *unknown*; the old single line reported it as "0 of N NOT found" — a
+    clean bill for audio nobody had listened to."""
+    unchecked = SegmentVerdict(
+        index=0, speaker="Host", ok=True, checked=False, reason="not_transcribed", similarity=0.0
+    )
+    result = _run_generate_with(mocker, tmp_path, _verified_result([unchecked], verified=False))
+
+    assert result.exit_code == 0, result.stderr
+    assert "NOT verified: 1 of 1 segments could not be checked" in result.stderr
+    assert "segment 1 (Host): not_transcribed" in result.stderr
+    assert "nothing confirms these segments are in it" in result.stderr
+    assert "NOT found" not in result.stderr
+    assert json.loads(result.stdout)["result"]["verified"] is False
+
+
+@pytest.mark.integration
+def test_podcast_generate_reports_missing_and_unchecked_segments_separately(mocker, tmp_path):
+    missing = SegmentVerdict(index=0, speaker="Host", ok=False, reason="tail_missing", similarity=0.4, retried=True)
+    unchecked = SegmentVerdict(index=1, speaker="Host", ok=True, checked=False, reason="too_large_to_verify")
+    result = _run_generate_with(mocker, tmp_path, _verified_result([missing, unchecked], verified=False))
+
+    assert result.exit_code == 0, result.stderr
+    assert "verified: 1 of 2 segments NOT found after a retry" in result.stderr
+    assert "segment 1 (Host): tail_missing, similarity 0.4" in result.stderr
+    assert "NOT verified: 1 of 2 segments could not be checked" in result.stderr
+    assert "segment 2 (Host): too_large_to_verify" in result.stderr
+
+
+@pytest.mark.integration
+def test_podcast_generate_confirms_a_verified_episode(mocker, tmp_path):
+    ok = SegmentVerdict(index=0, speaker="Host", ok=True)
+    result = _run_generate_with(mocker, tmp_path, _verified_result([ok], verified=True))
+
+    assert result.exit_code == 0, result.stderr
+    assert "verified: all 1 segments present in the audio" in result.stderr
+    assert "NOT" not in result.stderr
+
+
+@pytest.mark.integration
+def test_podcast_generate_refuses_a_checkpoint_name_as_a_usage_error(mocker, tmp_path):
+    """Not mocked at `generate_podcast`: the property is that the tool's
+    pre-flight refusal reaches the CLI as *usage* (exit 2), the same code the
+    separator and reserved-name refusals of the same `-o` argument get — not
+    as an internal fault (exit 1) an agent would not think to fix its input for."""
+    (tmp_path / "Show_a1b2c3d4_act1.mp3").write_bytes(b"VICTIM-PAID-AUDIO")
+    (tmp_path / "Show_a1b2c3d4_act1.json").write_text(
+        json.dumps({"act_id": "act1", "title": "Act 1", "stop_reason": "complete", "usage": {}, "turns": []})
+    )
+    synth = mocker.patch("sanzaru.tools.podcast.synthesize_speech", mocker.AsyncMock())
+    script = {"speakers": [{"name": "Host", "voice": "ash"}], "segments": [{"speaker": "Host", "text": "Hi."}]}
+
+    result = CliRunner().invoke(
+        cli,
+        ["podcast", "generate", "-", "-o", str(tmp_path / "Show_a1b2c3d4_act1.mp3")],
+        input=json.dumps(script),
+    )
+
+    assert result.exit_code == 2, result.stderr
+    error = json.loads(result.stdout)["error"]
+    assert error["type"] == "usage"
+    assert "refusing to overwrite" in error["message"]
+    synth.assert_not_called()
+    assert (tmp_path / "Show_a1b2c3d4_act1.mp3").read_bytes() == b"VICTIM-PAID-AUDIO"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("bad", ["simrun_a1b2c3d4.json", "episode.html"])
+def test_podcast_generate_refuses_a_reserved_or_non_audio_output_name(mocker, tmp_path, bad):
+    synth = mocker.patch("sanzaru.tools.podcast.synthesize_speech", mocker.AsyncMock())
+    script = {"speakers": [{"name": "Host", "voice": "ash"}], "segments": [{"speaker": "Host", "text": "Hi."}]}
+
+    result = CliRunner().invoke(cli, ["podcast", "generate", "-", "-o", str(tmp_path / bad)], input=json.dumps(script))
+
+    assert result.exit_code == 2, result.stderr
+    assert json.loads(result.stdout)["error"]["type"] == "usage"
+    synth.assert_not_called()
+    assert not (tmp_path / bad).exists()
 
 
 @pytest.mark.integration

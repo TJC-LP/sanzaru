@@ -701,11 +701,25 @@ def _note_verification(result: PodcastResult, quiet: bool) -> None:
         if result.verify_retries:
             note(f"  ({result.verify_retries} re-rendered to get there)")
         return
+
+    # Two different failures, and collapsing them is what made the old line
+    # wrong: a segment nobody could transcribe is unknown, not found-missing.
+    # It also keeps `not v.ok` from reporting "0 of N NOT found" on a run whose
+    # only problem was that verification could not run.
     unresolved = [v for v in result.segment_verdicts if not v.ok]
-    note(f"verified: {len(unresolved)} of {result.segment_count} segments NOT found after a retry")
-    for verdict in unresolved:
-        note(f"  segment {verdict.index + 1} ({verdict.speaker}): {verdict.reason}, similarity {verdict.similarity}")
-    note("  a segment that fails twice wants its tail rewritten into a longer sentence, not another render")
+    unchecked = [v for v in result.segment_verdicts if not v.checked]
+    if unresolved:
+        note(f"verified: {len(unresolved)} of {result.segment_count} segments NOT found after a retry")
+        for verdict in unresolved:
+            note(
+                f"  segment {verdict.index + 1} ({verdict.speaker}): {verdict.reason}, similarity {verdict.similarity}"
+            )
+        note("  a segment that fails twice wants its tail rewritten into a longer sentence, not another render")
+    if unchecked:
+        note(f"NOT verified: {len(unchecked)} of {result.segment_count} segments could not be checked")
+        for verdict in unchecked:
+            note(f"  segment {verdict.index + 1} ({verdict.speaker}): {verdict.reason}")
+        note("  the episode was written, but nothing confirms these segments are in it")
 
 
 def _note_dry_run(result: SimulatedPodcastResult, quiet: bool) -> None:

@@ -18,6 +18,8 @@ from pydub import AudioSegment
 from sanzaru.storage.local import LocalStorageBackend
 from sanzaru.tools.podcast import (
     VERIFY_SHORT_SEGMENT_WORDS,
+    VERIFY_TRANSCRIBE_ATTEMPTS,
+    VERIFY_WINDOW_STRIDE_DIVISOR,
     _best_window_similarity,
     _verdict_for,
     generate_podcast,
@@ -105,6 +107,51 @@ class TestBestWindowSimilarity:
     def test_an_empty_haystack_contains_nothing(self):
         assert _best_window_similarity("something", "") == 0.0
 
+    def test_a_long_needle_is_found_at_an_unaligned_offset(self):
+        """The scan strides for long needles, so the true position is usually
+        between two windows. A faithful reading still has to score well clear
+        of the 0.60 / 0.75 floors from the nearest one."""
+        needle = " ".join(f"w{i}" for i in range(400))
+        haystack = " ".join(["filler"] * 37) + " " + needle + " " + " ".join(["tail"] * 300)
+        assert _best_window_similarity(needle, haystack) >= 1 - 1 / VERIFY_WINDOW_STRIDE_DIVISOR
+
+    def test_a_long_scan_is_strided_not_word_by_word(self, mocker):
+        """Finding 24: word-by-word was `windows × span²` — a thousand
+        SequenceMatcher passes over ~6,600 tokens for one long segment whose
+        transcript ran a thousand words long. Pinned by counting comparisons,
+        not by timing."""
+        from sanzaru.audio import verification
+        from sanzaru.tools import podcast
+
+        counted = mocker.patch.object(podcast, "similarity_tokens", side_effect=verification.similarity_tokens)
+        needle = " ".join(f"w{i}" for i in range(800))
+        haystack = " ".join(f"h{i}" for i in range(1800))
+
+        _best_window_similarity(needle, haystack)
+
+        # last start = 1000, stride = 800 // 8 = 100: starts 0, 100, ..., 1000.
+        assert counted.call_count == 11
+
+    def test_a_tail_sized_needle_still_slides_one_word_at_a_time(self, mocker):
+        """The tail check is the load-bearing one and it is eight words long;
+        a stride there would be a stride over the very thing being looked for."""
+        from sanzaru.audio import verification
+        from sanzaru.tools import podcast
+
+        counted = mocker.patch.object(podcast, "similarity_tokens", side_effect=verification.similarity_tokens)
+
+        _best_window_similarity(" ".join(["n"] * 8), " ".join(["h"] * 20))
+
+        assert counted.call_count == 20 - 8 + 1
+
+    def test_the_final_alignment_is_always_scanned(self):
+        """When the stride steps past the end, the last window is scanned
+        anyway — a needle sitting at the very end of a unit is the ordinary
+        case for the last segment of a dialogue run."""
+        needle = " ".join(f"w{i}" for i in range(400))
+        haystack = " ".join(["lead"] * 10) + " " + needle  # last start 10, stride 50
+        assert _best_window_similarity(needle, haystack) == 1.0
+
 
 @pytest.fixture
 def podcast_env(mocker, tmp_path):
@@ -125,10 +172,18 @@ def podcast_env(mocker, tmp_path):
 
     tts_calls: list[str] = []
 
-    def install(takes: dict[str, list[str]], failing_transcribe: bool = False):
-        """`takes` maps segment text -> what each successive render sounds like."""
+    # No real back-off in tests: the retry loop is what is under test, not the clock.
+    mocker.patch("sanzaru.tools.podcast.VERIFY_TRANSCRIBE_RETRY_DELAY_S", 0)
+
+    def install(takes: dict[str, list[str]], failing_transcribe: bool = False, flaky_transcribe: int = 0):
+        """`takes` maps segment text -> what each successive render sounds like.
+
+        `failing_transcribe` makes every transcription raise; `flaky_transcribe`
+        makes only the first N raise, the way a 429 does.
+        """
         heard: dict[bytes, str] = {}
         attempts: dict[str, int] = {}
+        transcribe_failures = {"left": flaky_transcribe}
 
         async def fake_speech(**kwargs):
             spoken = kwargs["input"]
@@ -150,6 +205,9 @@ def podcast_env(mocker, tmp_path):
         async def fake_transcribe(audio, filename, model=None):
             if failing_transcribe:
                 raise RuntimeError("transcription is down")
+            if transcribe_failures["left"] > 0:
+                transcribe_failures["left"] -= 1
+                raise RuntimeError("429 slow down")
             return heard.get(audio, "")
 
         mocker.patch("sanzaru.tools.podcast.transcribe_bytes", side_effect=fake_transcribe)
@@ -233,16 +291,68 @@ class TestVerifyPass:
         assert AudioSegment.from_mp3(__import__("io").BytesIO(written)).duration_seconds > 0
 
     async def test_a_transcription_failure_does_not_lose_the_episode(self, podcast_env):
-        """Verification degrades to "unverified", never to a lost render."""
+        """Verification degrades to "unverified", never to a lost render.
+
+        Unverified means `verified is False`, not `True`: reporting success for
+        audio nobody transcribed is the fail-open this pass exists to avoid
+        (CWE-636). The episode is still written, and the unverifiable segment is
+        still kept out of the paid re-render.
+        """
         audio_dir, install = podcast_env
         install({}, failing_transcribe=True)
 
         result = await generate_podcast(_script(SPOKEN), verify=True)
 
         assert (audio_dir / result.output_file).exists()
-        assert result.verified is True, "an unverifiable segment is not a failed one"
+        assert result.verified is False, "audio nobody could transcribe was not verified"
         assert result.segment_verdicts[0].reason == "not_transcribed"
+        assert result.segment_verdicts[0].checked is False
+        assert result.segment_verdicts[0].ok is True, "unchecked is not the same as found-missing"
         assert result.verify_retries == 0
+        # Given up only after every attempt, not on the first error.
+        from sanzaru.tools import podcast
+
+        assert podcast.transcribe_bytes.call_count == VERIFY_TRANSCRIBE_ATTEMPTS
+
+    async def test_a_transient_transcription_failure_is_retried_not_reported(self, podcast_env):
+        """One 429 on one unit must not mark the whole episode unverified.
+
+        Transcription is the cheap, idempotent half of verification, so it is
+        retried; re-rendering is the expensive half and still happens once. A
+        `verified=False` that fires on every transient error is noise callers
+        learn to ignore — fail-open, arrived at socially.
+        """
+        audio_dir, install = podcast_env
+        install({}, flaky_transcribe=1)
+
+        result = await generate_podcast(_script(SPOKEN), verify=True)
+
+        assert result.verified is True
+        assert result.segment_verdicts[0].checked is True
+        assert result.verify_retries == 0, "the render was fine; only the check needed a second try"
+        from sanzaru.tools import podcast
+
+        assert podcast.transcribe_bytes.call_count == 2
+
+    async def test_a_unit_over_the_transcription_limit_is_not_reported_verified(self, podcast_env, monkeypatch):
+        """A segment big enough to exceed the API's 25MB limit cannot bypass the check.
+
+        This is the deterministic, input-driven route into the fail-open path:
+        script validation accepts 40,000 characters, which renders a unit the
+        transcription endpoint refuses outright.
+        """
+        audio_dir, install = podcast_env
+        install({})
+        # Shrink the ceiling rather than synthesizing 25MB of audio; the branch
+        # under test is the size comparison, not the encoder.
+        monkeypatch.setattr("sanzaru.tools.podcast.TRANSCRIBE_MAX_BYTES", 1)
+
+        result = await generate_podcast(_script(SPOKEN), verify=True)
+
+        assert (audio_dir / result.output_file).exists()
+        assert result.verified is False
+        assert result.segment_verdicts[0].reason == "too_large_to_verify"
+        assert result.segment_verdicts[0].checked is False
 
 
 @pytest.mark.integration

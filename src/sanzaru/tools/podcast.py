@@ -35,9 +35,11 @@ from ..audio.constants import (
     OPENAI_SPEED_RANGE,
     PODCAST_TARGET_FRAME_RATE,
     RENDER_MODES,
+    SAFE_AUDIO_EXTENSIONS,
     ElevenLabsModel,
     PodcastRenderMode,
     TTSProviderName,
+    safe_audio_format,
 )
 from ..audio.providers import (
     DialogueTurn,
@@ -51,9 +53,11 @@ from ..audio.providers import (
     synthesize_speech,
     validate_provider_name,
 )
-from ..audio.verification import similarity, transcribe_bytes, words
+from ..audio.verification import TRANSCRIBE_MAX_BYTES, similarity_tokens, transcribe_bytes, words
 from ..config import logger
+from ..exceptions import AudioFileError
 from ..infrastructure import FileSystemRepository
+from ..utils import reject_reserved_name
 
 _ELEVENLABS_MODEL_NAMES = frozenset(ELEVENLABS_MODELS)
 
@@ -73,6 +77,42 @@ DEFAULT_SPEAKER_SPEED = 1.0
 #: `_safe_title` falls back to this same value, so naming it once keeps the two
 #: from drifting the way the config defaults above would have.
 DEFAULT_TITLE = "podcast"
+
+#: Ceiling on every silence knob, matching `SimulationBrief`'s pydantic bound so
+#: the two podcast tools agree on what a plausible gap is. `_stitch_audio` turns
+#: these straight into a zero-filled buffer via `AudioSegment.silent()`, so the
+#: value *is* an allocation size: a one-word script with
+#: `intro_silence_ms: 2_000_000_000` asked for ~44GB and OOM-killed the server
+#: after a fraction of a cent of TTS (CWE-789). A minute of leading silence is
+#: already far past anything an episode wants.
+MAX_SILENCE_MS = 60_000
+
+#: Ceiling on segment count. Every segment is a task, a TTS request and a
+#: transcription when verifying, so this bounds the *work* an accepted script
+#: can demand — a few-MB script of 50,000 one-word segments is refused before
+#: the first request. It is not the socket bound: a segment may hold 40,000
+#: characters and is chunked ten ways underneath, so concurrency is bounded
+#: separately by `DEFAULT_PODCAST_MAX_CONCURRENCY` (CWE-770). The simulated
+#: path caps acts at 24 for the same reason; this is set high enough that no
+#: real episode can reach it.
+MAX_SEGMENTS = 2_000
+
+#: In-flight TTS requests per provider when neither `config.max_concurrency`
+#: nor the provider's own cap (`SANZARU_OPENAI_MAX_CONCURRENCY`, ElevenLabs'
+#: tier table) says otherwise. The OpenAI provider reports 0 — no cap of its
+#: own — and the fan-out used to read that as "unbounded": every segment *and*
+#: every 4,000-character chunk of it went out at once, sharing one limiter that
+#: was `None`, so one accepted script could open ~20,000 sockets and exhaust
+#: file descriptors for every other session on the server (CWE-770). 32 keeps
+#: a 2,000-segment episode at a few minutes of wall clock; a caller who wants
+#: more says so through `config.max_concurrency`.
+DEFAULT_PODCAST_MAX_CONCURRENCY = 32
+
+#: Ceiling on the silence in a whole episode. The per-knob bound alone leaves
+#: `MAX_SEGMENTS * MAX_SILENCE_MS` reachable — ~33 hours, several GB of samples
+#: at 44.1kHz, allocated quadratically by pydub's `+=`. An hour of total silence
+#: is already more than any real episode contains.
+MAX_TOTAL_SILENCE_MS = 3_600_000
 
 
 class Speaker(TypedDict):
@@ -144,9 +184,21 @@ class SegmentVerdict(BaseModel):
     index: int
     speaker: str
     ok: bool
+    """No problem was *found*. Read it together with `checked`: a segment whose
+    audio could not be transcribed has nothing against it and nothing for it."""
     reason: str = ""
     """Empty when ok; otherwise `tail_missing`, `segment_missing`, `diverged`,
-    or `not_transcribed` (verification itself failed for this unit)."""
+    or `not_transcribed` (every transcription attempt failed) /
+    `too_large_to_verify` (the unit exceeds the transcription upload limit)."""
+    checked: bool = True
+    """False when the unit's audio was never transcribed, so this segment was
+    never actually compared against anything.
+
+    Separate from `ok` because the two answer different questions and conflating
+    them made the control assert its own success: a transcription failure
+    returned `ok=True`, `verified` was `all(v.ok)`, and an episode where every
+    single unit failed to transcribe still reported "every segment confirmed
+    present in the rendered audio" (CWE-636)."""
     similarity: float = 1.0
     """Word overlap between the script text and what the audio actually says."""
     retried: bool = False
@@ -167,9 +219,11 @@ class PodcastResult(BaseModel):
     one episode can mix providers, and only the ElevenLabs rows draw on a
     character quota."""
     verified: bool | None = None
-    """None when `verify` was not requested. True when every segment was
-    confirmed present in the rendered audio, False when some were not — the
-    episode is still written either way."""
+    """None when `verify` was not requested. True only when every segment was
+    actually transcribed *and* found in the rendered audio; False when any
+    segment was missing **or** could not be checked at all. The episode is
+    written either way — an unverifiable episode is not a lost one, but it is
+    also not a verified one."""
     verify_retries: int = 0
     """Segments re-rendered because verification flagged them."""
     segment_verdicts: list[SegmentVerdict] = Field(default_factory=list)
@@ -199,6 +253,28 @@ VERIFY_SEGMENT_THRESHOLD = 0.60
 """Overall floor for a whole segment. A tail can pass while the middle is gone;
 this catches the gross case without flagging normal ASR disagreement."""
 
+VERIFY_WINDOW_STRIDE_DIVISOR = 8
+"""A window scan advances by `span // this` words, minimum one.
+
+Sliding one word at a time costs `windows × span²`: a 40,000-character segment
+whose transcript runs a thousand words long is a thousand SequenceMatcher
+passes over ~6,600 tokens each — minutes of CPU per unit, on a worker thread
+the caller cannot cancel. A window misaligned by up to a stride still overlaps
+the true position by `1 - 1/divisor` of the segment, so a faithful reading
+scores at least ~0.875 against thresholds of 0.60 and 0.75. Tails and short
+segments have a span under the divisor, so they keep the exact one-word scan."""
+
+VERIFY_TRANSCRIBE_ATTEMPTS = 3
+"""How many times to try transcribing one unit before giving it up as
+`not_transcribed`. The failures are dominated by transient 429/5xx, and one of
+them on one unit of a sixty-segment episode would otherwise flip `verified` for
+the whole episode — noise that teaches callers to ignore the flag, which is the
+fail-open outcome arrived at socially. Transcription is cheap and idempotent;
+re-*rendering* is neither, which is why that side still gets exactly one."""
+
+VERIFY_TRANSCRIBE_RETRY_DELAY_S = 1.0
+"""Base back-off between those attempts, multiplied by the attempt number."""
+
 
 def _tail_of(text: str, count: int = VERIFY_TAIL_WORDS) -> str:
     return " ".join(words(text)[-count:])
@@ -220,10 +296,18 @@ def _best_window_similarity(needle: str, haystack: str) -> float:
         return 0.0
     span = len(needle_words)
     if len(hay_words) <= span:
-        return similarity(needle, haystack)
-    return max(
-        similarity(needle, " ".join(hay_words[start : start + span])) for start in range(len(hay_words) - span + 1)
-    )
+        return similarity_tokens(needle_words, hay_words)
+    # Tokenised once per side, not once per window: re-splitting the needle
+    # for every start position made the scan quadratic in the transcript length
+    # before the matcher had done any work.
+    last = len(hay_words) - span
+    stride = max(1, span // VERIFY_WINDOW_STRIDE_DIVISOR)
+    best = max(similarity_tokens(needle_words, hay_words[start : start + span]) for start in range(0, last + 1, stride))
+    if last % stride:
+        # The scan may have stepped past the end; the final alignment is the
+        # one a dropped *head* would otherwise hide behind.
+        best = max(best, similarity_tokens(needle_words, hay_words[last:]))
+    return best
 
 
 def _verdict_for(index: int, speaker: str, intended: str, rendered: str) -> SegmentVerdict:
@@ -365,6 +449,25 @@ def _normalize_speaker(speaker: Speaker) -> Speaker:
     return cast(Speaker, normalized)
 
 
+def _default_pause_ms(config: PodcastConfig) -> int:
+    """`config.default_pause_ms`, with an explicit JSON null meaning "not set".
+
+    `config.get(key, default)` substitutes only for an *absent* key, so a
+    present-but-null value — ordinary in a model-authored script — reached
+    `int(None)` in the total-silence sum and `None > 0` in the stitch. Not
+    `or`: 0 is a legitimate pause.
+    """
+    value = config.get("default_pause_ms")
+    return DEFAULT_PAUSE_MS if value is None else value
+
+
+def _pause_after_ms(segment: Segment, default_pause_ms: int) -> int:
+    """A segment's `pause_after`, with null meaning "use the default" the way an
+    absent key does — the same reading the config knobs get."""
+    value = segment.get("pause_after")
+    return default_pause_ms if value is None else value
+
+
 #: Same shape `SimulationBrief.filename` enforces via pydantic: a bare name, no
 #: separators of either flavour. Kept in sync deliberately — the two podcast
 #: tools should not disagree about what a filename is.
@@ -392,6 +495,15 @@ def _check_output_filename(filename: str | None, output_format: str) -> str | No
         )
     if filename in (".", "..") or len(filename) > _FILENAME_MAX_LEN:
         raise ValueError(f"output filename {filename!r} is not a usable filename")
+    reject_reserved_name(filename)
+    # An audio extension, and one of the set this server is willing to create:
+    # the file is written into the directory every audio tool reads back from,
+    # so `episode.html` or `notes.json` would be mp3 bytes parked under a name
+    # some other consumer trusts. Same rule `create_audio` applies to its name.
+    try:
+        safe_audio_format(filename, allowed=SAFE_AUDIO_EXTENSIONS)
+    except ValueError as exc:
+        raise ValueError(f"output filename {filename!r} must carry an audio extension: {exc}") from exc
     if pathlib.PurePath(filename).suffix.lstrip(".").lower() != output_format:
         # Warn, don't raise: the caller may well want a different extension on
         # purpose. Here rather than at write time so it is not learned after
@@ -466,6 +578,11 @@ def _validate_script(
         errors.append("PodcastScript supports at most 4 speakers")
     if not script["segments"]:
         errors.append("PodcastScript must have at least 1 segment")
+    elif len(script["segments"]) > MAX_SEGMENTS:
+        # Before synthesis, not during: the fan-out is what costs, and the
+        # failure it produces (EMFILE across every concurrent session) does not
+        # look like "your script was too big".
+        errors.append(f"PodcastScript supports at most {MAX_SEGMENTS} segments, got {len(script['segments'])}")
 
     # Speaker elements only. Segment elements are checked in phase 3, where the
     # rest of the segment rules live: a malformed segment does not stop speaker
@@ -515,6 +632,8 @@ def _validate_script(
     ):
         if ms_value is not None and (isinstance(ms_value, bool) or not isinstance(ms_value, int)):
             errors.append(f"PodcastConfig {ms_key!r} must be an integer, got {type(ms_value).__name__}")
+        elif ms_value is not None and not 0 <= ms_value <= MAX_SILENCE_MS:
+            errors.append(f"PodcastConfig {ms_key!r} must be between 0 and {MAX_SILENCE_MS} ms, got {ms_value}")
 
     render_mode: PodcastRenderMode = config.get("render_mode", DEFAULT_RENDER_MODE)
     if render_mode not in RENDER_MODES:
@@ -715,11 +834,18 @@ def _validate_script(
         if len(segment["text"]) > 40000:
             errors.append(f"Segment {i} text exceeds 40000 characters")
             continue
-        if "pause_after" in segment and (
-            isinstance(segment["pause_after"], bool) or not isinstance(segment["pause_after"], int)
-        ):
+        # `None` is tolerated here exactly as the config knobs tolerate it: a
+        # JSON null on an optional field means "not set", and `_pause_after_ms`
+        # reads it that way everywhere downstream.
+        pause_after = segment.get("pause_after")
+        if pause_after is not None and (isinstance(pause_after, bool) or not isinstance(pause_after, int)):
             # Detonates in pydub rather than here if it gets through.
-            errors.append(f"Segment {i} 'pause_after' must be an integer, got {type(segment['pause_after']).__name__}")
+            errors.append(f"Segment {i} 'pause_after' must be an integer, got {type(pause_after).__name__}")
+            continue
+        if pause_after is not None and not 0 <= pause_after <= MAX_SILENCE_MS:
+            # Same allocation-sized value as the config knobs above, reachable
+            # one segment at a time.
+            errors.append(f"Segment {i} 'pause_after' must be between 0 and {MAX_SILENCE_MS} ms, got {pause_after}")
             continue
         if "speed_override" in segment and (
             isinstance(segment["speed_override"], bool) or not isinstance(segment["speed_override"], int | float)
@@ -754,6 +880,34 @@ def _validate_script(
 
     if errors:
         _raise_validation_errors(errors)
+
+    # Per-knob bounds are not the same as a bound on the total: 2,000 segments
+    # each asking for the maximum pause is still ~33 hours of silence, which
+    # `_stitch_audio` materialises as multiple GB (and quadratically, since
+    # `combined += ...` copies each time).
+    #
+    # After the raise above, not before: every segment is known to be a dict
+    # with a valid `pause_after` by this point, so the sum cannot trip over a
+    # malformed one and turn a clear usage error into an AttributeError.
+    #
+    # Deliberately over-counts relative to the stitch: it includes the final
+    # segment's pause, which `_build_pause_list` zeroes, and in dialogue mode
+    # the intra-run pauses the model paces itself. A ceiling wants the upper
+    # bound, and agreeing with the stitch here would couple the bound to the
+    # render plan — do not "fix" it into agreement.
+    default_pause = _default_pause_ms(config)
+    total_silence = (
+        (config.get("intro_silence_ms") or 0)
+        + (config.get("outro_silence_ms") or 0)
+        + sum(_pause_after_ms(s, default_pause) for s in segments)
+    )
+    if total_silence > MAX_TOTAL_SILENCE_MS:
+        _raise_validation_errors(
+            [
+                f"PodcastScript asks for {total_silence / 1000:.0f}s of silence in total, over the "
+                f"{MAX_TOTAL_SILENCE_MS / 1000:.0f}s ceiling — lower the pauses or the segment count"
+            ]
+        )
 
     return title, speakers, segments, config
 
@@ -980,7 +1134,7 @@ def _build_pause_list(units: list[RenderUnit], segments: list[Segment], default_
     only way the estimate can stay honest about silence that is actually added.
     """
     return [
-        0 if unit_index == len(units) - 1 else segments[unit.indices[-1]].get("pause_after", default_pause_ms)
+        0 if unit_index == len(units) - 1 else _pause_after_ms(segments[unit.indices[-1]], default_pause_ms)
         for unit_index, unit in enumerate(units)
     ]
 
@@ -1019,6 +1173,22 @@ async def generate_podcast(
     # traversal attempt too, but only at the final write — after the whole
     # episode has been synthesized and billed, and with the audio then dropped.
     filename = _check_output_filename(filename, config.get("output_format", DEFAULT_OUTPUT_FORMAT))
+    # One repository for the pre-flight and the final write, so it is plain
+    # that the two refusals look at the same storage.
+    file_repo = FileSystemRepository()
+    if filename is not None:
+        # Same timing argument, same refusal the final write would produce: a
+        # name that lands on another run's act checkpoint must cost nothing to
+        # discover. Only the caller's name needs checking — the fallback is
+        # timestamped and cannot collide with anything that has a sidecar.
+        try:
+            await file_repo.refuse_clobbering_a_checkpoint(filename)
+        except AudioFileError as exc:
+            # Here it is a refusal of the caller's *argument*, like the two
+            # `_check_output_filename` refusals above, so it classifies as one
+            # (usage, CLI exit 2) rather than as the write-time failure the copy
+            # inside `write_audio_file` reports.
+            raise ValueError(str(exc)) from exc
     speaker_map: dict[str, Speaker] = {s["id"]: s for s in speakers}
 
     # Resolve each speaker's provider and model once, up front.
@@ -1032,15 +1202,16 @@ async def generate_podcast(
     # One limiter per provider, built here because CapacityLimiter binds to the
     # running event loop. The same limiter is passed down into synthesize_speech
     # so segment-level and chunk-level parallelism share one budget — which is
-    # what ElevenLabs' concurrency cap actually counts. OpenAI's limit is 0
-    # (unbounded) by default, preserving the historical behavior exactly.
+    # what ElevenLabs' concurrency cap actually counts. A provider that reports
+    # 0 (OpenAI, unless SANZARU_OPENAI_MAX_CONCURRENCY says otherwise) gets the
+    # podcast default rather than no limiter at all: this fan-out is the one
+    # place a single call can open thousands of connections.
     override = config.get("max_concurrency")
-    limiters: dict[str, anyio.CapacityLimiter | None] = {}
+    limiters: dict[str, anyio.CapacityLimiter] = {}
     for provider_name, derived in _derive_concurrency_limits(providers, models).items():
-        limit = override or derived
-        limiters[provider_name] = anyio.CapacityLimiter(limit) if limit else None
-        if limit:
-            logger.info("Limiting %s to %d concurrent TTS requests", provider_name, limit)
+        limit = override or derived or DEFAULT_PODCAST_MAX_CONCURRENCY
+        limiters[provider_name] = anyio.CapacityLimiter(limit)
+        logger.info("Limiting %s to %d concurrent TTS requests", provider_name, limit)
 
     render_mode: PodcastRenderMode = config.get("render_mode", DEFAULT_RENDER_MODE)
     units = _plan_render_units(segments, speaker_map, providers, models, render_mode)
@@ -1060,7 +1231,7 @@ async def generate_podcast(
                 "dialogue-capable provider and model (eleven_v3) - rendering per segment"
             )
 
-    pause_ms_list = _build_pause_list(units, segments, config.get("default_pause_ms", DEFAULT_PAUSE_MS))
+    pause_ms_list = _build_pause_list(units, segments, _default_pause_ms(config))
     estimated_duration = _estimate_duration(segments, speakers, pause_ms_list, config)
     logger.info(
         f"Podcast '{title}': {len(segments)} segments, {len(speakers)} speakers, ~{estimated_duration:.0f}s estimated"
@@ -1133,10 +1304,7 @@ async def generate_podcast(
                 requests=1,
             )
         )
-        limiter = limiters[speaker_provider.name]
-        if limiter is None:
-            return await dialogue.synthesize_dialogue(turns, model_id, config.get("dialogue_stability"))
-        async with limiter:
+        async with limiters[speaker_provider.name]:
             return await dialogue.synthesize_dialogue(turns, model_id, config.get("dialogue_stability"))
 
     async def _gen_unit(unit: RenderUnit) -> bytes:
@@ -1169,29 +1337,81 @@ async def generate_podcast(
         """
         verify_limiter = anyio.CapacityLimiter(4)
 
+        def _unchecked(unit_index: int, reason: str) -> tuple[int, list[SegmentVerdict]]:
+            """Verdicts for a unit whose audio never got transcribed.
+
+            `ok=True` keeps the unit out of the paid re-render — a second render
+            of an oversized unit is still oversized — while `checked=False` is
+            what stops the episode from claiming it was verified.
+            """
+            return unit_index, [
+                SegmentVerdict(
+                    index=i,
+                    speaker=speaker_map[segments[i]["speaker"]]["name"],
+                    ok=True,
+                    reason=reason,
+                    checked=False,
+                    similarity=0.0,
+                )
+                for i in units[unit_index].indices
+            ]
+
+        async def _transcribe_with_retry(unit_index: int, audio: bytes, name: str) -> str | None:
+            """The unit's transcript, or None once every attempt has failed.
+
+            Retrying the cheap, idempotent half here is what keeps a transient
+            429 from marking a whole episode unverified; the expensive half —
+            re-rendering — is still done exactly once, below.
+            """
+            for attempt in range(1, VERIFY_TRANSCRIBE_ATTEMPTS + 1):
+                try:
+                    async with verify_limiter:
+                        return await transcribe_bytes(audio, name)
+                except Exception as exc:  # noqa: BLE001 - verification must never lose the episode
+                    if attempt == VERIFY_TRANSCRIBE_ATTEMPTS:
+                        logger.warning(
+                            "Verification could not transcribe unit %d after %d attempts: %s",
+                            unit_index,
+                            attempt,
+                            exc,
+                        )
+                        return None
+                    logger.info("Verification: transcribing unit %d failed (%s) - retrying", unit_index, exc)
+                    await anyio.sleep(VERIFY_TRANSCRIBE_RETRY_DELAY_S * attempt)
+            return None  # pragma: no cover - the loop returns on its last attempt
+
         async def _one(unit_index: int) -> tuple[int, list[SegmentVerdict]]:
             unit = units[unit_index]
-            try:
-                async with verify_limiter:
-                    rendered = await transcribe_bytes(
-                        segment_bytes_list[unit_index], f"unit{unit_index}.{output_format}"
-                    )
-            except Exception as exc:  # noqa: BLE001 - verification must never lose the episode
-                logger.warning("Verification could not transcribe unit %d: %s", unit_index, exc)
-                return unit_index, [
-                    SegmentVerdict(
-                        index=i,
-                        speaker=speaker_map[segments[i]["speaker"]]["name"],
-                        ok=True,
-                        reason="not_transcribed",
-                        similarity=0.0,
-                    )
+            audio = segment_bytes_list[unit_index]
+            # verification.py's contract is that callers check this themselves.
+            # Not doing so made the limit a bypass: a segment near the accepted
+            # 40,000-char cap renders a unit well over 25MB, so the API rejected
+            # it, the exception below swallowed the rejection, and the segment
+            # shipped "verified" without ever being looked at.
+            if len(audio) > TRANSCRIBE_MAX_BYTES:
+                logger.warning(
+                    "Verification skipped unit %d: %.1fMB exceeds the %dMB transcription limit - "
+                    "split the segment to make it checkable",
+                    unit_index,
+                    len(audio) / 1024 / 1024,
+                    TRANSCRIBE_MAX_BYTES // 1024 // 1024,
+                )
+                return _unchecked(unit_index, "too_large_to_verify")
+            rendered = await _transcribe_with_retry(unit_index, audio, f"unit{unit_index}.{output_format}")
+            if rendered is None:
+                return _unchecked(unit_index, "not_transcribed")
+
+            # Off the event loop: scoring is difflib.SequenceMatcher with
+            # autojunk disabled, over word lists the script controls the size
+            # of, so a repetitive 40k-char segment is tens of seconds of
+            # uninterruptible CPU. The stitch already takes this precaution.
+            def _judge() -> list[SegmentVerdict]:
+                return [
+                    _verdict_for(i, speaker_map[segments[i]["speaker"]]["name"], segments[i]["text"], rendered)
                     for i in unit.indices
                 ]
-            return unit_index, [
-                _verdict_for(i, speaker_map[segments[i]["speaker"]]["name"], segments[i]["text"], rendered)
-                for i in unit.indices
-            ]
+
+            return unit_index, await anyio.to_thread.run_sync(_judge)
 
         async with anyio.create_task_group() as verify_tg:
             verify_captures = [ResultCapture.start_soon(verify_tg, _one, i) for i in targets]
@@ -1234,7 +1454,6 @@ async def generate_podcast(
 
     # Already validated up front, before any synthesis was paid for.
     written_name = filename or f"{_safe_title(title)}_{int(time.time())}.{output_format}"
-    file_repo = FileSystemRepository()
     await file_repo.write_audio_file(written_name, final_audio)
     logger.info(f"Podcast written: {written_name} ({len(final_audio):,} bytes)")
 
@@ -1257,6 +1476,7 @@ async def generate_podcast(
     )
     if verify:
         unresolved = [v for v in verdicts if not v.ok]
+        unchecked = [v for v in verdicts if not v.checked]
         if unresolved:
             logger.warning(
                 "Verification: %d segment(s) still not found in the audio after one retry: %s. "
@@ -1265,7 +1485,16 @@ async def generate_podcast(
                 len(unresolved),
                 ", ".join(f"{v.index + 1} ({v.reason})" for v in unresolved),
             )
-        else:
+        # Reported separately and never folded into the line above: these
+        # segments are not known-bad, they are unknown, and saying "confirmed"
+        # about them is the failure this branch exists to prevent.
+        if unchecked:
+            logger.warning(
+                "Verification: %d segment(s) could not be checked (%s) - the episode is written but NOT verified",
+                len(unchecked),
+                ", ".join(f"{v.index + 1} ({v.reason})" for v in unchecked),
+            )
+        if not unresolved and not unchecked:
             logger.info("Verification: every segment confirmed present in the rendered audio")
 
     return PodcastResult(
@@ -1276,7 +1505,9 @@ async def generate_podcast(
         speakers=[s["name"] for s in speakers],
         transcript=transcript,
         usage=usage,
-        verified=None if not verify else all(v.ok for v in verdicts),
+        # `checked` as well as `ok`: a segment nobody transcribed has not been
+        # verified, whatever else is true of it.
+        verified=None if not verify else all(v.ok and v.checked for v in verdicts),
         verify_retries=retried_count,
         segment_verdicts=verdicts,
     )

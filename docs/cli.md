@@ -410,6 +410,18 @@ than one per run. Speakers accept optional `provider`, `model`, and `voice_setti
 as `speaker.provider > config.provider > --provider` — so one episode can mix OpenAI and ElevenLabs
 voices. The envelope includes the full transcript — pipe to a file for long episodes.
 
+A script is bounded before the first TTS request, because every one of these numbers is an
+allocation or a connection: at most 2000 segments of 40000 characters each; `pause_after`,
+`default_pause_ms`, `intro_silence_ms` and `outro_silence_ms` each 0–60000 ms; and no more than
+an hour of silence in total (summed as if every segment's pause were inserted — the final
+segment's is not, so the bound is conservative). A JSON `null` on any of those means "not set",
+the same as leaving the key out. Segments fan out at most 32-wide per provider by default —
+`config.max_concurrency` raises or lowers that, `SANZARU_OPENAI_MAX_CONCURRENCY` and ElevenLabs'
+tier caps still win when set. The `-o` name must be a bare filename with an audio extension
+(`mp3`, `wav`, `m4a`, `flac`, `ogg`, …) and may not be a simulated run's bookkeeping
+(`simrun_<id>.json`) or the audio of a recorded act (a `<name>.json` act sidecar beside it); all
+three refusals are usage errors (exit 2) and cost nothing.
+
 #### `--verify`
 
 TTS drops the tail of a segment, and occasionally a whole short segment, **at random and with
@@ -428,9 +440,22 @@ sanzaru: verified: all 28 segments present in the audio
 sanzaru:   (1 re-rendered to get there)
 ```
 
-The envelope carries `verified`, `verify_retries`, and a `segment_verdicts` list with a reason
-(`tail_missing`, `segment_missing`, `diverged`, `not_transcribed`) and similarity per segment.
-`verified` is `null` when you did not ask for it.
+The envelope carries `verified`, `verify_retries`, and a `segment_verdicts` list. Each verdict
+has `ok` (no problem was *found*), `checked` (the audio was actually transcribed and compared),
+a `reason` and a `similarity`. Reasons: `tail_missing`, `segment_missing`, `diverged` (found
+wrong, `ok: false`), or `not_transcribed` / `too_large_to_verify` (never looked at — `ok: true`
+but `checked: false`). `verified` is `null` when you did not ask for it, `true` only when every
+segment was both checked and found, and `false` when any segment was missing **or** could not be
+checked — so a `false` is read from the verdicts, not assumed to mean "missing". The episode is
+written in every case. On stderr the two show up as separate blocks: `verified: N of M segments
+NOT found after a retry` for the first, `NOT verified: N of M segments could not be checked` for
+the second.
+
+Transcription is retried three times with a short back-off before a unit is given up as
+`not_transcribed`, since those failures are mostly transient 429/5xx and the check is cheap and
+idempotent. The *render* is still retried exactly once — that is the expensive half. A unit over
+the 25 MB transcription upload limit is reported `too_large_to_verify` without a call: split the
+segment to make it checkable.
 
 Costs one transcription per unit, so it is off by default. Two things it does not do: drops are
 per-render random rather than per-segment sticky, so a segment failing **twice** wants its tail
