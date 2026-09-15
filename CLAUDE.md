@@ -73,7 +73,7 @@ src/sanzaru/
 │   └── serve.py        # explicit `sanzaru serve`
 ├── types.py            # TypedDict definitions
 ├── config.py           # OpenAI client + path configuration (get_client/set_client, get_path)
-├── security.py         # File security utilities
+├── security.py         # File security utilities (validate_safe_path, check_not_symlink, open_nofollow)
 ├── utils.py            # Shared helpers (+ validate_resource_id, reject_reserved_name)
 ├── features.py         # Feature detection (optional deps + env vars)
 ├── descriptions.py     # LLM-facing tool descriptions
@@ -386,16 +386,34 @@ Additional security:
 - Empty/whitespace-only env vars rejected
 - User filenames validated against allowed extensions where applicable
 
-**`check_not_symlink` tests `is_symlink()` alone, never `exists() and is_symlink()`.**
-`exists()` follows the link, so the compound form returned False for a *dangling*
-symlink and skipped the check — passing exactly the links a `"wb"` open would then
-follow and create the target of. Same rule applies anywhere else this pattern is
-written.
-
 ### Invariants that are load-bearing, not stylistic
 
 Each of these closed a specific hole. They look like ordinary defensive code, so
 they are easy to "simplify" away.
+
+- **`check_not_symlink` uses `lstat`, never `exists() and is_symlink()`.** `exists()`
+  follows the link, so the compound form returned False for a *dangling* symlink and
+  skipped the check — passing exactly the links a `"wb"` open would then follow and
+  create the target of. `os.lstat` rather than `Path.is_symlink()` because the latter
+  swallows every `OSError`, which made the documented permission-denied branch
+  unreachable. `config.get_path` and `audio/config.py` follow the same rule for the
+  operator-supplied media path.
+- **Every storage open passes `opener=open_nofollow`, and every writer also calls the
+  pre-open check.** Validation and open are not atomic; `O_NOFOLLOW` is what refuses a
+  symlink swapped in between them (CWE-367). It is POSIX-only, so on a platform
+  without it the pre-open `check_not_symlink` in `write`/`write_stream` is the only
+  thing between a `"wb"` open and a planted link's target. `safe_open_file` and
+  `async_safe_open_file` use the same opener, so `check_symlink=False` skips the
+  pre-check only — it never means "follow links".
+- **`reject_reserved_name` matches the basename storage would write, not the raw
+  string.** Both backends canonicalise (`PurePosixPath(name).name`,
+  `validate_safe_path` resolving `./x`, `x/`, `a/../x` to `<base>/x`), so a check on the
+  raw string let `./simrun_<id>.json` clobber another run's manifest. Any name check
+  has to run on the same reduction as the write.
+- **`SANZARU_REQUIRE_USER_CONTEXT` is a strict boolean that fails closed.** The
+  switch's failure mode is "every user shares one namespace", so an unrecognised
+  value (`enabled`, `y`) is a configuration error, never a silent "off" — the original
+  `1/true/yes` parse treated `on` as off.
 
 
 ## Prompting Sora with Reference Images
@@ -553,6 +571,9 @@ DATABRICKS_HOST="https://your-workspace.cloud.databricks.com"
 DATABRICKS_CLIENT_ID="..."
 DATABRICKS_CLIENT_SECRET="..."
 DATABRICKS_VOLUME_PATH="/Volumes/catalog/schema/volume"
+
+# Optional, multi-tenant deployments only — see Multi-Tenant Support below
+SANZARU_REQUIRE_USER_CONTEXT=1
 ```
 
 ### Protocol Methods
@@ -576,7 +597,11 @@ For deployments where multiple users share one server (e.g., Databricks Apps), t
 /Volumes/{volume_path}/{user_slug}/videos/{filename}
 ```
 
-The user slug is derived from the email local part (e.g., `rcaputo3@tjclp.com` → `rcaputo3`). When no user context is set (default), paths are unchanged — fully backward-compatible.
+The user slug is `<readable>-<hash>`: the lowercased email local part with anything outside `[a-z0-9_]` folded to `_`, then the first 12 hex characters of a SHA-256 over the full address (e.g., `rcaputo3@tjclp.com` → `rcaputo3-058695b50073`). The hash is what makes the prefix injective — the readable half alone dropped the domain and folded punctuation, so `jane.doe@corp.com`, `jane-doe@corp.com` and `jane.doe@other.com` all shared one directory (CWE-706). A local part with nothing in `[a-z0-9_]` yields `user-<hash>` rather than an error. The slug **is** a storage path: do not change `user_slug` without a migration.
+
+**Migration from 0.10.x and earlier:** the slug used to be the bare local part (`rcaputo3`), so every tenant's existing files live under a prefix the code no longer resolves to (`/Volumes/{volume_path}/rcaputo3/videos/…` → now `/Volumes/{volume_path}/rcaputo3-058695b50073/videos/…`). The storage protocol has no move or delete, so either move each `{old_slug}/` tree to `{user_slug(email)}/` with Databricks tooling (`user_slug` is importable from `sanzaru.user_context` to compute the new names), or re-derive the old slug read-side in a deployment-local subclass until the move is done. Nothing in the server does this for you.
+
+When no user context is set (default), paths are unchanged. On a shared deployment that fallback is the wrong answer — a request with no identity would be served out of everybody's directory — so set `SANZARU_REQUIRE_USER_CONTEXT=1` to refuse it instead. Strict boolean: `1/true/yes/on` requires an identity, `0/false/no/off` (or unset) allows the shared root, and any other value is a configuration error rather than a silent "off". The refusal is `UserContextRequiredError` (a `RuntimeError`, so the CLI reports it as `config`/exit 3 — the CLI never carries an identity, so setting the switch there is a mismatch, not an internal failure); an authenticating HTTP transport should catch it by name and answer 403.
 
 ### Known Limitations (Databricks)
 
