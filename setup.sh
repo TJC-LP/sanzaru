@@ -2,13 +2,40 @@
 
 set -e
 
+# .env values are written inside double quotes. Escape the two characters that
+# would otherwise break out of the quoted string: a bare " ends the value early
+# and leaves the rest of the line as garbage (python-dotenv drops the whole
+# binding), and a trailing \ would escape the closing quote. Backslash must be
+# substituted first, or it would double the backslashes added after it.
+# Deliberately NOT escaped: $ and ` — .env is not shell, and python-dotenv only
+# decodes \\ \' \" \a \b \f \n \r \t \v, so a \$ would survive as a literal
+# backslash in the value. (A path containing the braced form ${VAR} is still
+# interpolated by python-dotenv; its grammar offers no escape for that.)
+env_escape() {
+    local value=$1
+    value=${value//\\/\\\\}
+    value=${value//\"/\\\"}
+    printf '%s' "$value"
+}
+
 echo "============================================"
 echo "  sanzaru Setup"
 echo "============================================"
 echo ""
 
+# A symlink at ./.env is refused outright rather than written through. Every
+# step below — the truncate, the chmod, the heredoc — would otherwise land the
+# API key in whatever the link names, and `-f` is false for a dangling link, so
+# the overwrite prompt would not even fire. The check is `-L`, which does not
+# follow the link; `-e` below does, so the prompt still covers a plain file.
+if [ -L .env ]; then
+    echo "❌ .env is a symbolic link — refusing to write the API key through it."
+    echo "   Remove the link (or run setup from a different directory) and try again."
+    exit 1
+fi
+
 # Check if .env already exists
-if [ -f .env ]; then
+if [ -e .env ]; then
     echo "⚠️  .env file already exists!"
     read -p "Do you want to overwrite it? (y/N): " overwrite
     if [[ ! $overwrite =~ ^[Yy]$ ]]; then
@@ -81,13 +108,21 @@ echo "============================================"
 echo "  Writing .env file..."
 echo "============================================"
 
-# Write .env file
+# Write .env file.
+# The API key is stored here in cleartext, so the file must never be readable by
+# other local users. Create it owner-only *before* the secret lands in it: the
+# umask covers a newly created .env, and the chmod covers a pre-existing one,
+# because `>` truncates a file but leaves its old mode alone. Do not collapse
+# these into a bare `cat > .env` — on the default umask 022 that yields 0644.
+(umask 077 && : > .env)
+chmod 600 .env
+
 cat > .env << EOF
-OPENAI_API_KEY="$API_KEY"
-SANZARU_MEDIA_PATH="$MEDIA_PATH"
+OPENAI_API_KEY="$(env_escape "$API_KEY")"
+SANZARU_MEDIA_PATH="$(env_escape "$MEDIA_PATH")"
 EOF
 
-echo "✓ Created .env file"
+echo "✓ Created .env file (permissions: 600)"
 
 echo ""
 echo "============================================"

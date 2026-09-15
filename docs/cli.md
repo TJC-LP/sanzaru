@@ -117,6 +117,26 @@ and paths can't be mixed for the same media type; `-o` still resolves against a 
 per type, the first input's; with `STORAGE_BACKEND=databricks`, `-o` always produces a local
 file (bytes are copied out of the volume when needed).
 
+Two rules exist because agents run this from workspaces holding untrusted files:
+
+- **A bare name captured by the current directory is announced, never silent.** A bare name
+  normally addresses the media library, but a same-named file in the working directory still
+  wins (chained commands depend on it). When both exist as *different* files, the stderr note
+  names both candidates and how to spell each, so a planted `episode.mp3` cannot quietly
+  substitute itself for the library's (running from inside the media directory itself is one
+  file, not two, and says nothing). Write `./name` to mean the local file with no note. A bare
+  name whose local match is a **symlink** is refused outright — `./name` opts into that
+  explicitly.
+- **`-o` never writes through a symlink.** The destination, the staging file, and
+  `podcast rundown -o` all open with `O_NOFOLLOW`, so a symlink pre-planted at the output path
+  is an error (exit 2) rather than a write to whatever it points at — decided *before* anything
+  is generated or billed, `rundown` included. When the refusal happens after the tool has
+  already written (a relocation onto a planted link), the error names where the artifact still
+  is and carries it as `file.path`. The staging name is random rather than derived from the
+  output name, so it cannot be predicted and swapped mid-run. The direct-write case (no
+  relocation) is checked at plan time here and closed against the race by the local storage
+  backend's own `O_NOFOLLOW` opener.
+
 ## Long content
 
 Prompts, TTS text, and podcast scripts accept three forms: inline string, `@file`, or `-`

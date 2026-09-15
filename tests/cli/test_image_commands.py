@@ -228,7 +228,7 @@ def test_image_prepare_renders_tuple_sizes(mocker, tmp_path):
 @pytest.mark.integration
 def test_image_prepare_reports_the_final_name_across_dirs(mocker, tmp_path):
     """#54 on the image side: the input pins the reference dir, so `-o` into a
-    different one makes plan_output stage under a __sanzaru_tmp name. The
+    different one makes plan_output stage under a sanzaru_tmp_* name. The
     envelope must name the file that survives the move, not the staging one."""
     in_dir, out_dir = tmp_path / "in", tmp_path / "out"
     in_dir.mkdir()
@@ -253,7 +253,8 @@ def test_image_prepare_reports_the_final_name_across_dirs(mocker, tmp_path):
     )
 
     assert result.exit_code == 0, result.stderr
-    assert prepare.call_args.kwargs["output_filename"] == "ref__sanzaru_tmp.png"
+    staged = prepare.call_args.kwargs["output_filename"]
+    assert staged.startswith("sanzaru_tmp_") and staged.endswith(".png")
     parsed = json.loads(result.stdout)
     assert parsed["result"]["output_filename"] == "ref.png"
     assert parsed["result"]["file"]["path"] == str(out_dir / "ref.png")

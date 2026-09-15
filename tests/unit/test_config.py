@@ -377,6 +377,22 @@ class TestGetPathUnifiedMediaPath:
         with pytest.raises(RuntimeError, match="cannot be a symbolic link"):
             get_path("video")
 
+    def test_dangling_symlink_subdir_is_refused_not_adopted(self, mocker, tmp_path):
+        """The compound `exists() and is_symlink()` followed the link first, so a
+        *dangling* one answered False, skipped the check, and the auto-create
+        then mkdir'd the link's target — an attacker-named tree became the
+        media directory."""
+        media_root = tmp_path / "media"
+        media_root.mkdir()
+        adopted = tmp_path / "somewhere_else"  # deliberately absent
+        (media_root / "videos").symlink_to(adopted)
+
+        mocker.patch.dict(os.environ, {"SANZARU_MEDIA_PATH": str(media_root)}, clear=True)
+
+        with pytest.raises(RuntimeError, match="cannot be a symbolic link"):
+            get_path("video")
+        assert not adopted.exists()
+
     def test_existing_subdir_reused(self, mocker, tmp_path):
         """Test that existing subdirectory is reused without error."""
         media_root = tmp_path / "media"

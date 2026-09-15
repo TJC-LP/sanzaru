@@ -54,6 +54,17 @@ def get_default_storage() -> StorageBackend:
     return _default_storage()
 
 
+def configured_backend_type() -> str:
+    """The `STORAGE_BACKEND` selection, normalized — the one place it is read.
+
+    Cheap and side-effect free, unlike `get_default_storage()`, which builds the
+    backend (and for Databricks, an httpx client) on first call. Callers that
+    only need to know *which* backend is configured — the CLI's bare-name check
+    skips its media-library lookup on a remote one — ask here.
+    """
+    return os.getenv("STORAGE_BACKEND", "local").strip().lower()
+
+
 @lru_cache(maxsize=1)
 def _default_storage() -> StorageBackend:
     """Build the env-configured backend (cached singleton).
@@ -70,7 +81,7 @@ def _default_storage() -> StorageBackend:
             ``DATABRICKS_CLIENT_SECRET``, and ``DATABRICKS_VOLUME_PATH``
             (or ``SANZARU_MEDIA_PATH``).
     """
-    backend_type = os.getenv("STORAGE_BACKEND", "local").lower()
+    backend_type = configured_backend_type()
 
     if backend_type == "local":
         return LocalStorageBackend()

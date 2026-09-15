@@ -219,6 +219,23 @@ def is_path_configured(path_type: Literal["video", "reference", "audio"]) -> boo
     return _resolve_media_path(path_type)[0] is not None
 
 
+def peek_media_path(path_type: Literal["video", "reference", "audio"]) -> pathlib.Path | None:
+    """The configured media directory for path_type, without validating or creating it.
+
+    `get_path()` is the real accessor and has side effects a read-only lookup
+    must not have: under `SANZARU_MEDIA_PATH` it mkdirs the subdirectory. The
+    CLI's bare-name ambiguity check only wants to know whether a same-named file
+    *exists* in the library, so it asks here. None when nothing is configured.
+    """
+    path_str = _resolve_media_path(path_type)[0]
+    if path_str is None:
+        return None
+    try:
+        return pathlib.Path(path_str.strip()).resolve()
+    except (ValueError, OSError):
+        return None
+
+
 @lru_cache(maxsize=3)
 def get_path(path_type: Literal["video", "reference", "audio"]) -> pathlib.Path:
     """Get and validate a configured path from environment.

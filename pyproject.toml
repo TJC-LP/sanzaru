@@ -60,6 +60,10 @@ dependencies = [
   "pydantic>=2.0.0",
   "pydantic-settings>=2.11.0",
   "async-lru>=2.1.0",
+  # Runtime, not dev: `sanzaru` autoloads ./.env through sanzaru.dotenv_loader,
+  # and README promises that for every install, not only `uv sync`. It used to
+  # arrive transitively via pydantic-settings — a coincidence, not a contract.
+  "python-dotenv>=1.0.0",
 ]
 
 [project.urls]
@@ -100,7 +104,6 @@ dev = [
   "pre-commit>=3.6.0",
   "mypy>=1.18.0",
   "types-aiofiles",
-  "python-dotenv",
 ]
 
 [project.scripts]
