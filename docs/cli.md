@@ -318,7 +318,8 @@ behind. That is also where you learn that the *recording* will be refused: a cei
 whose spend cannot be counted is not enforced silently, it exits **2** before anything is billed
 (before the planner call, when only a premise was given). Set
 `SANZARU_REALTIME_PRICE_<MODEL>` (`text_in,cached_text_in,audio_in,cached_audio_in,audio_out,text_out`
-per 1M tokens) or record without a ceiling. If an unpriced model slips past that check and is
+per 1M tokens, plus an optional seventh `per_minute` in USD per session-minute) or record without
+a ceiling. If an unpriced model slips past that check and is
 charged mid-run anyway, the run stops with exit 6 and the envelope names `unpriced_model` and
 `price_env` — its `resume` command carries no `--max-cost`, because raising the cap cannot help.
 
@@ -388,6 +389,13 @@ Options: `-p/--premise`, `--acts`, `-m/--target-minutes`, `--title`, `--style`, 
 `--model`, `--planner-model`, `--turn-seconds`, `--turn-tokens`, `--max-cost`, `--max-sessions`,
 `--resume RUN_ID`, `--run-id RUN_ID`, `--stems`, `--qc/--no-qc`, `--qc-retry`, `--dry-run`,
 `--act-gap`, `--format`, `--bitrate`, `-o`.
+
+`--model gpt-live-1` (experimental) records on the full-duplex Live API instead: billed
+**$0.05 per session-minute per host** with no tokens (the dry run prints session-minutes rather
+than token counts), floor control is advisory (the model is asked to wait for its cue; anything it
+says out of turn is discarded and logged), turn ends are inferred from ~1.2s of silence, and
+`--turn-tokens` has no effect — a turn is cut at 2× `--turn-seconds` of audio. See
+[`docs/audio/simulated-podcasts.md`](audio/simulated-podcasts.md#gpt-live-1-experimental).
 
 Exit codes are the usual contract plus one: **6** means the cost ceiling stopped the run — the
 envelope carries `spent_usd`, `suggested_limit_usd`, `completed_acts`, and a `resume` command.

@@ -288,10 +288,65 @@ override without waiting for a release:
 ```bash
 # text_in,cached_text_in,audio_in,cached_audio_in,audio_out,text_out — USD per 1M tokens
 export SANZARU_REALTIME_PRICE_GPT_REALTIME_2_1=4,0.4,32,0.4,64,24
+# an optional seventh value is USD per session-minute, for duration-billed models
+export SANZARU_REALTIME_PRICE_GPT_LIVE_1=0,0,0,0,0,0,0.05
 ```
 
 A model with no known price is reported in `cost.unpriced_models` rather than silently
 charged at zero.
+
+---
+
+## gpt-live-1 (experimental)
+
+`--model gpt-live-1` records the hosts on OpenAI's **Live API** instead of the Realtime API.
+It is the same producer, the same rundown, the same checkpoints and resume — but the model
+underneath is a different kind of thing, and four consequences follow. The code lives in
+`audio/realtime/live_agent.py`; `producer.run_act` seats a `LiveAgent` or a `RealtimeAgent`
+per host by `is_live_model(host.model or episode.model)`, so one episode can mix them.
+
+**A different API.** The Live connection is opened without a model (`client.live.connect()`)
+and configured with a single `session.start` — model, instructions, voice, PCM format — that is
+immutable afterwards. There is no `session.update`. Steering goes out as
+`session.instructions.append` (500-token limit; notes are trimmed to ~1500 characters), audio
+in as `session.input_audio.append`, and the session is ended with `session.close`, which is
+answered by a `session.closed` carrying the final usage. Voices are the Live built-in set
+(`LIVE_VOICES` in `types.py`), a superset of the realtime voices, so the default assignment
+still works.
+
+**Billed by the minute, per host.** $0.05 per session-minute, metered per second, and no
+tokens at all. Every host's session is open for the whole act — listening bills like talking —
+so a two-host, 6-minute act costs about `2 × 6 × $0.05 = $0.60` plus generation overhead,
+regardless of how many turns it holds. The dry run projects `target_seconds × hosts` as
+`usage.live_seconds` and prints it as session-minutes; that is a floor, since wall clock runs
+longer than the audio it produces. At run time each turn charges the growth in the session's
+cumulative seconds (`session.usage.updated`, taken as the larger of the API's figure and the
+wall clock since `session.started`, so the ceiling errs closed), and closing the session charges
+whatever remains. `RealtimeUsage.live_seconds` is signed into checkpoints like the token
+counters (signature v2).
+
+**Floor control is advisory.** The model is full duplex: it decides when to speak, with no
+`response.create` to ask and no `response.done` to wait for. The session instructions tell it
+to speak only when cued and to stay silent while it hears its co-hosts; `speak()` sends the cue
+(an instruction plus a short `session.commentary.append` nudge, the channel the Live prompting
+guide uses to make the model open). Audio the model produces while it does *not* hold the floor
+is discarded — counted, logged at debug per turn and at info per act as "off-floor" seconds —
+because a full-duplex model may talk over the host it is hearing. Expect some of that. It is
+paid for either way.
+
+**Turn boundaries are inferred, and there is no token cap.** A turn ends when no audio has
+arrived for `end_of_turn_silence_s` (1.2s) after some has, or when `2 × turn_seconds` of audio
+has been collected — reported as `truncated`, and followed by a stop instruction; whatever the
+model says after that is discarded. Below ~1s of silence a breath ends the turn early; the value
+is a constructor knob, not yet a flag. If the model does not start within a bounded wait
+(`max(4s, 3 × silence)`) the turn is recorded empty with a warning rather than failing the act —
+the producer's stall timeout still owns genuine hangs. Turn length is therefore steered by the
+prompt alone; `--turn-tokens` has no effect on a Live host.
+
+Unverified against a live key at the time of writing: whether `session.usage.seconds` tracks
+wall clock or only audio (the code bills the larger), and whether the server paces a burst of
+`input_audio.append` frames in real time — if it does, a host may start answering a long turn
+before it has "heard" the end of it, which is exactly the off-floor speech that gets discarded.
 
 ---
 
@@ -468,7 +523,8 @@ worth watching past an hour.
 ```
 src/sanzaru/audio/realtime/
 ├── types.py      # rundown/act/turn/usage values, PCM16 helpers
-├── agent.py      # one persona on one connection: configure / speak / hear / steer
+├── agent.py      # one persona on one Realtime connection: configure / speak / hear / steer
+├── live_agent.py # the same surface on a Live (gpt-live) connection: full duplex, per-minute billing
 ├── producer.py   # floor control, coverage steering, act budgets, prompts
 ├── rundown.py    # pre-production: premise → parallel-recordable acts
 ├── budget.py     # shared cost ceiling, charged every turn
@@ -480,8 +536,9 @@ src/sanzaru/tools/simulate_podcast.py   # the tool: parallel acts, checkpoints, 
 src/sanzaru/cli/podcast.py              # rundown / simulate / generate
 ```
 
-Every `openai.realtime` import is function-local or `TYPE_CHECKING`-only, so `sanzaru --help`
-never pays for the SDK (guarded by `tests/cli/test_root.py`).
+Every `openai.realtime` and `openai.types.live` import is function-local or
+`TYPE_CHECKING`-only, so `sanzaru --help` never pays for the SDK (guarded by
+`tests/cli/test_root.py`).
 
 Tests run against a fake connection object — the agent only ever touches five methods and
 async iteration — so floor control, budgets, checkpointing and resume are all covered without

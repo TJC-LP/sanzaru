@@ -1061,7 +1061,10 @@ later acts own, filled in automatically), and `handoff` (where to leave off).
   "acts": number,                  // Act count when planning from a premise (default 4)
   "target_minutes": number,        // Episode length (default 12)
 
-  "model": string,                 // Realtime model (default "gpt-realtime-2.1")
+  "model": string,                 // Realtime model (default "gpt-realtime-2.1"). "gpt-live-1" is
+                                   // EXPERIMENTAL: full-duplex Live API billed $0.05 per
+                                   // session-minute PER HOST (no tokens); floor control is
+                                   // advisory and turn ends are inferred from silence.
   "planner_model": string,         // Text model for pre-production (default "gpt-5.5")
   "turn_seconds": number,          // Target upper bound per turn (default 15)
   "turn_tokens": number,           // Hard per-turn output cap; 0 = derive from turn_seconds

@@ -102,6 +102,7 @@ src/sanzaru/
 │   ├── realtime/       # Simulated podcasts: agents that actually converse
 │   │   ├── types.py    # HostSpec/ActBrief/Rundown/Turn/RealtimeUsage + PCM16 helpers
 │   │   ├── agent.py    # one persona on one connection: configure/speak/hear/steer
+│   │   ├── live_agent.py # same surface on the full-duplex Live API (gpt-live-1, per-minute billing)
 │   │   ├── producer.py # floor control, coverage steering, act budgets, prompts
 │   │   ├── rundown.py  # pre-production: premise → parallel-recordable acts
 │   │   ├── budget.py   # shared cost ceiling, charged every turn
@@ -327,6 +328,18 @@ Non-obvious things that are easy to break:
   paying to re-record: `_refuse_a_resume_that_cannot_finish` projects the remaining acts and
   stops first, and the CLI's ceiling envelope prints a resume command with a raised
   `--max-cost` (`CostBudget.suggested_limit_usd`).
+- **`gpt-live-1` is a different API wearing the same agent surface.** `is_live_model()` (prefix
+  `gpt-live`) routes a host to `live_agent.LiveAgent` — `client.live.connect()` with no model on
+  the URL, one immutable `session.start`, steering via `session.instructions.append`. The model
+  is full duplex with no `response.create`/`response.done`, so floor control is *advisory*
+  (instructions say wait for the cue; off-floor audio is discarded and counted) and a turn ends
+  on `end_of_turn_silence_s` of no audio or at `2 × turn_seconds` (`truncated`). It bills
+  **$0.05 per session-minute per host**, no tokens: `RealtimeUsage.live_seconds` carries the
+  per-turn delta of the session's *cumulative* `session.usage.updated` (never sum those), the
+  agent's `finish()` charges the tail after the last turn, `ModelPrices.per_minute` prices it,
+  and `project_usage(model=...)` projects `target_seconds × hosts`. `live_seconds` is in
+  `_SIGNED_USAGE_FIELDS`, which is why `SIGNATURE_VERSION` is 2. The `SANZARU_REALTIME_PRICE_*`
+  override accepts an optional 7th value (`per_minute`). Not yet verified against a live key.
 - **Every turn runs under `anyio.fail_after`.** Nothing in the Realtime protocol bounds a turn, and
   a stalled session would hold a `CapacityLimiter` slot forever inside a blocking tool. The bound
   is 6x `turn_seconds` (min 60s), overridable via `SANZARU_REALTIME_TURN_TIMEOUT` /
@@ -647,9 +660,11 @@ SANZARU_REALTIME_MAX_SESSIONS=6       # concurrent realtime sessions across all 
 SANZARU_REALTIME_TURN_TIMEOUT=120     # per-turn stall bound; default 6x turn_seconds, min 60s
 SANZARU_REALTIME_ACT_BUDGET=3000      # per-act wall clock; default 3000s, under the 60-min close
 # Override stale list pricing: text_in,cached_text_in,audio_in,cached_audio_in,audio_out,text_out
+# (USD per 1M tokens), optionally followed by a 7th per_minute value (USD per session-minute).
 # Also the way to make an unlisted model usable *with* max_cost_usd: a ceiling
 # over a model nothing can price is refused, not silently un-enforced.
 SANZARU_REALTIME_PRICE_GPT_REALTIME_2_1=4,0.4,32,0.4,64,24
+SANZARU_REALTIME_PRICE_GPT_LIVE_1=0,0,0,0,0,0,0.05
 
 # HTTP transport security (ignored on stdio). None of these load from `.env` —
 # the loader is an allowlist and a planted file must not weaken transport auth;

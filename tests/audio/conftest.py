@@ -287,6 +287,155 @@ class FakeRealtimeConnection:
             yield self._pending.pop(0)
 
 
+class FakeLiveConnection:
+    """Stands in for AsyncLiveConnection.
+
+    The agent only touches `send()` and async iteration. Server events are
+    scripted as reactions to what the agent sends: `session.start` is answered
+    with `session.started` (or an `error`), the turn cue with one turn's worth
+    of audio/transcript deltas and a cumulative usage update, `session.close`
+    with `session.closed`. Iteration blocks on a memory stream rather than
+    ending when the script runs out, because the real socket does too.
+    """
+
+    def __init__(
+        self,
+        *,
+        seconds: float | Sequence[float] = 1.0,
+        transcripts: list[str] | None = None,
+        usage_seconds: Sequence[float] = (),
+        final_usage_seconds: float | None = None,
+        marker: bytes = b"\x01\x02",
+        delta_seconds: float = 0.5,
+        start_error: str | None = None,
+        pre_cue_seconds: float = 0.0,
+        silent: bool = False,
+        close_mid_turn: bool = False,
+        end_stream_mid_turn: bool = False,
+    ) -> None:
+        import anyio
+
+        self.sent: list[dict[str, object]] = []
+        self.seconds = seconds
+        self.transcripts = list(transcripts or [])
+        self.usage_seconds = list(usage_seconds)
+        self.final_usage_seconds = final_usage_seconds
+        self.marker = marker
+        self.delta_seconds = delta_seconds
+        self.start_error = start_error
+        # Audio the model produces right after starting, before any cue: what a
+        # full-duplex model talking out of turn looks like.
+        self.pre_cue_seconds = pre_cue_seconds
+        self.silent = silent
+        self.close_mid_turn = close_mid_turn
+        self.end_stream_mid_turn = end_stream_mid_turn
+        self.turn = 0
+        self.closed = False
+        send_stream, receive_stream = anyio.create_memory_object_stream[FakeEvent](max_buffer_size=1_000_000)
+        self._events = send_stream
+        self._incoming = receive_stream
+
+    # ---- what the agent sent, by type ----
+
+    def sent_of(self, event_type: str) -> list[dict[str, object]]:
+        return [event for event in self.sent if event.get("type") == event_type]
+
+    @property
+    def heard_bytes(self) -> int:
+        import base64
+
+        return sum(len(base64.b64decode(str(e["audio"]))) for e in self.sent_of("session.input_audio.append"))
+
+    # ---- the connection surface ----
+
+    async def send(self, event: dict[str, object]) -> None:
+        if self.closed:
+            raise RuntimeError("send on a closed fake live connection")
+        self.sent.append(event)
+        event_type = event.get("type")
+        if event_type == "session.start":
+            if self.start_error is not None:
+                self._emit(FakeEvent("error", error=FakeEvent("err", code="bad", message=self.start_error)))
+                return
+            self._emit(FakeEvent("session.started", session=FakeEvent("session", id="sess_1")))
+            if self.pre_cue_seconds:
+                self._emit_audio(self.pre_cue_seconds)
+        elif event_type == "session.commentary.append":
+            from sanzaru.audio.realtime.live_agent import TURN_NUDGE
+
+            # The nudge is the last frame of a cue, so answering it is the
+            # earliest a real server could start the turn.
+            if event.get("content") == TURN_NUDGE:
+                self._script_turn()
+        elif event_type == "session.close":
+            usage = self.final_usage_seconds
+            if usage is None:
+                usage = self.usage_seconds[-1] if self.usage_seconds else 0.0
+            self._emit(FakeEvent("session.closed", reason="close_requested", usage=FakeEvent("usage", seconds=usage)))
+            self._end_stream()
+
+    async def close(self) -> None:
+        self._end_stream()
+
+    def emit_error(self, message: str) -> None:
+        """A server-side error arriving between turns."""
+        self._emit(FakeEvent("error", error=FakeEvent("err", code="server_error", message=message)))
+
+    async def __aiter__(self):  # type: ignore[no-untyped-def]
+        import anyio
+
+        try:
+            async for event in self._incoming:
+                yield event
+        except anyio.ClosedResourceError:
+            return
+
+    # ---- scripting ----
+
+    def _emit(self, event: FakeEvent) -> None:
+        if not self.closed:
+            self._events.send_nowait(event)
+
+    def _end_stream(self) -> None:
+        if not self.closed:
+            self.closed = True
+            self._events.close()
+
+    def _emit_audio(self, seconds: float) -> None:
+        import base64
+
+        remaining = seconds
+        while remaining > 1e-9:
+            chunk = min(self.delta_seconds, remaining)
+            frames = int(chunk * 24000)
+            pcm = (self.marker * frames)[: frames * 2]
+            self._emit(FakeEvent("session.output_audio.delta", delta=base64.b64encode(pcm).decode()))
+            remaining -= chunk
+
+    def _script_turn(self) -> None:
+        index = self.turn
+        self.turn += 1
+        if self.silent:
+            return
+        if isinstance(self.seconds, (int, float)):
+            turn_seconds = float(self.seconds)
+        else:
+            durations = list(self.seconds) or [1.0]
+            turn_seconds = float(durations[min(index, len(durations) - 1)])
+        if self.close_mid_turn or self.end_stream_mid_turn:
+            self._emit_audio(min(self.delta_seconds, turn_seconds))
+            if self.close_mid_turn:
+                self._emit(FakeEvent("session.closed", reason="expired", usage=FakeEvent("usage", seconds=0.0)))
+            self._end_stream()
+            return
+        self._emit_audio(turn_seconds)
+        text = self.transcripts[index] if index < len(self.transcripts) else f"turn {index}"
+        for word in text.split(" "):
+            self._emit(FakeEvent("session.output_transcript.delta", delta=word + " ", start_ms=0, end_ms=0))
+        if index < len(self.usage_seconds):
+            self._emit(FakeEvent("session.usage.updated", usage=FakeEvent("usage", seconds=self.usage_seconds[index])))
+
+
 class _FakeRealtime:
     """Namespace of realtime test doubles (see _FakeElevenLabs for why)."""
 
@@ -301,6 +450,19 @@ def fake_realtime():
     return _FakeRealtime
 
 
+class _FakeLive:
+    """Namespace of Live API test doubles."""
+
+    Connection = FakeLiveConnection
+    Event = FakeEvent
+
+
+@pytest.fixture
+def fake_live():
+    """Live API test doubles: `.Connection`, `.Event`."""
+    return _FakeLive
+
+
 @pytest.fixture
 def connect_factory():
     """Build a `connect` factory over a list of prepared connections.
@@ -310,8 +472,8 @@ def connect_factory():
     """
     import contextlib
 
-    def build(*connections: FakeRealtimeConnection):
-        handed: list[FakeRealtimeConnection] = []
+    def build(*connections: FakeRealtimeConnection | FakeLiveConnection):
+        handed: list[FakeRealtimeConnection | FakeLiveConnection] = []
 
         @contextlib.asynccontextmanager
         async def factory(model: str):
