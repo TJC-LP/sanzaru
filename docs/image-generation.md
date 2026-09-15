@@ -19,7 +19,7 @@ Generate high-quality images for use with Sora video generation or standalone us
 
 **Choose Responses API when:**
 - Building iterative refinement chains with `previous_response_id`
-- Working with GPT-5.2's conversational image generation
+- Working with a mainline model's conversational image generation
 - You want to leverage the `action` field to force generate vs. edit
 
 ---
@@ -124,7 +124,7 @@ video = create_video(
 
 ---
 
-## Responses API with GPT-5.2
+## Responses API with a mainline model
 
 Use the Responses API when you need iterative refinement with `previous_response_id`. This creates a conversational workflow where each image builds on the previous.
 
@@ -153,9 +153,9 @@ video = create_video(
 
 ## Models
 
-### GPT-5.2 (Default)
+### gpt-6-astra (Default)
 ```python
-create_image(prompt="...", model="gpt-5.2")  # Default
+create_image(prompt="...", model="gpt-6-astra")  # Default
 ```
 **Best for:**
 - Iterative refinement workflows
@@ -167,10 +167,10 @@ create_image(prompt="...", model="gpt-5.2")  # Default
 - Excellent prompt following
 - Supports `previous_response_id` chains
 
-### GPT-5.1 / GPT-5 / GPT-4.1
+### gpt-5.6-sol / gpt-5.6-terra / gpt-5.6-luna
 ```python
-create_image(prompt="...", model="gpt-5.1")
-create_image(prompt="...", model="gpt-5")
+create_image(prompt="...", model="gpt-5.6-terra")  # balanced cost
+create_image(prompt="...", model="gpt-5.6-luna")   # cheapest
 create_image(prompt="...", model="gpt-4.1")
 ```
 **Best for:**
@@ -217,7 +217,7 @@ download_image(resp3.id, filename="cityscape_final.png")
 ```python
 create_image(
     prompt="your description here",  # Required
-    model="gpt-5.2",                  # Optional: "gpt-5.2" (default), "gpt-5.1", "gpt-5", "gpt-4.1"
+    model="gpt-6-astra",              # Optional: gpt-6-astra (default), gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna
     previous_response_id="resp_123"  # Optional: for refinement
 )
 ```
@@ -241,7 +241,7 @@ config = ImageGeneration(
 
 resp = create_image(
     prompt="logo for tech startup",
-    model="gpt-5",                    # LLM model
+    model="gpt-5.6-terra",            # mainline model driving the tool
     tool_config=config
 )
 ```
@@ -317,7 +317,7 @@ resp = create_image(
 print("Generating reference image...")
 resp = create_image(
     prompt="A lone astronaut standing on a red desert planet, cinematic lighting",
-    model="gpt-5"
+    model="gpt-5.6-terra"
 )
 
 # Step 2: Wait for completion
@@ -392,7 +392,7 @@ download_image(resp4.id, filename="logo_final.png")
 # Generate base product image
 resp = create_image(
     prompt="luxury perfume bottle on marble surface, studio lighting",
-    model="gpt-5"
+    model="gpt-5.6-terra"
 )
 get_image_status(resp.id)  # wait
 download_image(resp.id, filename="perfume_base.png")

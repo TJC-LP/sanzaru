@@ -45,6 +45,9 @@ logger = logging.getLogger("sanzaru")
 DEFAULT_IMAGE_MODEL: ImageModel = "gpt-image-2.5-flare"
 DEFAULT_IMAGE_EDIT_MODEL: ImageModel = "gpt-image-2.5-sunburst"
 
+# The mainline model behind create_image lives in mainline_models.py (import-
+# light, because the CLI lists the choices at startup).
+
 
 # ---------- OpenAI client (stateless) ----------
 _client_override: AsyncOpenAI | None = None

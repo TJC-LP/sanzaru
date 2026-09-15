@@ -240,7 +240,10 @@ Parameters:
 - prompt: Text description (required)
   * Without input_images: Describe what to generate
   * With input_images: Describe what changes to make
-- model: Mainline model - "gpt-5.2" (default), "gpt-5.1", "gpt-5", etc.
+- model: Mainline model that drives the image tool (reads the prompt, calls the tool,
+  revises the prompt). One of "gpt-6-astra" (default, flagship), "gpt-5.6-sol",
+  "gpt-5.6-terra" (balanced cost), "gpt-5.6-luna" (cheapest). Its tokens bill on top
+  of the image, but an image turn is a few hundred tokens, so the difference is cents.
 - tool_config: Optional ImageGeneration configuration object (optional)
   * Image model defaults to gpt-image-2.5-flare when "model" is omitted
   * Supports all fields: model, size, quality, moderation, input_fidelity, action, etc.
@@ -1164,6 +1167,37 @@ to fill its duration. Read stderr — the warnings are the ones that cost you a 
 
 
 # ==================== MEDIA VIEWER TOOL DESCRIPTIONS ====================
+
+WAIT_FOR = """Wait for long-running jobs to finish — one call instead of a polling loop.
+
+Give it the ids that create_video / remix_video (video_*) and create_image (resp_*)
+returned, in any mix, and it blocks server-side until every job reaches a terminal
+state or the deadline passes, reporting progress to the client on every poll.
+Prefer this over calling get_video_status / get_image_status repeatedly.
+
+Parameters:
+- ids: 1-20 job ids (video_* or resp_*), waited on concurrently
+- timeout: seconds to wait, default 240, max 1800. The deadline RETURNS rather than
+  fails: jobs still running come back with timed_out=true and their last status;
+  call wait_for again with the same ids to keep waiting
+- download: when true, each job that completes within the deadline is also saved to
+  the media directory in this same call (video: mp4; image: png), so the usual
+  create -> wait -> download collapses into create -> wait_for(download=true)
+
+Returns WaitResult:
+- jobs: one entry per id, in input order — id, kind ("video"|"image"), status,
+  done (terminal or errored), timed_out, progress (0-100, video only), error
+  (a non-retryable API error such as an unknown id — reported per job, never
+  failing the batch), download (filename etc. when downloaded)
+- all_done: every job is terminal
+- timed_out: at least one job is still running (wait again)
+- timeout_s: the deadline that applied
+
+Typical flow:
+  a = create_video("a cat stretches")
+  b = create_image("a lighthouse at dusk")
+  wait_for([a.id, b.id], download=True)
+  # -> both files on disk, or a timed_out flag telling you to call again"""
 
 VIEW_MEDIA = """Open a media file in the interactive media viewer.
 

@@ -209,6 +209,7 @@ uv run sanzaru --transport http --port 8000
 | Category | Tools | Description |
 |----------|-------|-------------|
 | **Video** | `create_video`, `get_video_status`, `download_video`, `list_videos`, `list_local_videos`, `delete_video`, `remix_video` | Generate and manage Sora videos with optional reference images |
+| **Jobs** | `wait_for` | Block server-side on any mix of `video_*`/`resp_*` ids until they finish (progress on every poll, optional download); replaces model-driven polling |
 | **Image** | `generate_image`, `edit_image`, `create_image`, `get_image_status`, `download_image` | Generate with gpt-image-2.5 (default, sync) or GPT-5 (polling) |
 | **Reference** | `list_reference_images`, `prepare_reference_image` | Manage and resize images for Sora compatibility |
 | **Audio** | `transcribe_audio`, `chat_with_audio`, `create_audio`, `convert_audio`, `compress_audio`, `list_audio_files`, `get_latest_audio`, `transcribe_with_enhancement` | Transcription, analysis, TTS (OpenAI or ElevenLabs), and file management |

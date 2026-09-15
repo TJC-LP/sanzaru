@@ -119,6 +119,7 @@ src/sanzaru/
 │   ├── audio.py        # 9 audio tools (list, transcribe, TTS, chat)
 │   ├── podcast.py      # 1 podcast generation tool (scripted TTS)
 │   ├── simulate_podcast.py # 1 simulated podcast tool (realtime agents, parallel acts)
+│   ├── wait.py         # 1 job tool: wait_for (server-side wait on video_*/resp_* ids, progress per poll)
 │   └── media_viewer.py # 2 media viewer tools (MCP App)
 └── app/                # Frontend assets (built, committed)
     └── media-viewer/   # React MCP App for media playback
@@ -394,6 +395,15 @@ Paths are validated lazily via the `get_path()` function when tools are called:
 Resolves from `SANZARU_MEDIA_PATH/{subdir}` (with auto-creation) or individual env vars. Paths are cached with `@lru_cache` for performance.
 
 ### Two API Integration Patterns
+
+**0. Waiting on jobs (`wait_for`)**
+- One call over any mix of `video_*` and `resp_*` ids, waited concurrently via `polling.py`
+- Reports progress to the client on every poll (that resets clients' idle timers — Claude Code
+  aborts a silent HTTP tool call at 5 min and backgrounds calls past 2 min)
+- The deadline *returns* (`timed_out=true` per job, last-seen status) instead of raising; call again
+  to resume. Default 240 s (under the idle window), max 1800 s. `download=true` saves completed jobs
+- MCP Tasks are not used: mcp 2.x ships only the wire types and no Claude client implements the
+  extension (see `docs/async-task-tracking.md`)
 
 **1. Sora Video API (client.videos.*)**
 - Async jobs with polling: `create()` → `retrieve()` → `download_content()`

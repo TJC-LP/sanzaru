@@ -39,7 +39,7 @@ def test_image_create_no_wait_builds_sparse_tool_config(mocker):
     parsed = json.loads(result.stdout)
     assert parsed["result"]["id"] == "resp_test1"
     assert create.call_args.kwargs["tool_config"] == {"type": "image_generation"}
-    assert create.call_args.kwargs["model"] == "gpt-5.2"
+    assert create.call_args.kwargs["model"] == "gpt-6-astra"  # DEFAULT_MAINLINE_MODEL
     assert create.call_args.kwargs["previous_response_id"] is None
 
 

@@ -25,6 +25,7 @@ from PIL import Image
 
 from ..config import DEFAULT_IMAGE_MODEL, get_client, logger
 from ..image_models import check_background, check_quality
+from ..mainline_models import DEFAULT_MAINLINE_MODEL, MainlineModel
 from ..storage import get_storage
 from ..types import ImageDownloadResult, ImageResponse
 from ..utils import generate_filename, validate_resource_id
@@ -90,7 +91,7 @@ async def _upload_mask_file(data: bytes, filename: str) -> str:
 
 async def create_image(
     prompt: str,
-    model: str = "gpt-5.2",
+    model: MainlineModel = DEFAULT_MAINLINE_MODEL,
     tool_config: ImageGeneration | None = None,
     previous_response_id: str | None = None,
     input_images: list[str] | None = None,

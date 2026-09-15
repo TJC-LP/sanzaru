@@ -154,7 +154,7 @@ Two APIs are available for image generation:
 | `create_image` | Responses API | Iterative refinement with `previous_response_id` |
 
 **Images API** (gpt-image-2.5 default): Synchronous, returns immediately, no polling required, up to 4K output
-**Responses API** (GPT-5.2): Async polling pattern, supports iterative refinement chains + `action` field, gpt-image-2.5 (or gpt-image-2) via tool_config
+**Responses API** (gpt-6-astra by default): Async polling pattern, supports iterative refinement chains + `action` field, gpt-image-2.5 (or gpt-image-2) via tool_config
 
 ---
 
@@ -278,7 +278,7 @@ Generate images using OpenAI's Responses API. Use for iterative refinement with 
 
 **Parameters:**
 - `prompt` (string, required): Text description of image to generate
-- `model` (string, optional): Model to use - `"gpt-5.2"` (default, OpenAI's latest), `"gpt-5.1"`, `"gpt-5"`, `"gpt-4.1"`
+- `model` (string, optional): Mainline model that drives the image tool - `"gpt-6-astra"` (default, flagship), `"gpt-5.6-sol"`, `"gpt-5.6-terra"` (balanced cost), `"gpt-5.6-luna"` (cheapest). Its tokens bill on top of the image; an image turn is a few hundred tokens.
 - `tool_config` (object, optional): Advanced configuration (ImageGeneration type)
 - `previous_response_id` (string, optional): Previous response ID for iterative refinement
 - `input_images` (array, optional): Array of filenames from `IMAGE_PATH` for image editing
