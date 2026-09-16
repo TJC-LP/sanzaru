@@ -349,6 +349,20 @@ async def test_list_files_parses_json(backend, mocker, mock_token_response):
 
 
 @pytest.mark.unit
+async def test_list_files_of_a_directory_that_does_not_exist_yet_is_empty(backend, mocker, mock_token_response):
+    """A user who has written nothing has no directory: that is an empty list, not an error.
+
+    The Files API creates parents on the first PUT, so every per-user prefix
+    starts out absent. Raising here made every list_* tool fail for a new
+    tenant until their first upload (seen live after the 0.11 slug change).
+    """
+    mocker.patch.object(backend._client, "post", return_value=mock_token_response)
+    mocker.patch.object(backend._client, "get", return_value=_resp(404, text='{"error_code":"NOT_FOUND"}'))
+
+    assert await backend.list_files("reference") == []
+
+
+@pytest.mark.unit
 async def test_list_files_filters_extensions(backend, mocker, mock_token_response):
     mocker.patch.object(backend._client, "post", return_value=mock_token_response)
     dir_response = _resp(

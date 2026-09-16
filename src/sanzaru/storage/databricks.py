@@ -370,6 +370,15 @@ class DatabricksVolumesBackend:
     ) -> list[FileInfo]:
         headers = await self._headers()
         resp = await self._client.get(self._dir_url(path_type), headers=headers)
+        if resp.status_code == 404:
+            # The Files API creates parent directories on the first PUT, so a
+            # user who has not written anything yet has no directory at all —
+            # for them "nothing here" is the truthful answer, not a failure.
+            # A list of an empty directory is a 200 with no contents; only the
+            # directory's own absence is a 404. (Observed on a fresh per-user
+            # prefix right after the 0.11 slug change: every list_* tool failed
+            # with "Storage list failed (HTTP 404)" until the first upload.)
+            return []
         _check_response(resp, "list")
 
         results: list[FileInfo] = []
