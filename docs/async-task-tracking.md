@@ -7,8 +7,14 @@ question doesn't have to be re-investigated from scratch next time.
 
 - Sanzaru already implements a "call-now, fetch-later" pattern for long jobs
   (`create_*` → `get_*_status` → `download_*`). It works on **every** MCP client today.
-- We are **not** adopting MCP's native Tasks protocol yet — it's experimental, was removed
-  from the spec, and the experimental API is slated for removal in the `mcp` 2.0 SDK.
+- **`wait_for`** moves the poll loop server-side: one call over a batch of ids, a progress
+  notification on every poll (what keeps Claude Code's idle timer alive), a deadline that returns
+  per-job `timed_out` flags instead of raising, and `download=true` to chain the download.
+- We are **not** adopting MCP Tasks. As of 2026-09-15 it is the extension
+  `io.modelcontextprotocol/tasks` (stable schema, ext-tasks repo); mcp 2.2 ships only the wire
+  types with no server machinery, and the official client matrix lists no client — Claude surfaces
+  included — that supports it. Claude Code handles long calls itself: idle abort after 5 min without
+  progress, auto-backgrounding past 2 min.
 - Direct image generation (`generate_image` / `edit_image`) is **synchronous by design**
   because the OpenAI Images API has no background/job mode. The non-blocking path already
   exists as `create_image` (Responses API, `background=True`).

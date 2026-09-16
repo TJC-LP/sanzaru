@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Literal, cast
 import anyio
 import click
 
+from ..mainline_models import DEFAULT_MAINLINE_MODEL, MAINLINE_MODELS, MainlineModel
 from ._io import (
     OutputPlan,
     PathSession,
@@ -186,7 +187,13 @@ async def wait_one_image(
 
 @image.command("create")
 @click.argument("prompt")
-@click.option("--model", default="gpt-5.2", show_default=True, help="Mainline model driving the image tool.")
+@click.option(
+    "--model",
+    type=click.Choice(list(MAINLINE_MODELS)),
+    default=DEFAULT_MAINLINE_MODEL,
+    show_default=True,
+    help="Mainline model driving the image tool (the image model is --image-model).",
+)
 @click.option("--image-model", default=None, help="Image model in the tool config (default gpt-image-2.5-flare).")
 @click.option("--size", default=None, help="e.g. 1536x1024 (gpt-image-2.5/2 allow most 16-multiples).")
 @click.option("--quality", type=click.Choice(_QUALITIES), default=None)
@@ -272,7 +279,7 @@ async def image_create(
     started_at = time.monotonic()
     job = await image_tools.create_image(
         prompt=prompt_text,
-        model=model,
+        model=cast("MainlineModel", model),
         tool_config=cast("ImageGeneration", config),
         previous_response_id=previous_id,
         input_images=ref_names or None,

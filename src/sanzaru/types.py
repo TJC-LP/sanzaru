@@ -89,3 +89,34 @@ class ImageGenerateResult(BaseModel):
     format: str
     model: str
     usage: ImageUsage | None = None
+
+
+class WaitJob(TypedDict):
+    """One job's outcome from `wait_for`."""
+
+    id: str
+    kind: Literal["video", "image"]
+    status: str
+    """Last-seen status: terminal when `done`, the in-flight one when `timed_out`,
+    "unknown" if the job was never successfully fetched."""
+    done: bool
+    """Reached a terminal state (completed, failed, cancelled, incomplete) or
+    errored; either way there is nothing left to wait for."""
+    timed_out: bool
+    """Still running at the deadline. The job continues server-side; waiting
+    again on the same id resumes."""
+    progress: int | None
+    """0-100 for video jobs; None for images (the Responses API reports none)."""
+    error: str | None
+    """A non-retryable API error for this id (e.g. an unknown id), when any."""
+    download: DownloadResult | ImageDownloadResult | None
+    """Set when `download=True` and the job completed within the deadline."""
+
+
+class WaitResult(TypedDict):
+    """Result of `wait_for`: every job, in input order."""
+
+    jobs: list[WaitJob]
+    all_done: bool
+    timed_out: bool
+    timeout_s: float

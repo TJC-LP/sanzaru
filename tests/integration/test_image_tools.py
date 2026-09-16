@@ -25,7 +25,7 @@ async def test_image_create(mocker, tmp_reference_path):
 
     result = await create_image(
         prompt="test image",
-        model="gpt-5",
+        model="gpt-5.6-terra",
         tool_config={"type": "image_generation", "size": "1024x1024", "quality": "high"},
     )
 
@@ -35,7 +35,7 @@ async def test_image_create(mocker, tmp_reference_path):
 
     # Verify tool config built correctly
     call_kwargs = mock_get_client.return_value.responses.create.call_args.kwargs
-    assert call_kwargs["model"] == "gpt-5"
+    assert call_kwargs["model"] == "gpt-5.6-terra"
     assert call_kwargs["input"] == "test image"
     assert call_kwargs["background"] is True
     assert "image_generation" in str(call_kwargs["tools"])

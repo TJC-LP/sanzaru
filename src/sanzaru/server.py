@@ -19,7 +19,7 @@ from collections.abc import Awaitable, Callable
 from typing import Literal, ParamSpec, TypeVar
 
 from mcp.server.apps import Apps, ResourceCsp
-from mcp.server.mcpserver import MCPServer
+from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.server.transport_security import TransportSecurityMiddleware, TransportSecuritySettings
 from mcp.shared.exceptions import MCPError
@@ -37,6 +37,7 @@ from .dotenv_loader import load_local_dotenv
 from .exceptions import ConfigurationError
 from .features import check_audio_available, check_image_available, check_video_available
 from .image_models import ImageQuality
+from .mainline_models import DEFAULT_MAINLINE_MODEL, MainlineModel
 from .storage.factory import get_storage
 from .tools.media_viewer import MEDIA_TYPE_TO_PATH_TYPE
 from .user_context import UserContext, UserContextRequiredError, reset_user_context, set_user_context
@@ -258,7 +259,7 @@ if check_image_available():
     @_llm_facing
     async def create_image(
         prompt: str,
-        model: str = "gpt-5.2",
+        model: MainlineModel = DEFAULT_MAINLINE_MODEL,
         tool_config: ImageGeneration | None = None,
         previous_response_id: str | None = None,
         input_images: list[str] | None = None,
@@ -478,6 +479,31 @@ if check_audio_available():
         return await simulate.simulate_podcast(brief)
 
     logger.info("Audio tools registered (10 tools)")
+
+
+# ==================== JOB WAITING (CONDITIONAL) ====================
+# One blocking call in place of a model-driven poll loop over get_*_status.
+# Registered whenever there is a job-producing tool to wait on.
+if check_video_available() or check_image_available():
+    from .descriptions import WAIT_FOR
+    from .tools import wait as wait_tools
+
+    @mcp.tool(description=WAIT_FOR, annotations=WRITE_OPEN_IDEMPOTENT)
+    @_llm_facing
+    async def wait_for(
+        ids: list[str],
+        ctx: Context,
+        timeout: float = wait_tools.DEFAULT_WAIT_TIMEOUT,
+        download: bool = False,
+    ):
+        # Every poll becomes a progress notification: that is what keeps a
+        # client's idle timer from aborting a wait that legitimately runs long.
+        async def report(settled: int, total: int, message: str) -> None:
+            await ctx.report_progress(settled, total, message)
+
+        return await wait_tools.wait_for(ids, timeout=timeout, download=download, on_progress=report)
+
+    logger.info("Job wait tool registered (1 tool)")
 
 
 # ==================== HTTP TRANSPORT SECURITY ====================
