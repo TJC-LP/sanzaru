@@ -25,6 +25,7 @@ interface MediaDataChunk {
 
 const CHUNK_SIZE = 2 * 1024 * 1024; // 2 MB
 const BASE64_DECODE_SLICE_SIZE = 256 * 1024; // Must stay divisible by 4
+const BASE64_ENCODE_SLICE_SIZE = 192 * 1024; // Must stay divisible by 3
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -56,6 +57,35 @@ async function decodeBase64Blob(data: string): Promise<Blob> {
   }
 
   return new Blob(parts);
+}
+
+async function encodeBlobBase64(blob: Blob): Promise<string> {
+  const bytes = new Uint8Array(await blob.arrayBuffer());
+  const parts: string[] = [];
+
+  // Sliced for the same reason decodeBase64Blob is: a single btoa() over tens of
+  // megabytes blocks the frame, and the host's timers and message handlers stop
+  // getting turns. The slice size must be divisible by 3 — three bytes encode to
+  // exactly four base64 characters with no padding, which is what makes the
+  // per-slice results safe to concatenate.
+  for (let start = 0; start < bytes.length; start += BASE64_ENCODE_SLICE_SIZE) {
+    const slice = bytes.subarray(start, Math.min(start + BASE64_ENCODE_SLICE_SIZE, bytes.length));
+    let binary = "";
+
+    // Built one char at a time rather than String.fromCharCode(...slice):
+    // spreading a slice this size overflows the argument limit.
+    for (let i = 0; i < slice.length; i++) {
+      binary += String.fromCharCode(slice[i]);
+    }
+
+    parts.push(btoa(binary));
+
+    if (start + BASE64_ENCODE_SLICE_SIZE < bytes.length) {
+      await yieldToHost();
+    }
+  }
+
+  return parts.join("");
 }
 
 /** Extract parsed JSON from a CallToolResult — tries structuredContent first, then text content. */
@@ -127,18 +157,29 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
   const [mimeType, setMimeType] = useState<string | null>(input.mime_type ?? null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const blobUrlRef = useRef<string | null>(null);
+  const blobRef = useRef<Blob | null>(null);
+
+  // `ui/download-file` is not in the stable 2026-01-26 Apps spec, so a host may
+  // not implement it. Without the control the file is still playable — it just
+  // cannot be saved from here — so this hides rather than degrades.
+  const canDownload = app.getHostCapabilities()?.downloadFile != null;
 
   const loadMedia = useCallback(async () => {
     setLoading(true);
     setErrorMsg(null);
     setProgress(0);
 
+    setSaveError(null);
+
     // Revoke previous blob URL
     if (blobUrlRef.current) {
       URL.revokeObjectURL(blobUrlRef.current);
       blobUrlRef.current = null;
     }
+    blobRef.current = null;
 
     try {
       const chunks: Blob[] = [];
@@ -188,6 +229,7 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
       const blob = new Blob(chunks, { type: resolvedMime ?? "application/octet-stream" });
       const url = URL.createObjectURL(blob);
       blobUrlRef.current = url;
+      blobRef.current = blob;
       setBlobUrl(url);
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : String(e));
@@ -195,6 +237,48 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
       setLoading(false);
     }
   }, [app, input.filename, input.media_type]);
+
+  const downloadMedia = useCallback(async () => {
+    const blob = blobRef.current;
+    if (!blob) return;
+
+    setSaving(true);
+    setSaveError(null);
+    try {
+      // The bytes are already here — assembled for playback — so saving costs one
+      // encode rather than a second trip to the server. Handing them over as an
+      // embedded resource also means no credential and no URL is involved, which
+      // is what makes this work identically over stdio and HTTP.
+      const base64 = await encodeBlobBase64(blob);
+
+      // Defensive: the server only ever reports a bare basename, and the host
+      // derives the saved filename from the last path segment of this URI.
+      const name = input.filename.split(/[\\/]/).pop() || "download";
+
+      const { isError } = await app.downloadFile({
+        contents: [
+          {
+            type: "resource",
+            resource: {
+              uri: `file:///${name}`,
+              mimeType: mimeType ?? "application/octet-stream",
+              blob: base64,
+            },
+          },
+        ],
+      });
+
+      // A refusal is usually the person cancelling the host's own save dialog,
+      // which is not a failure worth shouting about.
+      if (isError) {
+        setSaveError("Download cancelled");
+      }
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setSaving(false);
+    }
+  }, [app, input.filename, mimeType]);
 
   useEffect(() => {
     loadMedia();
@@ -207,7 +291,15 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
 
   return (
     <div className="media-viewer">
-      <span className="filename">{input.filename}</span>
+      <div className="file-row">
+        <span className="filename">{input.filename}</span>
+        {blobUrl && canDownload && (
+          <button type="button" className="download" onClick={downloadMedia} disabled={saving}>
+            {saving ? "Preparing..." : "Download"}
+          </button>
+        )}
+      </div>
+      {saveError && <span className="status">{saveError}</span>}
 
       {loading && (
         <div className="progress-container">

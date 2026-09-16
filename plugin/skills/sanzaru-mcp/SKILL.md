@@ -34,7 +34,7 @@ which arguments, how to wait. For prompt craft (what to say to Sora or an image 
 | | `list_audio_files` | sync | List and filter audio files (substring or glob `pattern`, not regex) |
 | **Podcast** | `generate_podcast` | sync | Multi-voice episode from a script; `render_mode` `segments` (exact gaps) or `dialogue` (model paces the turns); `verify` checks the audio says the script |
 | | `simulate_podcast` | sync | **No script** — realtime or gpt-live-1 agents converse from a rundown. Highest quality, real money: call with `dry_run: true` first and set `max_cost_usd` |
-| **Viewer** | `view_media` | sync | Opens a video/audio/image inline (MCP App) |
+| **Viewer** | `view_media` | sync | Opens a video/audio/image inline (MCP App), with a Download button where the host supports it |
 
 ## Which image tool
 
@@ -91,6 +91,17 @@ Use `get_*_status` only for a one-off check when you are not going to wait.
   $0.05 per host-minute and runs in **duplex** mode by default (hosts hear each other live). Every
   act is checkpointed; the result carries a `resume_command` if the run stops early.
 
+## Showing the user a file
+
+Call `view_media` after generating anything. It renders a player inline and, on hosts
+that support the MCP Apps `ui/download-file` request, shows a Download button that saves
+the file directly from the viewer.
+
+That button is the download path. Do **not** try to move the bytes yourself — no fetching
+the file into a code sandbox, no asking for a token or a URL to curl. The viewer already
+has the bytes and hands them to the host. If the button is absent the host does not
+support saving, which is not something a tool call can work around.
+
 ## Common Pitfalls
 
 1. **Polling by hand** — `create_video` and `create_image` are async; call `wait_for(ids, download=True)` once instead of looping over `get_*_status`, and don't `download_*` before the job is done
@@ -100,6 +111,7 @@ Use `get_*_status` only for a one-off check when you are not going to wait.
 5. **Transparent output on gpt-image-2** — it raises; the 2.5 defaults support it
 6. **Regex in `list_audio_files`** — `pattern` is substring or glob; regex syntax is refused with an error naming the syntax
 7. **Recording a simulated podcast without a dry run** — it is the most expensive thing sanzaru does
+8. **Fetching media bytes to deliver a file** — `view_media` shows a player and a Download button; the bytes never need to pass through you
 
 ## Deep Reference
 

@@ -811,7 +811,35 @@ view_media(media_type="audio", filename="track.mp3")
   → Host loads ui://sanzaru/media-viewer.html (bundled React app)
   → React app calls _get_media_data via callServerTool (2MB chunks)
   → Assembles chunks → Blob URL → <video> / <audio> / <img>
+  → Download button hands those same bytes to the host via ui/download-file
 ```
+
+### Saving a file
+
+The viewer's Download button is the supported way to get a file out of the
+conversation, and it is a **frontend-only** path: the bytes are already in the
+browser (assembled for playback), so `app.downloadFile()` passes them to the host
+as an inline `EmbeddedResource` and the host performs the save. Nothing new is
+fetched, no URL is involved, and no credential is either — which is why it behaves
+the same over stdio and HTTP.
+
+Two properties that are easy to break:
+
+- **The control is gated on `getHostCapabilities()?.downloadFile` and hides when
+  absent.** `ui/download-file` is *not* in the stable 2026-01-26 Apps spec (it is
+  draft, shipped in the `@modelcontextprotocol/ext-apps` SDK), so a host may not
+  implement it. Hiding is the right degradation: the media still plays, and a
+  button that silently did nothing would be worse than no button.
+- **Base64 encoding is sliced, and the slice size must stay divisible by 3.**
+  Three bytes encode to exactly four base64 characters with no padding, which is
+  what makes the per-slice results safe to `join("")`. The slicing itself exists
+  for the same reason `decodeBase64Blob` slices: one `btoa()` over a 45 MB episode
+  blocks the frame and starves the host's timers and message handlers.
+
+Do **not** route this through `/media`, a presigned URL, or a token handed to the
+model. A deployment behind an authenticating proxy cannot be reached by a
+tool-side fetch, and any Databricks credential wide enough to read one tenant's
+file is wide enough to read every tenant's (isolation there is by path, not ACL).
 
 ### HTTP Route
 
