@@ -80,6 +80,7 @@ src/sanzaru/
 ├── descriptions.py     # LLM-facing tool descriptions
 ├── dotenv_loader.py    # ./.env autoload, minus the variables that redirect credentials
 ├── user_context.py     # Per-request user context (multi-tenant support)
+├── media_resources.py  # sanzaru://{media}/{filename} resource templates + filename completion
 ├── storage/            # Pluggable file I/O
 │   ├── protocol.py     # StorageBackend protocol + FileInfo
 │   ├── factory.py      # get_storage() factory (+ set_storage_backend override used by the CLI)
@@ -903,6 +904,50 @@ deployment the `_get_media_data` chunking path (which the bundled React app alre
 uses) is the only one that works in the viewer, over both stdio and HTTP. The route
 applies the same Host/Origin policy as `/mcp` and serves an allowlisted content type
 or `application/octet-stream`.
+
+### Media as resources (the attach surface)
+
+`sanzaru://image/{filename}`, `sanzaru://video/{filename}` and
+`sanzaru://audio/{filename}` are resource **templates**, registered per available
+media type, so a person can attach something they generated from their client's own
+attachment menu. They are annotated `audience=["user"]`: the model reads media
+through `inspect_image` / `inspect_video_frame`, which downscale for vision, not
+through these.
+
+**Templates rather than one resource per file, for three concrete reasons.**
+`MCPServer.list_resources()` reads a *static* registry, so per-file resources would
+be a snapshot frozen at import time — every later render invisible until restart.
+The high-level server exposes no cursor on resource listing, so the reply is one
+unbounded array on a call clients make at connect time. And a listing on the
+Databricks backend is an HTTP round trip per media type. Discovery instead goes
+through `completion/complete`, which filters server-side and returns at most
+`COMPLETION_LIMIT` (100) names for what has been typed, with `total` / `has_more`
+so narrowing is visibly useful. Nothing enumerates the backend.
+
+Load-bearing details:
+
+- **The listing cache is keyed by `(identity, media)`, never by media alone.** On a
+  shared deployment the backend resolves a different directory per caller, so a
+  cache that dropped the identity would serve one tenant another's filenames. TTL
+  is `LISTING_TTL_SECONDS` (5): long enough to absorb a burst of keystrokes, short
+  enough that a file generated mid-conversation appears without reconnecting.
+- **`stat()` runs before `read()`.** A file over `MAX_RESOURCE_BYTES` (32 MB) is
+  refused from its metadata, so the bytes are never transferred — on Databricks the
+  difference between a HEAD and a full GET of something too big to return. A
+  resource is one base64 blob with no chunking anywhere in the protocol, which is
+  what the ceiling is about; bigger files still have `view_media`, the viewer's
+  download button and `/media`.
+- **`mime_type` is `application/octet-stream`, and leaving it unset is not
+  equivalent.** A template declares one MIME type for every file it can produce
+  (`create_resource` copies `self.mime_type`, and a read may only return `str` or
+  `bytes`), so declaring `image/png` would mislabel every JPEG. Unset is worse
+  still: the SDK defaults to `text/plain`, labelling a PNG as text. The URI carries
+  the real extension, which is what clients fall back to.
+- **`MEDIA_CONTENT_TYPES` is shared with the `/media` route**, so the two surfaces
+  admit exactly the same set from one definition. Two allowlists that drifted would
+  mean a file servable over one and refused over the other.
+- **A failed listing is an empty menu, not an error.** Completion runs while someone
+  is typing; an exception there reads as a broken client rather than "nothing yet".
 
 ### Frontend Development
 

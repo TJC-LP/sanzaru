@@ -25,6 +25,14 @@ from mcp.server.mcpserver.utilities.types import Image
 from mcp.server.transport_security import TransportSecurityMiddleware, TransportSecuritySettings
 from mcp.shared.exceptions import MCPError
 from mcp.types import ToolAnnotations
+from mcp_types import (
+    Annotations,
+    Completion,
+    CompletionArgument,
+    CompletionContext,
+    PromptReference,
+    ResourceTemplateReference,
+)
 from openai.types import VideoModel, VideoSeconds, VideoSize
 from openai.types.responses.tool_param import ImageGeneration
 from starlette.applications import Starlette
@@ -533,6 +541,82 @@ if check_video_available() or check_image_available():
         return await wait_tools.wait_for(ids, timeout=timeout, download=download, on_progress=report)
 
     logger.info("Job wait tool registered (1 tool)")
+
+
+# ==================== MEDIA RESOURCES (CONDITIONAL) ====================
+# Templates rather than one resource per file. The SDK's resource listing reads a
+# static registry with no cursor, so per-file resources would be both a snapshot
+# taken at import time and an unbounded array on every resources/list; discovery
+# goes through completion instead. Full rationale in media_resources.
+_RESOURCE_MEDIA: tuple[str, ...] = tuple(
+    media
+    for media, available in (
+        ("image", check_image_available()),
+        ("video", check_video_available()),
+        ("audio", check_audio_available()),
+    )
+    if available
+)
+
+_RESOURCE_EXAMPLE_EXT = {"image": "png", "video": "mp4", "audio": "mp3"}
+
+
+def _register_media_template(media: str) -> None:
+    """Register `sanzaru://<media>/{filename}`.
+
+    A closure per media type so each template gets its own read callable: a loop
+    variable captured directly would leave every template reading whichever
+    media type the loop happened to finish on.
+    """
+
+    @mcp.resource(
+        media_resources.template_uri(media),
+        name=f"{media}-file",
+        title=f"Generated {media} file",
+        description=(
+            f"A {media} file from this server's media directory, addressable by name — "
+            f"{media_resources.URI_SCHEME}://{media}/my_{media}.{_RESOURCE_EXAMPLE_EXT[media]}. "
+            f"Type part of a filename to complete it."
+        ),
+        # One template covers several formats and the protocol binds the MIME type
+        # to the template, not the file, so the honest answer is "binary" — the
+        # same fallback the /media route uses for an unrecognised extension.
+        # Leaving it unset is NOT equivalent: the SDK defaults to text/plain,
+        # which would label a PNG as text. The URI carries the real extension.
+        mime_type="application/octet-stream",
+        # audience=["user"], not the assistant: this surface exists so a person
+        # can attach their own renders. The model reads media through the
+        # inspect_* tools, which downscale for vision instead of shipping the file.
+        annotations=Annotations(audience=["user"]),
+    )
+    async def read_media_resource(filename: str) -> bytes:
+        return await media_resources.read_media(media, filename)
+
+
+if _RESOURCE_MEDIA:
+    from . import media_resources
+
+    for _media in _RESOURCE_MEDIA:
+        _register_media_template(_media)
+
+    @mcp.completion()
+    async def complete_media_filename(
+        ref: PromptReference | ResourceTemplateReference,
+        argument: CompletionArgument,
+        context: CompletionContext | None,
+    ) -> Completion | None:
+        """Filename completions for the media templates.
+
+        This is what replaces enumerating the backend: the filter runs here and
+        the client receives at most a hundred matches for what has been typed.
+        Returning None leaves any other completion handler's business alone.
+        """
+        if not isinstance(ref, ResourceTemplateReference) or argument.name != "filename":
+            return None
+        media = media_resources.media_for_template_uri(ref.uri)
+        if media is None or media not in _RESOURCE_MEDIA:
+            return None
+        return await media_resources.complete_media_filename_for(media, argument.value)
 
 
 # ==================== HTTP TRANSPORT SECURITY ====================
