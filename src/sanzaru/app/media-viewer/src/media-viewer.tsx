@@ -25,7 +25,11 @@ interface MediaDataChunk {
 
 const CHUNK_SIZE = 2 * 1024 * 1024; // 2 MB
 const BASE64_DECODE_SLICE_SIZE = 256 * 1024; // Must stay divisible by 4
-const BASE64_ENCODE_SLICE_SIZE = 192 * 1024; // Must stay divisible by 3
+
+/** Deliberately generous: a host that opens a native "Save as..." dialog does not
+ *  answer until the person has picked a folder, and the SDK's 60 s default would
+ *  reject — and send notifications/cancelled — while that dialog is still open. */
+const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
 
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
@@ -59,33 +63,25 @@ async function decodeBase64Blob(data: string): Promise<Blob> {
   return new Blob(parts);
 }
 
+/**
+ * Base64-encode a Blob, letting the browser do the work.
+ *
+ * FileReader encodes off the main thread and hands back one string, so unlike a
+ * hand-rolled btoa() loop there is no frame to block, no ArrayBuffer copy and no
+ * array of partial results to hold alongside the finished one — which matters at
+ * the size of a rendered episode. The read is not a fetch, so a strict MCP App
+ * `connect-src` cannot block it the way it can block fetch("data:...").
+ */
 async function encodeBlobBase64(blob: Blob): Promise<string> {
-  const bytes = new Uint8Array(await blob.arrayBuffer());
-  const parts: string[] = [];
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error ?? new Error("Could not read the media for download"));
+    reader.readAsDataURL(blob);
+  });
 
-  // Sliced for the same reason decodeBase64Blob is: a single btoa() over tens of
-  // megabytes blocks the frame, and the host's timers and message handlers stop
-  // getting turns. The slice size must be divisible by 3 — three bytes encode to
-  // exactly four base64 characters with no padding, which is what makes the
-  // per-slice results safe to concatenate.
-  for (let start = 0; start < bytes.length; start += BASE64_ENCODE_SLICE_SIZE) {
-    const slice = bytes.subarray(start, Math.min(start + BASE64_ENCODE_SLICE_SIZE, bytes.length));
-    let binary = "";
-
-    // Built one char at a time rather than String.fromCharCode(...slice):
-    // spreading a slice this size overflows the argument limit.
-    for (let i = 0; i < slice.length; i++) {
-      binary += String.fromCharCode(slice[i]);
-    }
-
-    parts.push(btoa(binary));
-
-    if (start + BASE64_ENCODE_SLICE_SIZE < bytes.length) {
-      await yieldToHost();
-    }
-  }
-
-  return parts.join("");
+  // "data:<mime>;base64,<payload>" — everything up to the first comma is the header.
+  return dataUrl.slice(dataUrl.indexOf(",") + 1);
 }
 
 /** Extract parsed JSON from a CallToolResult — tries structuredContent first, then text content. */
@@ -158,7 +154,7 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saveMessage, setSaveMessage] = useState<{ text: string; kind: "status" | "error" } | null>(null);
   const blobUrlRef = useRef<string | null>(null);
   const blobRef = useRef<Blob | null>(null);
 
@@ -172,7 +168,7 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
     setErrorMsg(null);
     setProgress(0);
 
-    setSaveError(null);
+    setSaveMessage(null);
 
     // Revoke previous blob URL
     if (blobUrlRef.current) {
@@ -243,7 +239,7 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
     if (!blob) return;
 
     setSaving(true);
-    setSaveError(null);
+    setSaveMessage(null);
     try {
       // The bytes are already here — assembled for playback — so saving costs one
       // encode rather than a second trip to the server. Handing them over as an
@@ -255,26 +251,34 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
       // derives the saved filename from the last path segment of this URI.
       const name = input.filename.split(/[\\/]/).pop() || "download";
 
-      const { isError } = await app.downloadFile({
-        contents: [
-          {
-            type: "resource",
-            resource: {
-              uri: `file:///${name}`,
-              mimeType: mimeType ?? "application/octet-stream",
-              blob: base64,
+      const { isError } = await app.downloadFile(
+        {
+          contents: [
+            {
+              type: "resource",
+              resource: {
+                // Encoded because this is a URI, not a path: nothing upstream
+                // restricts which characters a filename may contain, and a raw
+                // "#" or "?" would end the path component early for any host
+                // that parses this rather than splitting it — saving the file
+                // under a truncated name with no extension.
+                uri: `file:///${encodeURIComponent(name)}`,
+                mimeType: mimeType ?? "application/octet-stream",
+                blob: base64,
+              },
             },
-          },
-        ],
-      });
+          ],
+        },
+        { timeout: DOWNLOAD_TIMEOUT_MS },
+      );
 
-      // A refusal is usually the person cancelling the host's own save dialog,
-      // which is not a failure worth shouting about.
+      // Usually the person dismissing the host's own save dialog, but the host
+      // may also have refused outright, so this does not claim to know which.
       if (isError) {
-        setSaveError("Download cancelled");
+        setSaveMessage({ text: "Download cancelled or refused", kind: "status" });
       }
     } catch (e) {
-      setSaveError(e instanceof Error ? e.message : String(e));
+      setSaveMessage({ text: e instanceof Error ? e.message : String(e), kind: "error" });
     } finally {
       setSaving(false);
     }
@@ -299,7 +303,9 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
           </button>
         )}
       </div>
-      {saveError && <span className="status">{saveError}</span>}
+      <span className={`save-message ${saveMessage?.kind ?? "status"}`} aria-live="polite">
+        {saveMessage?.text ?? ""}
+      </span>
 
       {loading && (
         <div className="progress-container">

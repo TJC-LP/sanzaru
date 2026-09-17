@@ -80,6 +80,12 @@ html, body {
   border-color: var(--color-accent);
 }
 
+/* Kept in the DOM so aria-live announces a change, but taking no layout while
+   there is nothing to say — .media-viewer is a flex column with a gap. */
+.media-viewer .save-message:empty {
+  display: none;
+}
+
 .media-viewer .download:disabled {
   color: var(--color-text-secondary);
   cursor: default;
