@@ -1168,6 +1168,61 @@ to fill its duration. Read stderr — the warnings are the ones that cost you a 
 
 # ==================== MEDIA VIEWER TOOL DESCRIPTIONS ====================
 
+INSPECT_IMAGE = """Look at an image yourself — returns the picture as visual content, not metadata.
+
+Use it to check your own work: whether a refinement actually changed what you asked
+(create_image chains), whether an edit landed, whether rendered text is correct and
+spelled right, or whether prepare_reference_image cropped the subject out before you
+spend a Sora render on it. Every other image tool answers with a filename and a size;
+this one answers with the image.
+
+This is not view_media — that opens a player for the user. This shows you the image.
+
+Parameters:
+- filename: an image in the image directory (see list_reference_images)
+- max_dimension: long-edge ceiling for what comes back, default 1568, max 2576.
+  Cost scales with area: an image costs ceil(w/28) x ceil(h/28) visual tokens, so
+  1568px is roughly 3100 tokens at worst and usually far less. Values above 2576
+  are refused because the API downscales past that anyway
+- region: [left, top, right, bottom] in ORIGINAL pixel coordinates, cropped before
+  scaling. This is how you read small text — crop to the sign or the label and the
+  crop gets the full pixel budget instead of the whole frame
+- image_format: "png" (default, best for text), "webp", or "jpeg". Downgraded
+  automatically if needed to stay under the size limit
+
+Returns the image plus a one-line note: source dimensions, what was cropped or
+scaled, the format and size delivered, and the visual-token cost. Trust the note
+over the pixels when reporting dimensions — you are usually seeing a resized copy.
+
+Typical flow:
+  generate_image(prompt="a poster reading 'GRAND OPENING'")
+  inspect_image("poster.png")                              # is the text right?
+  inspect_image("poster.png", region=[400, 200, 1100, 400]) # zoom in to be sure
+"""
+
+INSPECT_VIDEO_FRAME = """Look at frames from a video — the only way to check what Sora rendered.
+
+A video job reporting "completed" says nothing about whether the motion you asked
+for happened, whether the subject stayed in frame, or whether the camera moved the
+way the prompt described. This samples frames and returns them as visual content.
+
+Parameters:
+- filename: a downloaded video in the video directory (see list_local_videos)
+- frames: how many evenly spaced frames, default 3, max 8. Samples the midpoints of
+  equal slices, avoiding the first and last frames, which are the least informative
+- timestamps: explicit offsets in seconds instead, e.g. [0.5, 3.0]. Overrides frames
+- max_dimension: long-edge ceiling per frame, default 768. Three frames at this size
+  cost about what one full-size still does
+
+Returns each frame followed by its own note naming the timestamp. Needs ffmpeg on
+PATH; raises a configuration error explaining how to install it if absent.
+
+Typical flow:
+  wait_for([video.id], download=True)
+  inspect_video_frame("clip.mp4")                      # did the motion happen?
+  inspect_video_frame("clip.mp4", timestamps=[0.0])    # check the opening frame
+"""
+
 WAIT_FOR = """Wait for long-running jobs to finish — one call instead of a polling loop.
 
 Give it the ids that create_video / remix_video (video_*) and create_image (resp_*)

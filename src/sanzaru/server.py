@@ -21,6 +21,7 @@ from typing import Literal, ParamSpec, TypeVar
 from mcp.server.apps import Apps, ResourceCsp
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.utilities.types import Image
 from mcp.server.transport_security import TransportSecurityMiddleware, TransportSecuritySettings
 from mcp.shared.exceptions import MCPError
 from mcp.types import ToolAnnotations
@@ -160,11 +161,23 @@ if check_video_available():
         DELETE_VIDEO,
         DOWNLOAD_VIDEO,
         GET_VIDEO_STATUS,
+        INSPECT_VIDEO_FRAME,
         LIST_LOCAL_VIDEOS,
         LIST_VIDEOS,
         REMIX_VIDEO,
     )
+    from .tools import inspect as inspect_video_tools
     from .tools import video
+
+    @mcp.tool(description=INSPECT_VIDEO_FRAME, annotations=READ_ONLY_CLOSED)
+    @_llm_facing
+    async def inspect_video_frame(
+        filename: str,
+        frames: int = inspect_video_tools.DEFAULT_FRAMES,
+        timestamps: list[float] | None = None,
+        max_dimension: int = inspect_video_tools.DEFAULT_FRAME_LONG_EDGE,
+    ) -> list[Image | str]:
+        return await inspect_video_tools.inspect_video_frame(filename, frames, timestamps, max_dimension)
 
     @mcp.tool(description=CREATE_VIDEO, annotations=WRITE_OPEN)
     @_llm_facing
@@ -228,11 +241,27 @@ if check_image_available():
         EDIT_IMAGE,
         GENERATE_IMAGE,
         GET_IMAGE_STATUS,
+        INSPECT_IMAGE,
         LIST_REFERENCE_IMAGES,
         PREPARE_REFERENCE_IMAGE,
     )
     from .tools import image, images_api, reference
+    from .tools import inspect as inspect_tools
     from .tools.images_api import ImageSize
+    from .tools.inspect import ImageFormat
+
+    @mcp.tool(description=INSPECT_IMAGE, annotations=READ_ONLY_CLOSED)
+    @_llm_facing
+    async def inspect_image(
+        filename: str,
+        max_dimension: int = inspect_tools.DEFAULT_LONG_EDGE,
+        region: list[int] | None = None,
+        image_format: ImageFormat = "png",
+    ) -> list[Image | str]:
+        # The return annotation is load-bearing: the SDK renders content blocks
+        # only when it declares them, and dumps the value as JSON text otherwise
+        # — which would hand the model a base64 string instead of a picture.
+        return await inspect_tools.inspect_image(filename, max_dimension, region, image_format)
 
     @mcp.tool(description=LIST_REFERENCE_IMAGES, annotations=READ_ONLY_CLOSED)
     @_llm_facing
