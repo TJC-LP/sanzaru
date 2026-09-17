@@ -26,6 +26,11 @@ interface MediaDataChunk {
 const CHUNK_SIZE = 2 * 1024 * 1024; // 2 MB
 const BASE64_DECODE_SLICE_SIZE = 256 * 1024; // Must stay divisible by 4
 
+/** Deliberately generous: a host that opens a native "Save as..." dialog does not
+ *  answer until the person has picked a folder, and the SDK's 60 s default would
+ *  reject — and send notifications/cancelled — while that dialog is still open. */
+const DOWNLOAD_TIMEOUT_MS = 10 * 60 * 1000;
+
 function formatBytes(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
@@ -56,6 +61,27 @@ async function decodeBase64Blob(data: string): Promise<Blob> {
   }
 
   return new Blob(parts);
+}
+
+/**
+ * Base64-encode a Blob, letting the browser do the work.
+ *
+ * FileReader encodes off the main thread and hands back one string, so unlike a
+ * hand-rolled btoa() loop there is no frame to block, no ArrayBuffer copy and no
+ * array of partial results to hold alongside the finished one — which matters at
+ * the size of a rendered episode. The read is not a fetch, so a strict MCP App
+ * `connect-src` cannot block it the way it can block fetch("data:...").
+ */
+async function encodeBlobBase64(blob: Blob): Promise<string> {
+  const dataUrl = await new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = () => reject(reader.error ?? new Error("Could not read the media for download"));
+    reader.readAsDataURL(blob);
+  });
+
+  // "data:<mime>;base64,<payload>" — everything up to the first comma is the header.
+  return dataUrl.slice(dataUrl.indexOf(",") + 1);
 }
 
 /** Extract parsed JSON from a CallToolResult — tries structuredContent first, then text content. */
@@ -127,18 +153,29 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
   const [mimeType, setMimeType] = useState<string | null>(input.mime_type ?? null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saveMessage, setSaveMessage] = useState<{ text: string; kind: "status" | "error" } | null>(null);
   const blobUrlRef = useRef<string | null>(null);
+  const blobRef = useRef<Blob | null>(null);
+
+  // `ui/download-file` is not in the stable 2026-01-26 Apps spec, so a host may
+  // not implement it. Without the control the file is still playable — it just
+  // cannot be saved from here — so this hides rather than degrades.
+  const canDownload = app.getHostCapabilities()?.downloadFile != null;
 
   const loadMedia = useCallback(async () => {
     setLoading(true);
     setErrorMsg(null);
     setProgress(0);
 
+    setSaveMessage(null);
+
     // Revoke previous blob URL
     if (blobUrlRef.current) {
       URL.revokeObjectURL(blobUrlRef.current);
       blobUrlRef.current = null;
     }
+    blobRef.current = null;
 
     try {
       const chunks: Blob[] = [];
@@ -188,6 +225,7 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
       const blob = new Blob(chunks, { type: resolvedMime ?? "application/octet-stream" });
       const url = URL.createObjectURL(blob);
       blobUrlRef.current = url;
+      blobRef.current = blob;
       setBlobUrl(url);
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : String(e));
@@ -195,6 +233,56 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
       setLoading(false);
     }
   }, [app, input.filename, input.media_type]);
+
+  const downloadMedia = useCallback(async () => {
+    const blob = blobRef.current;
+    if (!blob) return;
+
+    setSaving(true);
+    setSaveMessage(null);
+    try {
+      // The bytes are already here — assembled for playback — so saving costs one
+      // encode rather than a second trip to the server. Handing them over as an
+      // embedded resource also means no credential and no URL is involved, which
+      // is what makes this work identically over stdio and HTTP.
+      const base64 = await encodeBlobBase64(blob);
+
+      // Defensive: the server only ever reports a bare basename, and the host
+      // derives the saved filename from the last path segment of this URI.
+      const name = input.filename.split(/[\\/]/).pop() || "download";
+
+      const { isError } = await app.downloadFile(
+        {
+          contents: [
+            {
+              type: "resource",
+              resource: {
+                // Encoded because this is a URI, not a path: nothing upstream
+                // restricts which characters a filename may contain, and a raw
+                // "#" or "?" would end the path component early for any host
+                // that parses this rather than splitting it — saving the file
+                // under a truncated name with no extension.
+                uri: `file:///${encodeURIComponent(name)}`,
+                mimeType: mimeType ?? "application/octet-stream",
+                blob: base64,
+              },
+            },
+          ],
+        },
+        { timeout: DOWNLOAD_TIMEOUT_MS },
+      );
+
+      // Usually the person dismissing the host's own save dialog, but the host
+      // may also have refused outright, so this does not claim to know which.
+      if (isError) {
+        setSaveMessage({ text: "Download cancelled or refused", kind: "status" });
+      }
+    } catch (e) {
+      setSaveMessage({ text: e instanceof Error ? e.message : String(e), kind: "error" });
+    } finally {
+      setSaving(false);
+    }
+  }, [app, input.filename, mimeType]);
 
   useEffect(() => {
     loadMedia();
@@ -207,7 +295,17 @@ function MediaPlayer({ app, input }: MediaPlayerProps) {
 
   return (
     <div className="media-viewer">
-      <span className="filename">{input.filename}</span>
+      <div className="file-row">
+        <span className="filename">{input.filename}</span>
+        {blobUrl && canDownload && (
+          <button type="button" className="download" onClick={downloadMedia} disabled={saving}>
+            {saving ? "Preparing..." : "Download"}
+          </button>
+        )}
+      </div>
+      <span className={`save-message ${saveMessage?.kind ?? "status"}`} aria-live="polite">
+        {saveMessage?.text ?? ""}
+      </span>
 
       {loading && (
         <div className="progress-container">

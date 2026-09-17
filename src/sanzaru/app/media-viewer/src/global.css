@@ -47,10 +47,48 @@ html, body {
   font-size: 13px;
 }
 
+.media-viewer .file-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  width: 100%;
+}
+
 .media-viewer .filename {
   font-family: var(--font-mono);
   font-size: 13px;
   color: var(--color-text-secondary);
+}
+
+.media-viewer .download {
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  padding: 5px 10px;
+  color: var(--color-accent);
+  background: var(--color-background-secondary);
+  border: 1px solid var(--color-progress-bg);
+  border-radius: var(--border-radius-md);
+  cursor: pointer;
+}
+
+.media-viewer .download:hover:not(:disabled) {
+  color: var(--color-background-primary);
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+}
+
+/* Kept in the DOM so aria-live announces a change, but taking no layout while
+   there is nothing to say — .media-viewer is a flex column with a gap. */
+.media-viewer .save-message:empty {
+  display: none;
+}
+
+.media-viewer .download:disabled {
+  color: var(--color-text-secondary);
+  cursor: default;
 }
 
 .progress-container {
