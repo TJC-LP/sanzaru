@@ -120,6 +120,7 @@ src/sanzaru/
 │   ├── podcast.py      # 1 podcast generation tool (scripted TTS)
 │   ├── simulate_podcast.py # 1 simulated podcast tool (realtime agents, parallel acts)
 │   ├── wait.py         # 1 job tool: wait_for (server-side wait on video_*/resp_* ids, progress per poll)
+│   ├── inspect.py      # 2 inspection tools: inspect_image / inspect_video_frame (vision content for the model)
 │   └── media_viewer.py # 2 media viewer tools (MCP App)
 └── app/                # Frontend assets (built, committed)
     └── media-viewer/   # React MCP App for media playback
@@ -393,6 +394,51 @@ Paths are validated lazily via the `get_path()` function when tools are called:
 - `get_path("audio")`: Returns validated path for audio files
 
 Resolves from `SANZARU_MEDIA_PATH/{subdir}` (with auto-creation) or individual env vars. Paths are cached with `@lru_cache` for performance.
+
+### Letting the model see its own output
+
+`inspect_image` and `inspect_video_frame` return MCP **image content** (the SDK's
+`Image` helper) instead of metadata, so the model can check a refinement chain, an
+edit, a crop, or what Sora actually rendered. `view_media` is the opposite tool: it
+opens a player for the *person*. The names are unalike on purpose.
+
+Three constraints from Claude's vision input drive the whole design, and none of them
+are ours to relax:
+
+- **10 MB base64 per image**, so ~7.5 MB of bytes. Real 4K renders in a working media
+  directory are already past it, which makes raw passthrough a *rejection*, not an
+  expense. This is why the tools exist as a resize-and-encode path rather than a
+  `read the file` path.
+- **Cost is `ceil(w/28) * ceil(h/28)` visual tokens**, counted in 28-pixel patches.
+- **Past a 2576 px long edge the API downscales anyway**, so `max_dimension` refuses
+  larger values instead of spending transfer on pixels nobody sees.
+
+Non-obvious things that are easy to break:
+
+- **The return annotation is load-bearing.** The SDK renders content blocks only when
+  the signature declares them (`_returns_content` over `list[Image | str]`); with the
+  annotation dropped, the same value is serialized to JSON and the model receives a
+  base64 *string* instead of a picture. A test pins that the tools advertise no
+  output schema for this reason.
+- **Every image carries a note, and the note is not decoration.** A model looking at
+  a resized crop cannot tell it from the artifact on disk, and will confidently report
+  the wrong dimensions. The note states source size, crop, delivered size, format and
+  token cost.
+- **The format ladder is PNG -> WebP -> JPEG, in that order.** PNG first because the
+  thing most worth checking is whether *text* rendered correctly, which is exactly
+  what lossy compression destroys; WebP before JPEG so transparency survives a step
+  longer, since a flattened background reads as a deliberate white one. JPEG
+  composites alpha onto white rather than dropping the channel, which would leave
+  black fringes.
+- **`region` crops in *source* coordinates, before scaling.** That is what makes small
+  rendered text legible: the crop gets the whole pixel budget instead of the frame.
+- **The video demuxer is chosen from `VIDEO_DEMUXER_BY_EXTENSION`, never probed.** Same
+  invariant as `demuxer_for()` in the audio path, for the same reason: the playlist
+  demuxers (`concat`, `hls`, `dash`) read other local files named inside the data, so
+  `-f <demuxer>` is passed explicitly before `-i` and a planted `.concat` is refused
+  before ffmpeg runs. Frame extraction is also the only place sanzaru shells out to
+  ffmpeg directly rather than through pydub, so it bounds the subprocess and closes
+  its stdin.
 
 ### Two API Integration Patterns
 
