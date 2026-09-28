@@ -1,5 +1,7 @@
 # Stress Test Results
 
+> **Historical (Sora era, before 0.13.0).** OpenAI removed the Sora Videos API on 2026-09-24; sanzaru now generates video through Higgsfield. Video details below describe the old Sora integration.
+
 ## Overview
 
 This document showcases real-world stress testing results demonstrating the sanzaru's ability to handle heavy concurrent load with its fully asynchronous architecture.

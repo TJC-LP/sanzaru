@@ -22,8 +22,8 @@ one envelope per line (JSONL) in completion order. **stderr** carries progress, 
 human-readable hints. A TTY only switches formatting (pretty vs compact), never structure.
 
 ```json
-{"v": 1, "ok": true,  "command": "video.create", "result": {"id": "video_x", "...": "...", "file": {"path": "/abs/clip.mp4", "bytes": 48211939}}, "elapsed_s": 184.2}
-{"v": 1, "ok": false, "command": "video.wait", "error": {"type": "timeout", "message": "..."}, "resume": "sanzaru video wait video_x --download -o ./clip.mp4", "id": "video_x", "last_status": "in_progress", "last_progress": 78}
+{"v": 1, "ok": true,  "command": "video.create", "result": {"id": "hf_1c9e…", "cost": {"usd": 0.92, "basis": "local_table"}, "...": "...", "file": {"path": "/abs/clip.mp4", "bytes": 4821193}}, "elapsed_s": 84.2}
+{"v": 1, "ok": false, "command": "video.wait", "error": {"type": "timeout", "message": "..."}, "resume": "sanzaru video wait hf_1c9e… --download -o ./clip.mp4", "id": "hf_1c9e…", "last_status": "in_progress"}
 ```
 
 `result.file.path` is the canonical location of a written artifact and is always present. Where a
@@ -35,8 +35,20 @@ scripts that handle more than one media type.
 
 Errors are **also** emitted as envelopes on stdout (`"ok": false`) so `jq` pipelines never hang,
 with a one-line summary on stderr. `error.type` is one of: `usage`, `config`, `api_error`,
-`not_found`, `job_failed`, `timeout`, `download_error`, `internal`. A `resume` field is present
-whenever a follow-up command recovers the situation.
+`not_found`, `job_failed`, `timeout`, `download_error`, `internal`, and for video jobs on
+Higgsfield:
+
+| `error.type` | exit | meaning |
+|---|---|---|
+| `over_budget` | 2 | the estimate is over `--max-cost` (or no price exists while a cap is set) — **nothing was submitted or charged**; `error` carries `estimate_usd`, `limit_usd`, `basis` |
+| `usage` | 2 | Higgsfield rejected the arguments (400/422) |
+| `config` | 3 | `HF_KEY` missing, malformed, or rejected (401) |
+| `concurrency_limit` | 1 | the account already has 4 jobs in flight (the Higgsfield app counts too); nothing was created, so resubmitting is safe — `--retry-busy` does it for you |
+| `insufficient_credits` | 1 | the API balance is empty (403). It is prepaid and **separate from a Higgsfield app subscription** — top up in the API console |
+| `model_unavailable` | 1 | the model is temporarily blocked or disabled (423/503) |
+| `api_error` | 1 | anything else; `maybe_submitted: true` when the submit failed *after* it was sent — check before resubmitting |
+
+A `resume` field is present whenever a follow-up command recovers the situation.
 
 ### Exit codes
 
@@ -45,9 +57,9 @@ whenever a follow-up command recovers the situation.
 | 0 | Success |
 | 1 | Runtime/API error (network, 4xx/5xx, write failure, unknown ID) |
 | 2 | Usage error (bad flags/arguments; also click's own errors) |
-| 3 | Configuration error (missing `OPENAI_API_KEY`, missing optional extra) |
+| 3 | Configuration error (missing `OPENAI_API_KEY` / `HF_KEY`, missing optional extra) |
 | 4 | Timeout — the job **keeps running server-side**; re-run the `resume` command |
-| 5 | Job failed server-side (moderation, generation error) |
+| 5 | Job failed server-side (failed, `nsfw` moderation — not charged, canceled) |
 | 6 | Partial batch failure (fan-out with ≥1 success and ≥1 failure) |
 | 130 | Interrupted (Ctrl-C) — job keeps running; resume hint on stderr |
 
@@ -63,19 +75,19 @@ invocation). Durations accept `90`, `90s`, or `5m` forms.
 
 ## Async jobs: create → wait → download
 
-`video create`/`video remix`/`image create` submit a job and return its ID in ~1 second.
+`video create`/`video edit`/`video extend`/`image create` submit a job and return its ID in ~1 second.
 `status` peeks (never blocks); `wait` blocks with adaptive polling; `download` fetches the
 artifact. **Flag implication: `-o` ⇒ `--download` ⇒ `--wait`** — so one command composes all
 three:
 
 ```bash
-sanzaru video create "the pilot looks up and smiles" --seconds 8 --size 1280x720 \
-  -o ./assets/pilot.mp4 | jq -r .result.file.path
+sanzaru video create "the pilot looks up and smiles" --duration 8 --aspect-ratio 16:9 \
+  --max-cost 5 -o ./assets/pilot.mp4 | jq -r .result.file.path
 ```
 
 While waiting, stderr gets a line per state change plus a 30s heartbeat
-(`sanzaru: video_x in_progress 42% t=95s`). Polling adapts per job type (video: 5s → 20s cap,
-default timeout 30m; image: 2s → 10s cap, default 10m); `--poll-interval` fixes the cadence and
+(`sanzaru: hf_1c9e… in_progress t=95s` — Higgsfield reports no percentage). Polling adapts per
+job type (video: 2s → 10s cap, default timeout 30m; image: 2s → 10s cap, default 10m); `--poll-interval` fixes the cadence and
 `--timeout` sets the deadline.
 
 **Waiting is idempotent.** On exit 4 the job is still running — the envelope's `resume` field is
@@ -83,17 +95,20 @@ a complete command to attach again. This is the crash/timeout recovery loop for 
 cap foreground commands:
 
 ```bash
-ID=$(sanzaru video create "..." --seconds 8 | jq -r .result.id)   # returns in ~1s
+ID=$(sanzaru video create "..." --duration 8 | jq -r .result.id)   # returns in ~1s
 # ... do other work, then repeat until exit != 4:
 sanzaru video wait "$ID" --download -o ./out/clip.mp4 --timeout 100s
 ```
 
-`sanzaru wait` polls **mixed** job types concurrently — `video_*` and `resp_*` IDs are
+`sanzaru wait` polls **mixed** job types concurrently — `hf_*` (video) and `resp_*` (image) IDs are
 dispatched by prefix (`--type` is the escape hatch) — and streams JSONL as each finishes:
 
 ```bash
-sanzaru wait video_a1 video_b2 resp_c3 --download -o ./media/ > done.jsonl
+sanzaru wait hf_a1… hf_b2… resp_c3 --download -o ./media/ > done.jsonl
 ```
+
+A pre-0.13 Sora id (`video_…`) is a usage error (exit 2) explaining that OpenAI retired the Videos
+API on 2026-09-24.
 
 ## Output paths and inputs
 
@@ -102,7 +117,7 @@ Precedence for where artifacts land: `-o PATH` → `--media-dir` → individual 
 **current directory** (with a stderr note — never a hard error). `-o` pointing at a directory
 (existing, or with a trailing `/`) auto-names the file inside; parent directories are created.
 
-Inputs (`--input-ref`, `--input-image`, `--mask`, audio `FILE`s) accept either a **path** (used
+Inputs (`--image`, `--end-image`, `--ref`, video `SOURCE`, `--input-image`, `--mask`, audio `FILE`s) accept either a **path** (used
 as-is) or a **bare filename** resolved from the configured media dir, matching MCP behavior.
 Paths in one batch may span directories — each is validated individually under its own parent —
 so an episode and its QC windows can be transcribed in one call:
@@ -149,20 +164,39 @@ sanzaru podcast generate - < episode.json -o ./out/episode.mp3
 
 ## Command reference
 
-### `sanzaru video` — Sora jobs
+### `sanzaru video` — Higgsfield jobs
+
+Requires `HF_KEY` (a Higgsfield **API** key, `key_id:key_secret`). The API is prepaid and billed
+separately from a Higgsfield app/CLI subscription, and exposes no balance endpoint — so every
+submit is **estimated first** and the cost is in the envelope; `--max-cost` refuses (exit 2,
+nothing uploaded or charged) and `--dry-run` prices without submitting.
+
 | Command | Purpose |
 |---------|---------|
-| `create PROMPT` | Submit a job. `--model sora-2\|sora-2-pro`, `--seconds 4\|8\|12`, `--size`, `--input-ref`, one-shot flags |
-| `remix ID PROMPT` | Submit a remix of a completed video (new job ID; same one-shot flags) |
-| `status ID` | Peek at status + progress (never blocks) |
+| `create PROMPT` | Text-to-video, or image-to-video with `--image`. `--model` (curated id or any catalog slug; default `seedance-2.5`), `--duration N`, `--aspect-ratio`, `--resolution 480p\|720p`, `--audio/--no-audio`, `--image PATH\|hf_id`, `--end-image PATH`, `--arg KEY=JSON` (repeatable), `--args @file.json`, `--max-cost USD`, `--dry-run`, `--retry-busy DURATION`, one-shot flags |
+| `edit SOURCE PROMPT` | Re-render a clip (Seedance 2.5); SOURCE is a local `.mp4` or an `hf_…` id. `--ref PATH` (repeatable) guide images. Bills source + output |
+| `extend SOURCE PROMPT --duration N` | Continue a clip by N seconds (4–30). Bills source + added seconds |
+| `status ID` | Peek at status (never blocks) |
 | `wait ID...` | Block until terminal; concurrent multi-ID, `--download`, JSONL output |
-| `download ID` | Fetch artifact: `--variant video\|thumbnail\|spritesheet`, `-o` |
-| `list` | Cloud jobs (`--limit/--after/--order`) |
-| `delete ID` | Permanently delete from OpenAI storage |
+| `download ID` | Save the output (`-o`); Higgsfield keeps outputs ~7 days |
+| `cancel ID` | Cancel a job that is still queued (refunded); a started job cannot be canceled |
+| `models [--catalog]` | The curated models with ranges and price notes; `--catalog` lists every video model the API offers |
 | `files` | Locally downloaded videos (`--pattern/--type/--sort/--order/--limit`) |
 
-With `--input-ref`, keep the prompt motion-only — the image already carries character, setting,
-and style (see `docs/sora-prompting-guide.md`).
+`--retry-busy DURATION` retries **only** the account-concurrency rejection (4 jobs in flight,
+shared with the Higgsfield app), which guarantees no job was created — never a failed submit that
+might have gone through. An `hf_…` id works anywhere a source or start frame is expected, reusing
+that job's output without a download.
+
+| Model | Durations | Price (2026-09-28, before discounts) |
+|---|---|---|
+| `seedance-2.5` (default) | 4–30 s, 480p/720p, 6 aspect ratios | ~$0.46/s @720p, ~$0.21/s @480p; edit/extend ~$0.28/s of source+output @720p |
+| `kling-3.0-std` / `-pro` / `-4k` | 3–15 s, 16:9/9:16/1:1, end frame | ~$0.35 / $0.46 / $1.16 per 5 s |
+| `kling-3.0-turbo` | 3–15 s | ~$0.31 per 5 s |
+
+With `--image`, keep the prompt motion-only — the image already carries character, setting, and
+style — and crop it to the shape you want first (`image prepare --aspect-ratio`), since
+image-to-video framing follows the image. See `docs/video-prompting-guide.md`.
 
 ### `sanzaru image` — two generation paths
 | Command | Purpose |
@@ -171,7 +205,7 @@ and style (see `docs/sora-prompting-guide.md`).
 | `edit PROMPT` | Synchronous edit/composition of existing images (`--input-image`, `--mask`) |
 | `create PROMPT` | **Async** Responses job — for refinement chains (`--previous-id`) and parallel jobs. `--image-model` (default gpt-image-2.5-flare), `--input-image`, `--mask`, one-shot flags |
 | `status ID` / `wait ID...` / `download ID` | The async job trio |
-| `prepare INPUT` | Resize to Sora dimensions (`--size`, `--mode crop\|pad\|rescale`) |
+| `prepare INPUT` | Crop/pad/rescale to a video frame: `--aspect-ratio 16:9\|4:3\|1:1\|3:4\|9:16\|21:9` or `--size WxH`, `--mode crop\|pad\|rescale` |
 | `files` | Images in the media dir |
 
 Iterative refinement:
@@ -565,10 +599,13 @@ server).
 ## Recipes
 
 ```bash
-# Reference image → Sora pipeline
+# Reference image → video pipeline (price first, then render and continue the shot)
 IMG=$(sanzaru image generate "futuristic pilot in mech cockpit" --size 1536x1024 -o ./work/ | jq -r .result.file.path)
-REF=$(sanzaru image prepare "$IMG" --size 1280x720 --mode crop | jq -r .result.file.path)
-sanzaru video create "the pilot glances up, takes a breath" --input-ref "$REF" --size 1280x720 --seconds 8 -o ./out/
+REF=$(sanzaru image prepare "$IMG" --aspect-ratio 16:9 --mode crop | jq -r .result.file.path)
+sanzaru video create "the pilot glances up, takes a breath" --image "$REF" --duration 5 --dry-run | jq .result.cost
+ID=$(sanzaru video create "the pilot glances up, takes a breath" --image "$REF" --duration 5 \
+       --max-cost 3 -o ./out/pilot.mp4 | jq -r .result.id)
+sanzaru video extend "$ID" "he reaches for the throttle" --duration 5 --max-cost 3 -o ./out/pilot2.mp4
 
 # Batch assets with partial-failure retry
 sanzaru image generate "app icon" "hero banner" "404 art" --quality high -o ./art/ > results.jsonl
@@ -583,8 +620,11 @@ sanzaru video create "..." -o ./out/clip.mp4 --timeout 25m 2> progress.log &
 - One `AsyncOpenAI` client per invocation is shared across every call (a 10-minute poll loop
   reuses one connection pool instead of a TLS handshake per poll).
 - The polling loops live in `sanzaru/polling.py` (`wait_for_video`/`wait_for_image`) — pure
-  async, adaptive backoff with jitter, transient 408/409/429/5xx retried until the deadline,
-  404 fails fast.
+  async, adaptive backoff with jitter, transient errors retried until the deadline (a per-provider
+  `is_transient` predicate), 404 fails fast.
+- Video uses a thin in-house Higgsfield client (`sanzaru/higgsfield/client.py`), not the official
+  SDK: that SDK resends the generation POST on 5xx/429 — a duplicate charged job. sanzaru never
+  resends a submit that may have left; the key never reaches the presigned-upload or output hosts.
 - `-o` works by installing a per-invocation `LocalStorageBackend(path_overrides=...)` via
   `sanzaru.storage.set_storage_backend()`; the tool layer still validates basenames. The MCP
   server never touches these overrides.

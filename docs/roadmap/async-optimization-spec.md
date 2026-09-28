@@ -1,5 +1,7 @@
 # Async Optimization Specification
 
+> **Historical (Sora era, before 0.13.0).** OpenAI removed the Sora Videos API on 2026-09-24; sanzaru now generates video through Higgsfield. Video details below describe the old Sora integration.
+
 ✅ **IMPLEMENTATION COMPLETE**
 
 **Status:** This document is preserved for historical reference. The implementation was successfully completed as described.

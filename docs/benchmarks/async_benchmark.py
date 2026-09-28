@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
+# Historical (Sora era, before 0.13.0): benchmarks the pre-Higgsfield video path.
 """Benchmark script to demonstrate async optimization improvements.
 
 This script simulates concurrent operations to measure the performance

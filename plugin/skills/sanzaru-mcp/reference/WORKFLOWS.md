@@ -1,6 +1,6 @@
 # Sanzaru Workflow Patterns
 
-## Workflow 1: Generate Image → Animate with Sora
+## Workflow 1: Generate Image → Animate (Higgsfield)
 
 The most common pattern — create a reference image and bring it to life.
 
@@ -13,22 +13,28 @@ generate_image(
     filename="astronaut.png"
 )
 
-# Step 2: Resize to match Sora dimensions
-prepare_reference_image("astronaut.png", "1280x720", resize_mode="crop")
+# Step 2: Crop to the frame shape you want — image-to-video framing follows the image
+prepare_reference_image("astronaut.png", aspect_ratio="16:9", resize_mode="crop")
 # Creates: astronaut_1280x720.png
 
-# Step 3: Create video with MOTION-ONLY prompt
+# Step 3: Price it, then create the video with a MOTION-ONLY prompt
+create_video(prompt="The astronaut turns and walks toward the horizon",
+             reference_image="astronaut_1280x720.png", duration=8, dry_run=True)   # cost only
 video = create_video(
     prompt="The astronaut turns and walks toward the horizon",
-    size="1280x720",
-    input_reference_filename="astronaut_1280x720.png",
-    seconds="8"
+    reference_image="astronaut_1280x720.png",
+    duration=8,
+    max_cost_usd=5,            # Seedance 2.5 @720p is ~$0.46/s
 )
 
 # Step 4: Wait and download in one call (no polling loop)
 wait_for([video.id], download=True)
 # -> jobs[0].status == "completed", jobs[0].download.filename is the mp4
 # If jobs[0].timed_out is true the render is still running: call wait_for again with the same id.
+
+# Step 5 (optional): continue the shot from the finished job — no download/re-upload
+more = extend_video("She reaches the ridge and looks back.", source_video=video.id, duration=5, max_cost_usd=3)
+wait_for([more.id], download=True)
 ```
 
 **Resize modes:**
@@ -131,26 +137,26 @@ images = list_reference_images(pattern="sunset*", file_type="png")
 # Check dimensions
 # (images include filename, size_bytes, file_type)
 
-# Resize for Sora
+# Crop to the video shape (framing follows the start image)
 prepare_reference_image(
     "sunset_original.jpg",
-    "1280x720",
+    aspect_ratio="16:9",
     resize_mode="crop"
 )
 
 # Animate
 create_video(
     prompt="The sun rises slowly as clouds drift across the sky",
-    input_reference_filename="sunset_original_1280x720.png",
-    size="1280x720"
+    reference_image="sunset_original_1280x720.png",
+    max_cost_usd=3,
 )
 ```
 
 ## Quality Optimization
 
 **For best video quality:**
-- Use `sora-2-pro` + `1280x720` or larger
-- Keep clips to 4s for best instruction following
+- Use `seedance-2.5` at `resolution="720p"` for finals; draft at 480p first
+- Keep clips to 4-5 s for best instruction following (Seedance runs to 30 s)
 - Specify lighting explicitly (3-5 color anchors)
 - Use concrete verbs and nouns, not vague adjectives
 
@@ -161,4 +167,5 @@ create_video(
 - Switch to `model="gpt-image-1.5"` only when you need a transparent background
 
 **For speed/cost:**
-- Use `sora-2` (not pro), `gpt-image-1-mini`, `generate_image` (synchronous)
+- Use `kling-3.0-turbo` or Seedance at 480p, `gpt-image-1-mini`, `generate_image` (synchronous)
+- Price first with `dry_run=true`; cap with `max_cost_usd`

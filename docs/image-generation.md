@@ -4,7 +4,7 @@ Complete guide to generating and editing images using OpenAI's APIs.
 
 ## Overview
 
-Generate high-quality images for use with Sora video generation or standalone use. Two APIs are available:
+Generate high-quality images standalone or as start frames for video generation (Higgsfield). Two APIs are available:
 
 | API | Tool | Best For |
 |-----|------|----------|
@@ -107,19 +107,16 @@ result = generate_image(
     filename="astronaut.png"
 )
 
-# 2. Prepare for Sora (resize if needed)
-prep = prepare_reference_image(
-    "astronaut.png",
-    "1280x720",
-    resize_mode="crop"
-)
+# 2. Crop to the video frame shape (image-to-video framing follows the image)
+prep = prepare_reference_image("astronaut.png", aspect_ratio="16:9", resize_mode="crop")
 
-# 3. Generate video
+# 3. Generate video — motion-only prompt, capped cost
 video = create_video(
     prompt="The astronaut turns and walks toward the horizon",
-    size="1280x720",
-    input_reference_filename=prep.output_filename
+    reference_image=prep.output_filename,
+    max_cost_usd=3,
 )
+wait_for([video.id], download=True)
 ```
 
 ---
@@ -136,18 +133,15 @@ Use the Responses API when you need iterative refinement with `previous_response
 # 1. Generate image
 resp = create_image(prompt="sunset over mountains")
 
-# 2. Poll for completion
-status = get_image_status(resp.id)
-# Check until status.status == "completed"
+# 2. Wait and download in one call (no polling loop)
+done = wait_for([resp.id], download=True)
+image_file = done.jobs[0].download.filename
 
-# 3. Download to IMAGE_PATH
-download_image(resp.id, filename="sunset.png")
-
-# 4. Use with video generation
+# 3. Use with video generation
 video = create_video(
     prompt="The sun rises slowly over the peaks",
-    input_reference_filename="sunset.png",
-    size="1280x720"
+    reference_image=image_file,
+    max_cost_usd=3,
 )
 ```
 
@@ -335,18 +329,14 @@ while True:
 result = download_image(resp.id, filename="astronaut.png")
 print(f"Downloaded: {result.filename}")
 
-# Step 4: Prepare for video (if dimensions don't match)
-prep = prepare_reference_image(
-    "astronaut.png",
-    "1280x720",
-    resize_mode="crop"
-)
+# Step 4: Crop to the video frame shape
+prep = prepare_reference_image("astronaut.png", aspect_ratio="16:9", resize_mode="crop")
 
 # Step 5: Generate video
 video = create_video(
     prompt="The astronaut turns and walks toward the horizon",
-    size="1280x720",
-    input_reference_filename=prep.output_filename
+    reference_image=prep.output_filename,
+    max_cost_usd=3,
 )
 ```
 
@@ -435,8 +425,8 @@ download_image(resp.id, filename="shirt_with_logo.png")
 # Now animate it
 video = create_video(
     prompt="The person wearing the shirt turns and smiles at the camera",
-    input_reference_filename="shirt_with_logo.png",
-    size="1280x720"
+    reference_image="shirt_with_logo.png",
+    max_cost_usd=3,
 )
 ```
 
@@ -540,17 +530,11 @@ else:
 - Try iterative refinement
 - Add style references ("photorealistic", "cinematic")
 
-### Dimensions Don't Match Sora
-**Problem:** Generated image wrong size for video
+### Wrong shape for the video
+**Problem:** image-to-video framing follows the image, and the image is the wrong shape
 **Solutions:**
-- Use `prepare_reference_image` after download
-- Or specify size in tool_config:
-  ```python
-  tool_config=ImageGeneration(
-      type="image_generation",
-      size="1536x1024"  # Matches Sora 1792x1024 better
-  )
-  ```
+- `prepare_reference_image(name, aspect_ratio="16:9")` (or `"9:16"`, `"1:1"`, …) after download
+- Or generate at a matching size in the first place (`size="1536x1024"` for landscape)
 
 ### Content Filtered
 **Problem:** "Moderation" error
@@ -570,10 +554,10 @@ else:
 
 1. **Test basic generation:** Start with simple prompts
 2. **Experiment with refinement:** Try iterative workflows
-3. **Combine with video:** Generate → Download → Prepare → Animate
+3. **Combine with video:** Generate → Prepare (aspect ratio) → Animate → `wait_for`
 4. **Explore advanced features:** Image editing, masking, composition
 
 See also:
 - [API Reference](api-reference.md) - Complete parameter documentation
-- [Reference Images](reference-images.md) - Using images with Sora
-- [Sora Prompting Guide](sora2-prompting-guide.md) - Video generation tips
+- [Reference Images](reference-images.md) - Using images as video start frames
+- [Video Prompting Guide](video-prompting-guide.md) - Video generation tips

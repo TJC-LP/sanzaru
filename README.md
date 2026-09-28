@@ -10,21 +10,25 @@
   [![PyPI downloads](https://img.shields.io/pypi/dm/sanzaru)](https://pypi.org/project/sanzaru/)
 </div>
 
-A **stateless**, lightweight **MCP** server **and agent CLI** that wraps **OpenAI's Sora Video API, Whisper, GPT-4o Audio, and TTS APIs** via the OpenAI Python SDK.
+A **stateless**, lightweight **MCP** server **and agent CLI** that wraps **Higgsfield video generation** (Seedance 2.5, Kling 3.0) and **OpenAI's image, transcription, audio and TTS APIs**, plus ElevenLabs for podcasts.
+
+> **0.13.0:** OpenAI removed the Sora Videos API and every Sora model on 2026-09-24. sanzaru now generates video through the [Higgsfield API](https://higgsfield.ai/higgsfield-api) — set `HF_KEY`. Old `video_…` ids and the `list_videos` / `delete_video` / `remix_video` tools are gone.
 
 ## Features
 
-### Video Generation (Sora)
-- Create videos with `sora-2` or `sora-2-pro` models
-- Use reference images to guide generation
-- Remix and refine existing videos
-- Download variants (video, thumbnail, spritesheet)
+### Video Generation (Higgsfield)
+- Text-to-video and image-to-video with **Seedance 2.5** (default; 4–30 s, native audio) or **Kling 3.0**
+  (std / pro / 4K / turbo), or any Higgsfield catalog model by id
+- **Edit** and **extend** existing clips (Seedance 2.5) — including a job you just rendered, by its `hf_…` id
+- **Every job is priced before it is submitted**: the cost comes back with the job, `max_cost_usd`
+  refuses anything over budget (nothing uploaded or charged), `dry_run` prices for free
+- One `wait_for(download=true)` call waits server-side and saves the file into your media directory
 
 ### Image Generation
 - Generate images with gpt-image-2.5 (sunburst/flare, recommended), gpt-image-2, gpt-image-1.5, or GPT-5
 - Edit and compose images with up to 16 inputs
 - Iterative refinement via Responses API
-- Automatic resizing for Sora compatibility
+- Crop a reference image to a video aspect ratio (image-to-video framing follows the image)
 
 ### Audio Processing
 - **Transcription**: Whisper and GPT-4o models
@@ -60,7 +64,9 @@ A **stateless**, lightweight **MCP** server **and agent CLI** that wraps **OpenA
 
 ## Requirements
 - Python 3.10+
-- `OPENAI_API_KEY` environment variable
+- `OPENAI_API_KEY` for images, audio and podcasts
+- `HF_KEY` for video — a Higgsfield **API** key (`key_id:key_secret`) from the API console. The API is
+  prepaid and billed separately from a Higgsfield app/CLI subscription; the video tools register only when it is set
 
 **Media storage** (choose one):
 ```bash
@@ -104,8 +110,8 @@ That's it! Claude Code will automatically connect and you can start generating v
 ```bash
 uv tool install sanzaru && export OPENAI_API_KEY=sk-...
 
-# One command: submit Sora job → poll → download → print the file path
-sanzaru video create "a tabby cat stretches on a windowsill" --seconds 4 -o ./cat.mp4 | jq -r .result.file.path
+# One command: price → submit → wait → download → print the file path
+sanzaru video create "a tabby cat stretches on a windowsill" --duration 4 --resolution 480p --max-cost 1 -o ./cat.mp4 | jq -r .result.file.path
 
 # Synchronous image generation (gpt-image-2.5), batch fan-out, JSONL output
 sanzaru image generate "app icon" "hero banner" --quality high -o ./art/
@@ -120,13 +126,13 @@ reference: [`docs/cli.md`](docs/cli.md).
 
 ### Claude Code Plugin (Recommended)
 
-Install as a plugin — auto-configures the MCP server and ships three skills: `sanzaru-mcp` (the tool surface, incl. `wait_for`), `sanzaru-cli` (the shell surface), `prompt-guidance` (how to write Sora/image prompts):
+Install as a plugin — auto-configures the MCP server and ships three skills: `sanzaru-mcp` (the tool surface, incl. `wait_for`), `sanzaru-cli` (the shell surface), `prompt-guidance` (how to write video/image prompts):
 
 ```bash
 /plugin marketplace add TJC-LP/sanzaru
 ```
 
-Requires `OPENAI_API_KEY` and `SANZARU_MEDIA_PATH` environment variables to be set.
+Requires `OPENAI_API_KEY` and `SANZARU_MEDIA_PATH` environment variables to be set (and `HF_KEY` for video).
 
 ### Quick Install
 ```bash
@@ -136,7 +142,7 @@ uv add "sanzaru[all]"
 # Specific features
 uv add "sanzaru[audio]"       # With audio support
 uv add "sanzaru[elevenlabs]"  # ElevenLabs as a second TTS provider
-uv add sanzaru                # Base (video + image only)
+uv add sanzaru                # Base (video via HF_KEY + image; no extra deps)
 ```
 
 <details>
@@ -160,6 +166,7 @@ Add to your `claude_desktop_config.json`:
       "args": ["sanzaru[all]"],
       "env": {
         "OPENAI_API_KEY": "your-api-key-here",
+        "HF_KEY": "your-higgsfield-key-id:secret",
         "SANZARU_MEDIA_PATH": "/absolute/path/to/media"
       }
     }
@@ -210,10 +217,10 @@ uv run sanzaru --transport http --port 8000
 
 | Category | Tools | Description |
 |----------|-------|-------------|
-| **Video** | `create_video`, `get_video_status`, `download_video`, `list_videos`, `list_local_videos`, `delete_video`, `remix_video` | Generate and manage Sora videos with optional reference images |
-| **Jobs** | `wait_for` | Block server-side on any mix of `video_*`/`resp_*` ids until they finish (progress on every poll, optional download); replaces model-driven polling |
+| **Video** | `create_video`, `edit_video`, `extend_video`, `get_video_status`, `download_video`, `cancel_video`, `list_local_videos`, `inspect_video_frame` | Generate, edit and extend video on Higgsfield (priced before submit, optional cost cap); inspect framess with optional reference images |
+| **Jobs** | `wait_for` | Block server-side on any mix of `hf_*`/`resp_*` ids until they finish (progress on every poll, optional download); replaces model-driven polling |
 | **Image** | `generate_image`, `edit_image`, `create_image`, `get_image_status`, `download_image`, `inspect_image` | `generate_image` is synchronous — one call, finished file (the default). `create_image` starts a background job for batches and refinement chains; collect with `wait_for`. `edit_image` edits; `inspect_image` shows the model what it rendered |
-| **Reference** | `list_reference_images`, `prepare_reference_image` | Manage and resize images for Sora compatibility |
+| **Reference** | `list_reference_images`, `prepare_reference_image` | Manage reference images; crop to a video aspect ratio or exact size |
 | **Audio** | `transcribe_audio`, `chat_with_audio`, `create_audio`, `convert_audio`, `compress_audio`, `list_audio_files`, `get_latest_audio`, `transcribe_with_enhancement` | Transcription, analysis, TTS (OpenAI or ElevenLabs), and file management |
 | **Podcast** | `generate_podcast` | The recommended podcast tool: multi-voice episodes with parallel TTS and stitching (ElevenLabs v4 + dialogue + verify recommended); speakers may mix TTS providers |
 | **Simulated Podcast** (experimental) | `simulate_podcast` | Unscripted: realtime agents converse from a rundown — parallel acts, checkpointing, cost ceiling, QC |
@@ -227,11 +234,12 @@ uv run sanzaru --transport http --port 8000
 ```python
 # Create video from text
 video = create_video(
-    prompt="A serene mountain landscape at sunrise",
-    model="sora-2",
-    seconds="8",
-    size="1280x720"
-)
+    prompt="A serene mountain landscape at sunrise, slow aerial push-in",
+    duration=8,                 # Seedance 2.5 (default): 4-30 s
+    aspect_ratio="16:9",
+    resolution="720p",
+    max_cost_usd=5,             # refused (and nothing charged) if the estimate is higher
+)                               # returns id "hf_...", status, and the estimated cost
 
 # Wait server-side and save it — one call, no polling loop
 wait_for([video.id], download=True)
@@ -246,15 +254,19 @@ generate_image(
     filename="pilot.png"
 )
 
-# 2. Prepare for video (resize to Sora dimensions)
-prepare_reference_image("pilot.png", "1280x720", resize_mode="crop")
+# 2. Crop to the frame shape you want (image-to-video framing follows the image)
+prepare_reference_image("pilot.png", aspect_ratio="16:9", resize_mode="crop")
 
-# 3. Animate
+# 3. Animate — prompt only the motion; the image already fixes subject and style
 video = create_video(
     prompt="The pilot looks up and smiles",
-    size="1280x720",
-    input_reference_filename="pilot_1280x720.png"
+    reference_image="pilot_1280x720.png",
+    duration=5, resolution="480p", max_cost_usd=2,
 )
+wait_for([video.id], download=True)
+
+# 4. Keep going from the finished job — no download/re-upload
+extend_video("He reaches for the throttle.", source_video=video.id, duration=5, max_cost_usd=3)
 ```
 
 ### Audio Transcription
@@ -310,7 +322,7 @@ sanzaru podcast simulate --resume 6f1a9c02
 - **[API Reference](docs/api-reference.md)** - Complete tool documentation with parameters and examples
 - **[Reference Images Guide](docs/reference-images.md)** - Working with reference images and resizing
 - **[Image Generation Guide](docs/image-generation.md)** - Generating and editing reference images
-- **[Sora Prompting Guide](docs/sora2-prompting-guide.md)** - Crafting effective video prompts
+- **[Video Prompting Guide](docs/video-prompting-guide.md)** - Motion-first prompts, image-to-video framing, edit/extend, cost
 - **[Audio Features](docs/audio/README.md)** - Audio transcription, chat, and TTS
 - **[Simulated Podcasts](docs/audio/simulated-podcasts.md)** (experimental) - Realtime agents in conversation: producer model, act chunking, cost, QC
 - **[Performance & Architecture](docs/async-optimizations.md)** - Technical details and benchmarks
@@ -324,7 +336,7 @@ sanzaru podcast simulate --resume 6f1a9c02
 
 ### Authenticating HTTP mode
 
-HTTP mode exposes the full toolset — paid generation, `delete_video`, and every
+HTTP mode exposes the full toolset — paid generation, `cancel_video`, and every
 stored media file — to whoever can reach the port. Set a token and send it as
 `Authorization: Bearer <token>` on both `/mcp` and `/media`:
 

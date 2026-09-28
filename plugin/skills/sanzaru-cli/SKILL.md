@@ -1,14 +1,15 @@
 ---
 name: sanzaru-cli
-description: Generate videos (Sora), images (gpt-image-2.5), speech/transcription (OpenAI or ElevenLabs), scripted podcasts (ElevenLabs v4 recommended), and experimental simulated podcasts (realtime agents that actually converse) from the shell with the sanzaru CLI. Use for long-running media jobs (create → wait → download one-shots, resumable waits, JSON envelopes, batch fan-out) instead of loading the MCP tool surface.
+description: Generate videos (Higgsfield — Seedance 2.5, Kling 3.0; priced before submit), images (gpt-image-2.5), speech/transcription (OpenAI or ElevenLabs), scripted podcasts (ElevenLabs v4 recommended), and experimental simulated podcasts (realtime agents that actually converse) from the shell with the sanzaru CLI. Use for long-running media jobs (create → wait → download one-shots, resumable waits, JSON envelopes, batch fan-out) instead of loading the MCP tool surface.
 ---
 
 # Sanzaru CLI for agents
 
-`sanzaru <group> <verb>` wraps OpenAI's Sora video, gpt-image-2.5, TTS/Whisper, and podcast APIs
-for shell use. Requires `OPENAI_API_KEY` in the environment. This skill is the **shell surface**;
-the same server's MCP tools are covered by `sanzaru-mcp`, and how to *write* the prompts (Sora
-anatomy, the reference-image golden rule) by `prompt-guidance`. Start with:
+`sanzaru <group> <verb>` wraps Higgsfield video, gpt-image-2.5, TTS/Whisper, and podcast APIs
+for shell use. Requires `OPENAI_API_KEY` in the environment, and `HF_KEY` (a Higgsfield **API**
+key, `key_id:key_secret` — prepaid, billed separately from a Higgsfield app subscription) for video. This skill is the **shell surface**;
+the same server's MCP tools are covered by `sanzaru-mcp`, and how to *write* the prompts (video
+prompt anatomy, the reference-image golden rule) by `prompt-guidance`. Start with:
 
 ```bash
 sanzaru capabilities   # no API key needed: version, enabled features, command map
@@ -18,10 +19,14 @@ sanzaru capabilities   # no API key needed: version, enabled features, command m
 
 - **stdout**: exactly one JSON envelope per input — `{"v":1, "ok":true, "command":"...", "result":{...}}`.
   Fan-out commands stream one envelope per line (JSONL) in completion order.
-- **stderr**: progress lines and hints (`sanzaru: video_x in_progress 42% t=95s`). Never parse it.
+- **stderr**: progress lines and hints (`sanzaru: hf_1c9e… in_progress t=95s`). Never parse it.
 - Errors are envelopes too (`"ok":false`, `error.type`, often a `resume` command) — `jq` never hangs.
 - Exit codes: `0` ok · `1` runtime/API · `2` usage · `3` config (missing key/extra) ·
   `4` **timeout — job still running, resumable** · `5` job failed server-side · `6` partial batch · `130` interrupted.
+- Video error types worth branching on: `over_budget` (exit 2 — over `--max-cost`, nothing submitted or
+  charged), `concurrency_limit` (exit 1 — 4 jobs already in flight; resubmitting is safe, or pass
+  `--retry-busy 5m`), `insufficient_credits` (exit 1 — top up the API balance), and `api_error` with
+  `maybe_submitted: true` (the submit may have gone through — check before resubmitting).
 
 ## The one-shot pattern (preferred)
 
@@ -29,8 +34,8 @@ sanzaru capabilities   # no API key needed: version, enabled features, command m
 final path. Run it in the background if your shell caps foreground time.
 
 ```bash
-sanzaru video create "the pilot looks up and smiles" --seconds 8 --size 1280x720 \
-  -o ./out/pilot.mp4 --timeout 25m | jq -r .result.file.path
+sanzaru video create "the pilot looks up and smiles" --duration 8 --aspect-ratio 16:9 \
+  --max-cost 5 -o ./out/pilot.mp4 --timeout 25m | jq -r .result.file.path
 sanzaru image generate "an app icon, flat design" --quality high -o ./art/icon.png   # sync, ~10-60s
 ```
 
@@ -40,13 +45,31 @@ Submission returns in ~1s; waits are **idempotent**. On exit 4 the job keeps run
 re-run the `resume` command from the envelope (or the same wait) until exit ≠ 4:
 
 ```bash
-ID=$(sanzaru video create "..." --seconds 8 | jq -r .result.id)
+ID=$(sanzaru video create "..." --duration 8 --max-cost 5 | jq -r .result.id)
 # ...do other work, then repeatedly:
 sanzaru video wait "$ID" --download -o ./out/clip.mp4 --timeout 100s
 # exit 0 → done · exit 4 → re-run · exit 5 → inspect .error
 ```
 
-`sanzaru wait id1 id2 ...` polls mixed `video_*`/`resp_*` ids concurrently, JSONL as each finishes.
+`sanzaru wait id1 id2 ...` polls mixed `hf_*`/`resp_*` ids concurrently, JSONL as each finishes.
+
+## Video on Higgsfield — price first
+
+Every submit is **estimated before it is sent** and the envelope carries `result.cost`
+(`usd`, `basis`). Use `--dry-run` to see the price for free and `--max-cost USD` to refuse anything
+over budget. Models (`--model`): `seedance-2.5` (default; 4-30 s, 480p/720p, ~$0.46/s @720p,
+~$0.21/s @480p), `kling-3.0-std|pro|4k` (3-15 s, ~$0.35/$0.46/$1.16 per 5 s), `kling-3.0-turbo`,
+or any catalog slug (`sanzaru video models --catalog`) with `--arg KEY=JSON` for its parameters.
+
+```bash
+sanzaru video create "waves at dusk, slow push-in" --duration 5 --resolution 480p --dry-run | jq .result.cost
+ID=$(sanzaru video create "waves at dusk, slow push-in" --duration 5 --max-cost 3 -o ./out/w.mp4 | jq -r .result.id)
+sanzaru video extend "$ID" "a gull crosses the frame" --duration 5 --max-cost 3 -o ./out/w2.mp4   # reuses the output
+sanzaru video edit ./out/w.mp4 "make it snowing" --resolution 480p --max-cost 2 -o ./out/snow.mp4
+```
+
+`edit`/`extend` bill the source clip as well as the output. `video cancel ID` refunds a job still
+queued. Higgsfield keeps outputs ~7 days — download (`-o` / `--download`) anything worth keeping.
 
 ## Choosing the right image command
 
@@ -177,17 +200,19 @@ the token cap, so raise `--turn-tokens` and resume instead of paying for the sam
 
 - `-o` takes a file or directory (trailing `/`); parents are created; without it files land in the
   configured media dir, else the cwd (noted on stderr). The envelope always has the absolute path.
-- Inputs (`--input-ref`, `--input-image`, audio files) take real paths or bare media-dir filenames.
+- Inputs (`--image`, `--end-image`, `--ref`, video `SOURCE`, `--input-image`, audio files) take real paths or bare
+  media-dir filenames; video inputs also accept an `hf_…` id of a completed job.
 - Long content: inline, `@file`, or `-` (stdin) — e.g. `sanzaru audio speak @ch1.txt -o ch1.mp3`,
   `sanzaru podcast generate - < episode.json -o ep.mp3` (a script needs only `speakers` and
   `segments`; `id` defaults to `name`, `speed` to 1.0, and `config`/`title` are optional —
   see `podcast generate -h`).
 - Reference-image → video: keep the video prompt **motion-only** (the image already carries look):
-  `sanzaru image prepare hero.png --size 1280x720` then `video create "she turns and smiles" --input-ref ...`.
+  `sanzaru image prepare hero.png --aspect-ratio 16:9` (image-to-video framing follows the image) then
+  `video create "she turns and smiles" --image ...`.
 
 ## Command map
 
-`video` create/remix/status/wait/download/list/delete/files · `image`
+`video` create/edit/extend/status/wait/download/cancel/models/files · `image`
 generate/edit/create/status/wait/download/prepare/files · `audio`
 transcribe(--enhance; auto-windows files over 8 min)/chat/speak(--provider)/convert/compress/files(--latest) ·
 `podcast` rundown/simulate/generate(--provider, --render-mode) ·

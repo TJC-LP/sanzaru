@@ -4,116 +4,90 @@ Complete documentation for all MCP tools exposed by the sanzaru server.
 
 ## Video Generation Tools
 
+Video runs on **Higgsfield** (`HF_KEY`, 0.13.0+). OpenAI removed the Sora Videos API on
+2026-09-24; `list_videos`, `delete_video` and `remix_video` are gone (use `edit_video` /
+`extend_video`). These tools register only when `HF_KEY` is set. Jobs are asynchronous and
+return an `hf_<uuid>` id; wait with `wait_for([id], download=True)`.
+
+**Every job is priced before it is submitted.** The result carries `cost` = `{usd, credits,
+basis: "api" | "local_table" | "unpriced" | "unavailable", usd_after_discount,
+pricing_description, note}`. `max_cost_usd` refuses an over-budget job (nothing uploaded or
+charged); `dry_run=True` validates and prices without submitting. The Higgsfield API is prepaid
+and billed separately from a Higgsfield app subscription.
+
 ### `create_video`
-Generate videos using OpenAI's Sora API.
+Text-to-video, or image-to-video when `reference_image` is given.
 
 **Parameters:**
-- `prompt` (string, required): Text description of the video to generate
-- `model` (string, optional): Model to use - `"sora-2"` (default) or `"sora-2-pro"`
-- `seconds` (string, optional): Duration as string - `"4"`, `"8"`, or `"12"` (**NOTE:** Must be string, not integer)
-- `size` (string, optional): Resolution - `"720x1280"`, `"1280x720"`, `"1024x1792"`, or `"1792x1024"`
-- `input_reference_filename` (string, optional): Filename (not path) of reference image from `IMAGE_PATH`
+- `prompt` (string, required): What happens. With a reference image, describe only the motion
+- `model` (string, optional): `"seedance-2.5"` (default), `"kling-3.0-std"`, `"kling-3.0-pro"`,
+  `"kling-3.0-4k"`, `"kling-3.0-turbo"`, or any Higgsfield catalog id (`"vendor/model/operation"`)
+- `duration` (integer, optional): Seconds — Seedance 4-30, Kling 3-15 (model default 5)
+- `aspect_ratio` (string, optional): Text-to-video only — `"16:9"`, `"4:3"`, `"1:1"`, `"3:4"`,
+  `"9:16"`, `"21:9"` (Kling: 16:9 / 9:16 / 1:1)
+- `resolution` (string, optional): `"480p"` or `"720p"` (Seedance; Kling's tier fixes it)
+- `audio` (boolean, optional): Generate a soundtrack (model default: on)
+- `reference_image` (string, optional): Start frame — a filename in the reference directory, or
+  the `hf_…` id of a completed job
+- `end_image` (string, optional): Last frame (needs `reference_image`)
+- `extra` (object, optional): Model-specific parameters, e.g. `{"bitrate_mode": "standard"}`
+- `max_cost_usd` (number, optional): Refuse if the estimate is higher
+- `dry_run` (boolean, optional): Price and validate only
 
-**Returns:** Video object with `id`, `status`, `progress`, `model`, `seconds`, `size`
+**Returns:** `VideoJob` — `id` (`hf_…`, null for a dry run), `status`, `model`, `slug`,
+`operation`, `cost`, `arguments`
 
 **Example:**
 ```python
-video = create_video(
-    prompt="A serene mountain landscape at sunrise",
-    model="sora-2",
-    seconds="8",
-    size="1280x720"
+job = create_video(
+    prompt="A serene mountain landscape at sunrise, slow aerial push-in",
+    duration=8, aspect_ratio="16:9", resolution="720p",
+    max_cost_usd=5,
 )
+wait_for([job.id], download=True)
 ```
+
+---
+
+### `edit_video` / `extend_video`
+Re-render (edit) or continue (extend) an existing clip with Seedance 2.5.
+
+**Parameters:**
+- `prompt` (string, required): The change (edit) or what happens next (extend)
+- `source_video` (string, required): An `.mp4` in the video directory, or the `hf_…` id of a
+  completed job (its output is reused directly — no download)
+- `duration` (integer, extend only): Seconds to add, 4-30 (default 5). Edit keeps the source length
+- `model`, `resolution`, `audio`, `extra`, `max_cost_usd`, `dry_run`: as in `create_video`
+- `reference_images` (array of strings, optional): Guide images from the reference directory
+
+**Billing:** the source is billed as well as the output, at Seedance's 0.6× video-input rate
+(~$0.28 per billed second at 720p).
 
 ---
 
 ### `get_video_status`
-Check the status of a video generation job.
+One status check. To wait, use `wait_for` instead of calling this in a loop.
 
-**Parameters:**
-- `video_id` (string, required): ID returned from `create_video`
-
-**Returns:** Video object with updated `status` and `progress`
-
-**Status values:**
-- `"queued"`: Job is queued
-- `"in_progress"`: Currently generating (check `progress` field for 0-100%)
-- `"completed"`: Ready to download
-- `"failed"`: Generation failed
-
-**Example:**
-```python
-status = get_video_status(video.id)
-# Poll until status.status == "completed"
-```
+**Returns:** `VideoStatus` — `id`, `status` (`queued` / `in_progress` / `completed` / `failed` /
+`nsfw` / `canceled`), `done`, `error`, `video_url` (kept ~7 days)
 
 ---
 
 ### `download_video`
-Download a completed video to `VIDEO_PATH`.
+Save a completed job's output into the video directory (usually done by `wait_for(download=True)`).
 
 **Parameters:**
-- `video_id` (string, required): ID of completed video
-- `filename` (string, optional): Custom filename (defaults to `{video_id}.{extension}`)
-- `variant` (string, optional): What to download - `"video"` (default), `"thumbnail"`, or `"spritesheet"`
+- `video_id` (string, required): The `hf_…` id
+- `filename` (string, optional): Defaults to `{video_id}.mp4`
 
-**Variant formats:**
-- `"video"` → MP4 file
-- `"thumbnail"` → WEBP image
-- `"spritesheet"` → JPG image
-
-**Returns:** DownloadResult with `filename`, `variant`
-
-**Example:**
-```python
-result = download_video(video.id, filename="my_video.mp4")
-# File saved to: {VIDEO_PATH}/my_video.mp4
-```
+**Returns:** `DownloadResult` — `filename`, `format`
 
 ---
 
-### `list_videos`
-List all video generation jobs with pagination.
+### `cancel_video`
+Cancel a job that is still queued (refunded). A started job cannot be canceled.
 
-**Parameters:**
-- `limit` (integer, optional): Max results to return (default: 20, max: 100)
-- `after` (string, optional): Cursor for pagination (use `last` from previous response)
-- `order` (string, optional): Sort order - `"desc"` (default, newest first) or `"asc"`
-
-**Returns:** Object with `data` (array of video summaries), `has_more` (boolean), `last` (cursor)
-
-**Example:**
-```python
-page1 = list_videos(limit=20)
-if page1.has_more:
-    page2 = list_videos(limit=20, after=page1.last)
-```
-
----
-
-### `delete_video`
-Permanently delete a video from OpenAI's storage.
-
-**Parameters:**
-- `video_id` (string, required): ID of video to delete
-
-**Returns:** Confirmation with deleted video ID
-
-**Warning:** This is permanent and cannot be undone!
-
----
-
-### `remix_video`
-Create a new video by remixing an existing completed video.
-
-**Parameters:**
-- `previous_video_id` (string, required): ID of completed video to remix
-- `prompt` (string, required): New prompt to guide the remix
-
-**Returns:** NEW Video object with different video_id
-
-**Note:** This creates a brand new job. Poll the NEW video_id for completion.
+**Returns:** `{"id": ..., "canceled": true}`
 
 ---
 
@@ -121,7 +95,7 @@ Create a new video by remixing an existing completed video.
 List locally downloaded video files in `VIDEO_PATH`.
 
 **Parameters:**
-- `pattern` (string, optional): Glob pattern to filter filenames (e.g., `"*.mp4"`, `"sora*"`)
+- `pattern` (string, optional): Glob pattern to filter filenames (e.g., `"*.mp4"`, `"hf_*"`)
 - `file_type` (string, optional): Filter by type - `"mp4"`, `"webm"`, `"mov"`, or `"all"` (default)
 - `sort_by` (string, optional): Sort by `"name"`, `"size"`, or `"modified"` (default)
 - `order` (string, optional): `"desc"` (default) or `"asc"`
@@ -135,7 +109,7 @@ List locally downloaded video files in `VIDEO_PATH`.
 videos = list_local_videos()
 
 # Find MP4 files matching a pattern
-videos = list_local_videos(pattern="sora*", file_type="mp4")
+videos = list_local_videos(pattern="hf_*", file_type="mp4")
 
 # Get recently modified
 recent = list_local_videos(sort_by="modified", order="desc", limit=10)
@@ -353,13 +327,17 @@ recent = list_reference_images(sort_by="modified", order="desc", limit=10)
 ---
 
 ### `prepare_reference_image`
-Resize images to match Sora's required dimensions.
+Crop, pad or rescale an image to a video frame shape. Image-to-video has no `aspect_ratio`
+(framing follows the start image), so this is how you choose the shape of an animated reference.
 
 **Parameters:**
-- `input_filename` (string, required): Source image filename in `IMAGE_PATH`
-- `target_size` (string, required): Target size - `"720x1280"`, `"1280x720"`, `"1024x1792"`, or `"1792x1024"`
+- `input_filename` (string, required): Source image filename in the reference directory
+- `aspect_ratio` (string, optional): `"16:9"`, `"4:3"`, `"1:1"`, `"3:4"`, `"9:16"`, `"21:9"` —
+  target frame from Seedance's 720p sizes (e.g. 16:9 → 1280x720)
+- `size` (string, optional): Exact `"WxH"` target (64-4096 per edge). Pass exactly one of
+  `aspect_ratio` / `size`
 - `output_filename` (string, optional): Custom output name (defaults to `{original}_{width}x{height}.png`)
-- `resize_mode` (string, optional): How to handle aspect ratio - `"crop"` (default), `"pad"`, or `"rescale"`
+- `resize_mode` (string, optional): `"crop"` (default), `"pad"`, or `"rescale"`
 
 **Resize modes:**
 - **crop**: Scale to cover target, center crop excess (no distortion, may lose edges)
@@ -370,11 +348,7 @@ Resize images to match Sora's required dimensions.
 
 **Example:**
 ```python
-result = prepare_reference_image(
-    "photo.jpg",
-    "1280x720",
-    resize_mode="crop"
-)
+result = prepare_reference_image("photo.jpg", aspect_ratio="16:9", resize_mode="crop")
 # Creates: photo_1280x720.png
 ```
 
@@ -398,19 +372,12 @@ For detailed audio tool documentation, see [docs/audio/README.md](audio/README.m
 
 ## Best Practices
 
-### Polling for Completion
-Don't block - poll status periodically:
+### Waiting for completion
+Don't poll in a loop — hand the ids to `wait_for`, which blocks server-side, reports progress to
+the client on every poll, and returns on its deadline (call again to keep waiting):
 ```python
-# ❌ Don't block
-video = create_video(...)
-while get_video_status(video.id).status != "completed":
-    # blocks LLM session
-
-# ✅ Do poll with messaging
-video = create_video(...)
-status = get_video_status(video.id)
-if status.status != "completed":
-    return f"Video generating... {status.progress}% complete. Check back in a moment."
+job = create_video(prompt="...", max_cost_usd=3)
+result = wait_for([job.id], download=True)   # file saved on completion
 ```
 
 ### File Security
@@ -422,6 +389,7 @@ if status.status != "completed":
 ### Error Handling
 All tools return structured error messages. Common errors:
 - File not found in reference path
-- Invalid dimensions for target size
+- Over the cost cap (nothing submitted)
 - Video not completed yet
+- Account concurrency limit (4 Higgsfield jobs in flight — resubmit after one finishes)
 - API rate limits

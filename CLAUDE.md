@@ -4,11 +4,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A stateless MCP server (`mcp.server.mcpserver.MCPServer`, mcp SDK 2.x, protocol 2026-07-28) wrapping OpenAI's Sora Video API and Responses API (image generation). Supports both stdio (for MCP clients) and HTTP streaming (for web clients) transports. Exposes MCP tools for async video/image generation with polling-based workflows.
+A stateless MCP server (`mcp.server.mcpserver.MCPServer`, mcp SDK 2.x, protocol 2026-07-28) wrapping Higgsfield's video API (Seedance 2.5, Kling 3.0) and OpenAI's image, speech and transcription APIs. OpenAI removed the Sora Videos API on 2026-09-24; 0.13.0 moved video generation to Higgsfield. Supports both stdio (for MCP clients) and HTTP streaming (for web clients) transports. Exposes MCP tools for async video/image generation with polling-based workflows.
 
 **Key Architecture Principles:**
-- **Stateless**: No database, no in-memory job tracking. All state lives in OpenAI's cloud.
-- **Async polling pattern**: Create → Poll → Download workflow for both videos and images
+- **Stateless**: No database, no in-memory job tracking. Job state lives with the provider (Higgsfield for video, OpenAI for images).
+- **Async job pattern**: Create → `wait_for` → Download for both videos and images (the wait runs server-side)
 - **Security sandbox**: Reference images restricted to configured media paths with path traversal protection
 - **Type-safe**: Extensive use of TypedDict and Literal types from OpenAI SDK
 - **Dual transport**: stdio (default) for Claude Desktop, HTTP for web clients and remote access
@@ -31,7 +31,7 @@ SANZARU_HTTP_TOKEN="$(openssl rand -hex 32)" uv run sanzaru --transport http --h
 
 # Agent CLI (same tools as shell commands — see docs/cli.md)
 uv run sanzaru capabilities
-uv run sanzaru video create "a cat stretches" --seconds 4 -o ./out/cat.mp4
+uv run sanzaru video create "a cat stretches" --duration 4 --resolution 480p --max-cost 1 -o ./out/cat.mp4
 uv run sanzaru image generate "an icon" --quality high -o ./art/icon.png
 uv run sanzaru podcast generate @script.json --verify -o ep.mp3   # check the audio says it
 uv run sanzaru podcast rundown "why TTS drops sentence tails" --acts 3 -m 6 -o rundown.json
@@ -60,19 +60,28 @@ The server is organized into focused modules for maintainability and code reuse:
 ```
 src/sanzaru/
 ├── server.py           # MCPServer initialization & tool registration (run_server + argparse main shim)
-├── polling.py          # wait_for_video/wait_for_image (neutral async wait loops, used by the CLI)
+├── polling.py          # provider-agnostic wait loop (is_transient hook) + wait_for_video/wait_for_image
 ├── cli/                # Agent CLI (click): root group runs the server when no subcommand given
 │   ├── __init__.py     # `sanzaru` entry point (console script → sanzaru.cli:main)
 │   ├── _runtime.py     # run_async bridge, CLIError → envelope/exit-code mapping, client lifecycle
 │   ├── _output.py      # JSON envelope contract (stdout) + exit-code constants
 │   ├── _io.py          # -o/input path resolution onto storage path_overrides; @file/- content args
-│   ├── video.py        # video create/remix/status/wait/download/list/delete/files
+│   ├── video.py        # video create/edit/extend/status/wait/download/cancel/models/files (Higgsfield)
 │   ├── image.py        # image generate/edit (sync) + create/status/wait/download (async) + prepare/files
 │   ├── audio.py        # audio transcribe/chat/speak/convert/compress/files
 │   ├── podcast.py      # podcast rundown (plan) / simulate (realtime) / generate (scripted TTS)
 │   ├── misc.py         # top-level `wait` (mixed job types) + `capabilities`
 │   └── serve.py        # explicit `sanzaru serve`
 ├── types.py            # TypedDict definitions
+├── video_models.py     # curated Higgsfield video models + argument builder (stdlib-only; CLI choices)
+├── higgsfield/         # Higgsfield video backend (api.higgsfield.ai)
+│   ├── client.py       # thin httpx client: submit (never resent) / status / estimate / upload / stream_output
+│   ├── errors.py       # HiggsfieldAPIError (status_code, kind), concurrency + cost-cap errors
+│   ├── ids.py          # hf_<uuid> job ids, Sora-id message, model-slug path guard
+│   ├── pricing.py      # local Seedance pricing, resolve_cost / enforce_cap
+│   ├── media.py        # MP4 duration from the mvhd atom, input content types
+│   ├── limits.py       # per-call CapacityLimiter, upload size cap
+│   └── types.py        # response TypedDicts
 ├── config.py           # OpenAI client + path configuration (get_client/set_client, get_path)
 ├── security.py         # File security utilities (validate_safe_path, check_not_symlink, open_nofollow)
 ├── utils.py            # Shared helpers (+ validate_resource_id, reject_reserved_name)
@@ -113,14 +122,14 @@ src/sanzaru/
 │   │   └── qc.py       # transcribe rendered audio, judge it against the rundown
 │   └── services/       # TTSService, FileService, AudioService, TranscriptionService
 ├── tools/              # Tool implementations
-│   ├── video.py        # 7 video tools
+│   ├── video.py        # Higgsfield video tools (create/edit/extend/status/download/cancel) + list_local_videos
 │   ├── reference.py    # 2 reference image tools
 │   ├── image.py        # 3 image generation tools (Responses API)
 │   ├── images_api.py   # 2 image tools (Images API, gpt-image-2.5 by default)
 │   ├── audio.py        # 9 audio tools (list, transcribe, TTS, chat)
 │   ├── podcast.py      # 1 podcast generation tool (scripted TTS)
 │   ├── simulate_podcast.py # 1 simulated podcast tool (realtime agents, parallel acts)
-│   ├── wait.py         # 1 job tool: wait_for (server-side wait on video_*/resp_* ids, progress per poll)
+│   ├── wait.py         # 1 job tool: wait_for (server-side wait on hf_*/resp_* ids, progress per poll)
 │   ├── inspect.py      # 2 inspection tools: inspect_image / inspect_video_frame (vision content for the model)
 │   └── media_viewer.py # 2 media viewer tools (MCP App)
 └── app/                # Frontend assets (built, committed)
@@ -128,7 +137,7 @@ src/sanzaru/
 ```
 
 **server.py** registers all tools with MCPServer decorators and delegates to tool implementations; the media viewer goes through the SDK's `Apps` extension so the server advertises `io.modelcontextprotocol/ui`
-**types.py** defines all return types (DownloadResult, VideoSummary, etc.)
+**types.py** defines shared return types (DownloadResult, VideoFile, WaitResult, etc.); video job shapes (VideoJob, VideoStatus) live in `tools/video.py`
 **config.py** provides `get_client()` and `get_path()` with validation
 **security.py** provides reusable functions: `validate_safe_path()`, `check_not_symlink()`, `safe_open_file()`
 **utils.py** provides helpers: `suffix_for_variant()`, `generate_filename()`
@@ -420,7 +429,7 @@ Resolves from `SANZARU_MEDIA_PATH/{subdir}` (with auto-creation) or individual e
 
 `inspect_image` and `inspect_video_frame` return MCP **image content** (the SDK's
 `Image` helper) instead of metadata, so the model can check a refinement chain, an
-edit, a crop, or what Sora actually rendered. `view_media` is the opposite tool: it
+edit, a crop, or what a video render actually shows. `view_media` is the opposite tool: it
 opens a player for the *person*. The names are unalike on purpose.
 
 Three constraints from Claude's vision input drive the whole design, and none of them
@@ -464,7 +473,7 @@ Non-obvious things that are easy to break:
 ### Two API Integration Patterns
 
 **0. Waiting on jobs (`wait_for`)**
-- One call over any mix of `video_*` and `resp_*` ids, waited concurrently via `polling.py`
+- One call over any mix of `hf_*` (video) and `resp_*` (image) ids, waited concurrently via `polling.py`
 - Reports progress to the client on every poll (that resets clients' idle timers — Claude Code
   aborts a silent HTTP tool call at 5 min and backgrounds calls past 2 min)
 - The deadline *returns* (`timed_out=true` per job, last-seen status) instead of raising; call again
@@ -472,12 +481,44 @@ Non-obvious things that are easy to break:
 - MCP Tasks are not used: mcp 2.x ships only the wire types and no Claude client implements the
   extension (see `docs/async-task-tracking.md`)
 
-**1. Sora Video API (client.videos.*)**
-- Async jobs with polling: `create()` → `retrieve()` → `download_content()`
-- Status progression: `queued` → `in_progress` → `completed` or `failed`
-- Progress tracking: 0-100 integer
-- Uses OpenAI SDK types: `Video`, `VideoModel`, `VideoSize`, `VideoSeconds`
-- Download supports optional custom filenames with path traversal protection
+**1. Higgsfield video API (`higgsfield/`, `tools/video.py`)**
+
+OpenAI removed the Videos API and every Sora model on 2026-09-24 (no replacement), so video
+runs on Higgsfield (`https://api.higgsfield.ai`, `HF_KEY=key_id:key_secret` from the API
+console). Submit `POST /<model-slug>` → `request_id`; status `GET /requests/{id}/status` →
+`queued|in_progress|completed|failed|nsfw|canceled` (no progress %); `video.url` on completion.
+
+Load-bearing invariants — each one closed a specific way to lose money or leak something:
+
+- **A submit is never resent once it may have left.** No idempotency keys exist and a successful
+  job is billed, so `HiggsfieldClient.submit` retries only `ConnectError`/`ConnectTimeout` (the
+  request provably never left); a failure after sending is `kind="ambiguous_submit"` and the CLI
+  says `maybe_submitted`. Reads (status, estimate, upload grant, cancel) retry 5xx/429/503 and
+  transport errors. This is why the official `higgsfield-client` SDK is not used: it resends every
+  method, the generation POST included, on 5xx/429 — duplicate charged jobs — carries no status
+  code on its errors, and never closes its httpx clients.
+- **The key never reaches a storage host.** Two httpx clients: `_api` carries `Authorization: Key
+  id:secret`; `_bare` (no auth, https-only) does the presigned PUT and the output download.
+- **The model slug is a URL-path injection sink** (`POST /<slug>`), so `ids.validate_slug` confines
+  it to catalog-shaped paths and refuses `requests/`, `files/`, `estimate/`, `models/`.
+- **Job ids are `hf_<uuid>`**, parsed back to a UUID before any path interpolation (the client
+  re-checks). The prefix keeps `wait_for` dispatching by kind; a Sora `video_…` id gets
+  `ids.SORA_RETIRED` instead of a confusing 404.
+- **Price before upload.** `_submit_job` validates a curated model locally, then estimates with
+  placeholder input URLs (`/estimate` does not fetch inputs; it validates ranges but ignores
+  unknown keys), enforces `max_cost_usd`, and only then uploads and submits. A refused job or a
+  dry run uploads nothing.
+- **Seedance is priced locally** (`higgsfield/pricing.py`) because its `/estimate` answers in
+  prose: tokens = ceil(w·h·(input+generated s)·24/1024) at $0.0214/1k (480/720p) reproduces the
+  published $0.4622/s @720p; jobs with a video input (edit, extend) bill input + output at **0.6×**.
+  A cap over a job nothing can price refuses (`UnpricedVideoError`), never proceeds uncapped.
+- **The concurrency cap answers 400, not 429.** 4 jobs in flight per account, server-side and
+  shared with the Higgsfield app — a local limiter cannot enforce it, so it surfaces as
+  `HiggsfieldConcurrencyError` (a rejected submit created nothing; resubmitting is safe).
+  `SANZARU_HIGGSFIELD_MAX_CONCURRENCY` only bounds local fan-out (uploads, downloads, waits).
+- **Outputs live about 7 days** — `wait_for(download=true)` / `download_video` copy them into storage.
+- **API billing is separate from a Higgsfield app/CLI subscription**, and there is no API balance
+  endpoint, so the per-job estimate + cap is the only spend guardrail sanzaru can offer.
 
 **2. Responses API (client.responses.*)**
 - Background image generation: `create(background=True)` with `tools=[{"type": "image_generation"}]`
@@ -644,50 +685,47 @@ they are easy to "simplify" away.
   carries `checked` separately from `ok`; folding them made a transcription failure
   report success.
 
-## Prompting Sora with Reference Images
+## Prompting video with reference images
 
-**CRITICAL**: When using `input_reference_filename`, keep prompts simple and focused on motion/action ONLY.
+**CRITICAL**: When passing `reference_image`, keep prompts simple and focused on motion/action ONLY.
+The start frame already fixes the subject, setting, framing, style and lighting; the prompt should
+describe what happens next, the motion and the camera.
 
-❌ **Bad**: Re-describing what's already in the image
+❌ **Bad**: re-describing what's already in the image
 ```python
-create_video(
-    prompt="A pilot in orange suit sitting in cockpit with instruments glowing...",
-    input_reference_filename="pilot.png"
-)
+create_video(prompt="A pilot in orange suit sitting in cockpit with instruments glowing...",
+             reference_image="pilot.png")
 ```
 
-✅ **Good**: Describing only the action/transformation
+✅ **Good**: describing only the action
 ```python
-create_video(
-    prompt="The pilot glances up, takes a breath, then returns focus to the instruments.",
-    input_reference_filename="pilot.png"
-)
+create_video(prompt="The pilot glances up, takes a breath, then returns focus to the instruments.",
+             reference_image="pilot.png")
 ```
 
-The reference image already contains: character, setting, framing, style, lighting.
-The prompt should only describe: what happens next, motion, camera movement.
-
-See `docs/sora-prompting-guide.md` and `docs/sora2_prompting_guide.ipynb` for complete prompting guidelines.
+Image-to-video has no `aspect_ratio` (Seedance frames the output from the image), so crop the
+reference first with `prepare_reference_image(aspect_ratio="16:9")`. See
+`docs/video-prompting-guide.md` for the full guide.
 
 ## Typical Workflows
 
-### Generate Reference Image → Animate with Sora
+### Generate Reference Image → Animate
 ```python
-# 1. Generate reference image
-resp = create_image(prompt="futuristic pilot in mech cockpit", size="1536x1024")
-get_image_status(resp.id)  # poll until completed
-download_image(resp.id, filename="pilot.png")
+# 1. Generate the start frame (synchronous)
+generate_image(prompt="futuristic pilot in mech cockpit", size="1536x1024", filename="pilot.png")
 
-# 2. Resize for Sora if needed
-prepare_reference_image("pilot.png", target_size="1280x720", resize_mode="crop")
+# 2. Crop to the frame shape you want (image-to-video framing follows the image)
+prepare_reference_image("pilot.png", aspect_ratio="16:9", resize_mode="crop")
 
-# 3. Create video with simple motion prompt
-create_video(
-    prompt="The pilot looks up and smiles.",
-    input_reference_filename="pilot_1280x720.png",
-    size="1280x720",
-    seconds="8"
-)
+# 3. Price it, then animate with a motion-only prompt
+create_video(prompt="The pilot looks up and smiles.", reference_image="pilot_1280x720.png",
+             duration=5, resolution="480p", dry_run=True)       # returns cost, submits nothing
+job = create_video(prompt="The pilot looks up and smiles.", reference_image="pilot_1280x720.png",
+                   duration=5, resolution="480p", max_cost_usd=1.5)
+wait_for([job.id], download=True)
+
+# 4. Continue the shot from the finished job — no download/re-upload
+extend_video("He reaches for the throttle.", source_video=job.id, duration=5, max_cost_usd=3)
 ```
 
 ### Iterative Image Refinement
@@ -710,7 +748,7 @@ resp3 = create_image(
 
 ## Image Resize Modes
 
-Three modes available in `prepare_reference_image`:
+`prepare_reference_image(input, aspect_ratio=... | size="WxH", resize_mode=...)` — target frame from `higgsfield/pricing.DIMENSIONS[("720p", aspect)]` or an explicit size. Three modes:
 - **crop**: Preserve aspect ratio, scale to cover target, center crop excess (no distortion, may lose edges)
 - **pad**: Preserve aspect ratio, scale to fit, add black letterbox bars (no distortion, full image preserved)
 - **rescale**: Stretch/squash to exact dimensions (may distort, no cropping/padding)
@@ -719,7 +757,8 @@ Three modes available in `prepare_reference_image`:
 
 Required:
 ```bash
-OPENAI_API_KEY="sk-..."
+OPENAI_API_KEY="sk-..."   # images, speech, transcription, podcasts
+HF_KEY="key_id:key_secret" # video generation (Higgsfield) — tools register only when set
 ```
 
 ### Media Storage (choose one)
@@ -741,6 +780,15 @@ Individual paths take precedence over `SANZARU_MEDIA_PATH` when both are set.
 Optional:
 ```bash
 LOG_LEVEL="INFO"  # DEBUG, INFO, WARNING, ERROR (defaults to INFO)
+
+# Higgsfield video generation (0.13.0+). From the API console, NOT the Higgsfield app:
+# the API is prepaid and billed separately from any app/CLI subscription.
+HF_KEY="key_id:key_secret"
+SANZARU_HIGGSFIELD_MAX_CONCURRENCY=4   # local fan-out bound (uploads/downloads/waits); the
+                                       # account's 4-in-flight cap is server-side
+SANZARU_HIGGSFIELD_MAX_UPLOAD_MB=200   # refuse larger inputs before reading them
+# SANZARU_HIGGSFIELD_PRICE_SEEDANCE_2_5=0.0214[,0.0234]  # override the local Seedance rate
+#                                        (USD per 1k tokens; exported only, never read from .env)
 
 # ElevenLabs TTS provider — needs `uv pip install 'sanzaru[elevenlabs]'`
 ELEVENLABS_API_KEY="..."
@@ -858,7 +906,7 @@ When no user context is set (default), paths are unchanged. On a shared deployme
 
 ### Known Limitations (Databricks)
 
-- **`write_stream()` buffers in memory** — Databricks Files API requires a complete PUT body. For typical Sora videos (20-60 MB) this is acceptable; monitor memory for very large files.
+- **`write_stream()` buffers in memory** — Databricks Files API requires a complete PUT body. For typical generated clips (a few to tens of MB) this is acceptable; monitor memory for very large files.
 - **`stat()` returns `modified_timestamp=0.0`** — HEAD response doesn't include mtime.
 - **`local_path()` downloads to temp file** — Libraries needing filesystem access (PIL, pydub) get a temp copy that's cleaned up on context exit.
 
@@ -1029,7 +1077,7 @@ drops the token requirement only together with an allowlist. See `build_http_app
 **Endpoints:** MCP tools available at `http://{host}:{port}/mcp`
 
 **Key features:**
-- **Stateless by design:** No session IDs required (all state lives in OpenAI's cloud)
+- **Stateless by design:** No session IDs required (job state lives with the providers)
 - **SSE streaming:** Server-Sent Events for real-time communication
 - **CORS support:** Can be configured via Starlette middleware (see Python MCP SDK docs)
 
@@ -1059,13 +1107,19 @@ arguments rather than read from server settings (`mcp.settings.stateless_http` a
 
 ## Model Selection Guidelines
 
-### Video Generation (Sora)
-**sora-2**: Faster, cheaper, good for iteration and testing
-**sora-2-pro**: Slower, higher quality, for final production (supports larger resolutions)
+### Video Generation (Higgsfield)
 
-**Supported video sizes:**
-- Both models: `720x1280`, `1280x720`
-- Pro only: `1024x1792`, `1792x1024`
+Curated models (`video_models.VIDEO_MODELS`; any other catalog slug works as a raw passthrough):
+
+| id | durations | notes | price (measured 2026-09-28, before discounts) |
+|---|---|---|---|
+| `seedance-2.5` (default) | 4–30 s | 480p/720p, 6 aspect ratios, audio, **edit + extend** | ~$0.46/s @720p, ~$0.21/s @480p; edit/extend bill source+output at 0.6× (~$0.28/s @720p) |
+| `kling-3.0-std` / `-pro` / `-4k` | 3–15 s | 16:9/9:16/1:1, audio (`sound`), end frame (`last_image_url`), tier fixes resolution | ~$0.35 / $0.46 / $1.16 per 5 s |
+| `kling-3.0-turbo` | 3–15 s | fastest; no end frame or audio switch | ~$0.31 per 5 s |
+
+Per-model rules live in `video_models.py` (`build_arguments` refuses bad values before any network
+call); each spec carries a `verified` date. The catalog (`GET /models`, undocumented) lists 66
+video models; there is no per-model schema endpoint.
 
 ### Image Generation
 
@@ -1132,8 +1186,8 @@ resp = create_image(
 
 ## Type Safety Notes
 
-- `VideoSeconds` must be string literal: `"4"`, `"8"`, or `"12"` (NOT integers)
-- `VideoSize` and image sizes are string Literals enforced by type system
+- Video `duration` is an integer number of seconds, validated per model (Seedance 4–30, Kling 3–15)
+- `AspectRatio` / `Resolution` (video) and image sizes are string Literals enforced by type system
 - Use `omit` from `openai._types` when converting `None` to SDK parameters
 - All async functions use `AsyncOpenAI` client
 
@@ -1155,7 +1209,7 @@ resp = create_image(
   - ✅ `list_reference_images()` - verb first
   - ✅ `get_video_status()` - verb first
 
-**MCP Tool Names (Public API): Keep "sora" prefix for branding**
+**MCP Tool Names (Public API): verb_noun, provider-neutral**
 - Server wrapper functions can keep descriptive names for MCP tools
 - Example: MCP tool `create_video` → calls internal `create_video()`
 
