@@ -51,13 +51,29 @@ def test_defaults_are_the_api_defaults():
 def test_extend_bills_source_plus_added():
     got = local_estimate("seedance-2.5", "extend", {"duration": 5, "resolution": "480p"}, input_video_seconds=5.0)
     largest = max((wh for (res, _), wh in DIMENSIONS.items() if res == "480p"), key=lambda wh: wh[0] * wh[1])
-    assert got == pytest.approx(_seconds_cost(*largest, 10), abs=1e-9)
+    assert got == pytest.approx(_seconds_cost(*largest, 10) * 0.6, abs=1e-9)
 
 
 def test_edit_bills_the_source_twice():
     got = local_estimate("seedance-2.5", "edit", {"resolution": "480p"}, input_video_seconds=6.0)
     largest = max((wh for (res, _), wh in DIMENSIONS.items() if res == "480p"), key=lambda wh: wh[0] * wh[1])
-    assert got == pytest.approx(_seconds_cost(*largest, 12), abs=1e-9)
+    assert got == pytest.approx(_seconds_cost(*largest, 12) * 0.6, abs=1e-9)
+
+
+def test_video_input_rate_reproduces_the_published_figure():
+    """edit/extend estimate text, 2026-09-28: $0.2773/s of input+generated at 720p 16:9 (0.6x)."""
+    from sanzaru.higgsfield.pricing import PRICES
+
+    pricing = PRICES["seedance-2.5"]
+    per_second = math.ceil(1280 * 720 * 24 / 1024) / 1000 * pricing.usd_per_1k_tokens["720p"]
+    assert per_second * pricing.video_input_factor == pytest.approx(0.2773, abs=1e-4)
+
+
+def test_env_override_keeps_the_video_input_factor(monkeypatch):
+    from sanzaru.higgsfield.pricing import price_env_name, prices_for
+
+    monkeypatch.setenv(price_env_name("seedance-2.5"), "0.03")
+    assert prices_for("seedance-2.5").video_input_factor == 0.6
 
 
 @pytest.mark.parametrize("op", ["edit", "extend"])

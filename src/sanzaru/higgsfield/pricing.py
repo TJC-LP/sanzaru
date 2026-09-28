@@ -42,13 +42,22 @@ PRICES_CAPTURED = "2026-09-28"
 
 @dataclass(frozen=True, slots=True)
 class TokenPricing:
-    """USD per 1,000 video tokens, per resolution tier."""
+    """USD per 1,000 video tokens, per resolution tier.
+
+    `video_input_factor` scales the rate for jobs with a video input (edit,
+    extend). Seedance bills those at 0.6x — $0.01284/1k at 480/720p, per the
+    video-edit and video-extend estimate text captured 2026-09-28 — over
+    input *plus* generated seconds.
+    """
 
     usd_per_1k_tokens: Mapping[str, float]
+    video_input_factor: float = 1.0
 
 
 PRICES: dict[str, TokenPricing] = {
-    "seedance-2.5": TokenPricing(usd_per_1k_tokens={"480p": 0.0214, "720p": 0.0214, "1080p": 0.0234}),
+    "seedance-2.5": TokenPricing(
+        usd_per_1k_tokens={"480p": 0.0214, "720p": 0.0214, "1080p": 0.0234}, video_input_factor=0.6
+    ),
 }
 
 # Output frame sizes by (resolution, aspect ratio). Only the 16:9 row is
@@ -112,7 +121,13 @@ def _env_override(family: str) -> TokenPricing | None:
         return None
     standard = values[0]
     high = values[1] if len(values) == 2 else values[0]
-    return TokenPricing(usd_per_1k_tokens={"480p": standard, "720p": standard, "1080p": high})
+    # The override replaces the token rate only; the video-input discount is a
+    # property of the model, not of the price list, so it carries over.
+    base = PRICES.get(family)
+    return TokenPricing(
+        usd_per_1k_tokens={"480p": standard, "720p": standard, "1080p": high},
+        video_input_factor=base.video_input_factor if base else 1.0,
+    )
 
 
 def prices_for(family: str) -> TokenPricing | None:
@@ -170,6 +185,7 @@ def local_estimate(
         size = frame_size(resolution, None)
         generated = input_video_seconds if operation == "edit" else float(duration)
         seconds = input_video_seconds + generated
+        rate *= pricing.video_input_factor
     else:
         return None
     if size is None:
