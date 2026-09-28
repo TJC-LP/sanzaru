@@ -174,8 +174,10 @@ def _encode(img: PILImage.Image, fmt: str) -> bytes:
     elif fmt == "webp":
         img.save(buffer, format="WEBP", quality=90, method=4)
     else:
-        if img.mode == "P":
-            img = img.convert("RGBA" if "transparency" in img.info else "RGB")
+        # Pillow can decode modes PNG cannot encode, including CMYK JPEGs.
+        # Keep native PNG modes intact and preserve alpha when normalizing.
+        if img.mode not in ("1", "L", "LA", "I", "I;16", "I;16B", "RGB", "RGBA"):
+            img = img.convert("RGBA" if img.has_transparency_data else "RGB")
         img.save(buffer, format="PNG", optimize=True)
     return buffer.getvalue()
 
