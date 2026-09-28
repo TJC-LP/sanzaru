@@ -37,8 +37,11 @@ if TYPE_CHECKING:
 
 _MODELS: tuple[str, ...] = get_args(ElevenLabsModel)
 
-# eleven_v3 renders expressively but ignores the speed setting entirely.
-_NO_SPEED_MODELS = frozenset({"eleven_v3"})
+# These accept voice_settings.speed and ignore it: measured 2026-09-28, the same
+# 150-char line rendered within 2% of one length at 0.7, 1.0 and 1.2 on every one
+# of them, while eleven_multilingual_v2 ran 1.79x longer at 0.7 than at 1.2. The
+# API returns 200 either way, so refusing here is the only way a caller learns it.
+_NO_SPEED_MODELS = frozenset({"eleven_v4", "eleven_v4_turbo", "eleven_v3"})
 
 _MAX_ATTEMPTS = 4
 _BACKOFF_BASE_SECONDS = 1.0
@@ -143,7 +146,7 @@ class ElevenLabsTTSProvider:
         if request.model in _NO_SPEED_MODELS:
             if speed != 1.0:
                 raise ValueError(
-                    f"{request.model} does not support speed adjustment (got {speed}); "
+                    f"{request.model} ignores speed adjustment (got {speed}); "
                     "use eleven_multilingual_v2 for speed control"
                 )
         else:
@@ -159,7 +162,7 @@ class ElevenLabsTTSProvider:
         if request.instructions and request.instructions.strip():
             logger.warning(
                 "instructions is an OpenAI-only parameter and is ignored by provider='elevenlabs'; "
-                "use inline audio tags such as [whispers] in the text with eleven_v3"
+                "use inline audio tags such as [whispers] in the text with eleven_v4"
             )
 
     async def synthesize_chunk(self, request: SpeechRequest) -> bytes:

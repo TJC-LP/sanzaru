@@ -121,7 +121,7 @@ async def test_elevenlabs_path(mocker, storage, tmp_audio_path, fake_elevenlabs)
     assert (tmp_audio_path / result.output_file).read_bytes() == b"ELAUDIO"
     call = client.text_to_speech.calls[0]
     assert call["voice_id"] == "voice_abc"
-    assert call["model_id"] == "eleven_v3"  # provider default
+    assert call["model_id"] == "eleven_v4"  # provider default
 
 
 @pytest.mark.anyio
@@ -156,7 +156,7 @@ async def test_tool_elevenlabs_uses_the_provider_default_model(mocker, storage, 
 
     await create_audio(text_prompt="Hello", provider="elevenlabs", voice="voice_abc")
 
-    assert client.text_to_speech.calls[0]["model_id"] == "eleven_v3"
+    assert client.text_to_speech.calls[0]["model_id"] == "eleven_v4"
 
 
 @pytest.mark.anyio

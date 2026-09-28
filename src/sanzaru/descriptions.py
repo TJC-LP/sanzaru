@@ -697,10 +697,14 @@ Providers:
 
 Model recommendation:
 - gpt-4o-mini-tts: RECOMMENDED for openai - High quality, fast, cost-effective (DEFAULT)
-- eleven_v3: default for elevenlabs - most expressive, supports inline audio tags,
-  but does NOT support speed adjustment
+- eleven_v4: RECOMMENDED for elevenlabs (DEFAULT) - most expressive, 90+ languages, inline
+  audio tags that can be stacked ("[whispers] [nervously] ..."); ignores speed, so any speed
+  other than 1.0 is refused
+- eleven_v4_turbo: near-v4 quality at half the character cost and lower latency;
+  good for drafts. Also ignores speed
+- eleven_v3: previous generation; ignores speed
 - eleven_multilingual_v2: use when you need ElevenLabs speed control (0.7-1.2)
-- eleven_flash_v2_5 / eleven_turbo_v2_5: lower latency and cost
+- eleven_flash_v2_5 / eleven_turbo_v2_5: lowest latency and cost
 
 Available voices (OpenAI — each with distinct characteristics):
 - alloy: Neutral, balanced (good default)
@@ -719,14 +723,15 @@ not names from the list above.
 
 Parameters:
 - text_prompt: Text to convert to speech (required, any length)
-- model: TTS model. Default: "gpt-4o-mini-tts" (openai) / "eleven_v3" (elevenlabs)
+- model: TTS model. Default: "gpt-4o-mini-tts" (openai) / "eleven_v4" (elevenlabs)
 - voice: OpenAI voice name, or an ElevenLabs voice id. Default: "alloy" (openai); elevenlabs has
   no default and requires an explicit voice id
 - instructions: Optional style guidance (e.g., "Speak slowly and clearly", "Use British accent", "Sound excited").
   OPENAI ONLY — ElevenLabs ignores it. For expressive ElevenLabs delivery, put inline audio tags
-  in the text itself with eleven_v3: "[whispers] this is the secret. [laughs] Got you."
+  in the text itself with eleven_v4: "[whispers] this is the secret. [laughs] Got you."
 - speed: Speech speed. openai: 0.25 (very slow) to 4.0 (very fast). elevenlabs: 0.7-1.2, and
-  eleven_v3 rejects any value other than 1.0. Default: 1.0
+  the v3/v4 models reject any value other than 1.0 (the API would accept it and read at normal
+  pace). Default: 1.0
 - output_filename: Optional custom filename (defaults to "speech_<timestamp>.mp3"). Must carry an audio
   extension (mp3, wav, flac, m4a, ogg, ...); this tool cannot mint a .json or .html
 - provider: "openai" (default) or "elevenlabs"
@@ -770,6 +775,16 @@ audio file with configurable silence gaps and optional loudness normalization.
 Speakers choose their provider independently, so one episode can mix OpenAI and ElevenLabs
 voices. Provider precedence: speaker.provider > config.provider > the `provider` argument.
 
+**Recommended engine for a scripted conversation (two or more voices):**
+ElevenLabs speakers on eleven_v4 (the ElevenLabs default), config.render_mode "dialogue",
+and verify=true. The model paces the exchange and performs inline audio tags — stacked
+ones too ("[laughs] [defensive] Oh, we checked.") — and verify confirms every line is
+actually in the audio. Use eleven_v4_turbo (per-speaker "model") for drafts: half the
+character cost, roughly half the render time. Stay on "segments" when you need exact gaps,
+per-speaker voice_settings, or cheap single-line retries (see Render modes below).
+OpenAI (the default provider) needs no extra key or extra, so use it when ElevenLabs is
+not configured — OpenAI speakers never batch, so render_mode does not change them.
+
 All state is in-memory — no temp files are created. The final output is written directly
 to the audio storage path.
 
@@ -799,11 +814,11 @@ one edit cycle rather than one per field.
       "id": string,                  // Referenced in segments (optional; defaults to "name", so
                                      // segments may just say the name). Must be unique.
       "speed": number,               // Optional, default 1.0. openai 0.25-4.0; elevenlabs 0.7-1.2;
-                                     // eleven_v3 rejects any value but 1.0 — omit it there
+                                     // the v3/v4 models reject any value but 1.0 — omit it there
       "instructions": string,        // Style directives (e.g. "Speak confidently and clearly").
                                      // Optional, and OPENAI ONLY — ignored by elevenlabs speakers;
                                      // use inline audio tags like [whispers] in segment text with
-                                     // eleven_v3, and omit this field entirely
+                                     // eleven_v4, and omit this field entirely
       "role": string,                // Optional: "host"|"cohost"|"narrator"|"interviewer"|"guest"
       "provider": string,            // Optional: "openai" (default) | "elevenlabs"
       "model": string,               // Optional per-speaker model override; must belong to the
@@ -840,8 +855,8 @@ one edit cycle rather than one per field.
     "provider": string,              // Optional episode default: "openai" | "elevenlabs"
     "max_concurrency": number,       // Optional cap on parallel TTS requests (positive int;
                                      // default 32 per provider). ElevenLabs enforces a per-tier
-                                     // cap (2-15, or 4-30 on Flash/Turbo); lower this if you see
-                                     // HTTP 429.
+                                     // cap (2-15, or 4-30 on Flash/Turbo v2.5 — v4 Turbo is in
+                                     // the standard pool); lower this if you see HTTP 429.
     "render_mode": string,           // Optional: "segments" (default) | "dialogue"
     "dialogue_stability": number     // Optional 0-1, dialogue mode only
   }
@@ -852,7 +867,7 @@ one edit cycle rather than one per field.
   silence gaps. Full control; every segment is independent, so a single bad
   render can be retried on its own.
 - "dialogue": consecutive turns that share a dialogue-capable provider and model
-  (currently ElevenLabs eleven_v3) are sent as ONE request, so the model paces
+  (ElevenLabs eleven_v4, eleven_v4_turbo, eleven_v3) are sent as ONE request, so the model paces
   the conversation itself — turn-taking, reactions landing on the previous line.
   Noticeably more natural. Turns that cannot join a run still render per segment,
   so mixed episodes keep working: OpenAI speakers, other models, a lone turn, a
@@ -898,6 +913,14 @@ confident in.
 - Narrative/documentary: fable (narrator) + alloy (interview subject)
 - Debate: ash (moderator) + shimmer (guest A) + nova (guest B)
 
+**ElevenLabs premade voices** (ids are the same on every account):
+- George JBFqnCBsd6RMkjVDRZzb: warm British storyteller — hosts, narrators
+- Alice Xb7hH8MSUJpSbSDYk0k2: clear British educator — hosts, explainers
+- Laura FGY2WhTYpPnrIDTdsKH5: quirky, enthusiastic — co-hosts
+- Roger CwhRBWXzGAHq8TQ4Fs17: laid-back, dry — co-hosts, skeptics
+- Matilda XrExE9yKIg1WjnnlVkGX: knowledgeable, professional — experts, guests
+Pairings that dogfooded well on eleven_v4: George + Laura; Alice + Roger + Matilda.
+
 **Duration estimation:**
 Before running, estimate duration: ~150 words/minute at 1.0x speed.
 A 10-minute podcast needs ~1500 words of content.
@@ -905,7 +928,7 @@ A 10-minute podcast needs ~1500 words of content.
 **Parameters:**
 - script: PodcastScript object (required)
 - model: Default model for OpenAI speakers. Default: "gpt-4o-mini-tts". ElevenLabs speakers
-  fall back to "eleven_v3" unless they set their own "model".
+  fall back to "eleven_v4" unless they set their own "model".
 - provider: Episode-wide default provider, overridden by config.provider and speaker.provider.
   Default: "openai"
 - output_filename: Optional name to write the episode under (defaults to a title-and-timestamp

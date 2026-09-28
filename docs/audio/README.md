@@ -29,7 +29,8 @@ export OPENAI_API_KEY=sk-...
 ```bash
 uv add "sanzaru[elevenlabs]"
 export ELEVENLABS_API_KEY=...
-# Optional: defaults are the Free-tier caps (2, or 4 on flash/turbo). Raise it on
+# Optional: defaults are the Free-tier caps (2, or 4 on flash/turbo — v4 Turbo is
+# in its own v4 pool and gets 2). Raise it on
 # a paid tier; lower it if renders still hit HTTP 429.
 export SANZARU_ELEVENLABS_MAX_CONCURRENCY=2
 ```
@@ -38,9 +39,12 @@ Differences that matter when switching:
 
 - **Voice** is an opaque voice id from your library, not a name like `alloy`, and it is required.
 - **`instructions` is ignored.** ElevenLabs has no equivalent parameter — put inline audio tags
-  (`[whispers]`, `[excited]`) directly in the text with the default `eleven_v3` model.
-- **Speed** is 0.7–1.2, and `eleven_v3` rejects any change at all; use `eleven_multilingual_v2`
-  when you need speed control. Out-of-range values raise rather than being rescaled from OpenAI's
+  (`[whispers]`, `[excited]`) directly in the text with the default `eleven_v4` model, which also
+  performs stacked tags in order (`[whispers] [nervously] Like this.`).
+- **Speed** is 0.7–1.2, and `eleven_v4`, `eleven_v4_turbo` and `eleven_v3` refuse any change: the
+  API accepts a speed on those and ignores it (measured — the same line rendered within 2% of one
+  length at 0.7 and 1.2), so the server refuses rather than let it silently do nothing. Use
+  `eleven_multilingual_v2` when you need speed control. Out-of-range values raise rather than being rescaled from OpenAI's
   0.25–4.0 range.
 - **`voice_settings`** (`stability`, `similarity_boost`, `style`, `use_speaker_boost`, `speed`) is
   accepted here and rejected by the OpenAI provider.
@@ -74,14 +78,47 @@ caller can direct it turn by turn.
 
 Full rationale and measured numbers: [simulated-podcasts.md](simulated-podcasts.md).
 
+### Recommended podcast engine
+
+For a scripted show with more than one voice: **ElevenLabs, `eleven_v4`, `render_mode: "dialogue"`,
+`verify` on.** Use `eleven_v4_turbo` (half the character cost, roughly half the render time) while iterating
+on a draft. Stay in `segments` mode when you need exact gaps, per-speaker `voice_settings`, or to
+fix one line without re-paying for its neighbours. OpenAI remains the default provider because it
+needs no extra key or extra — it is the zero-setup choice, not the best-sounding one.
+
+What that rests on (2026-09-28, a three-host 2002-character episode, dialogue mode + verify):
+
+| | `eleven_v4` | `eleven_v4_turbo` | `eleven_v3` |
+|---|---|---|---|
+| Render time | 43 s | 25 s | 55 s |
+| Verify | first try | first try | first try |
+| Blind audio-model judge (overall) | 9 | 9 | 7 |
+
+The judge is a single sample, but its misses were specific: on v3 the stacked
+`[whispers] [nervously]` line was not whispered and the `[laughs]` lines had no laughter; both v4s
+performed them. "First try" is after the verifier fix that shipped with v4 support — before it,
+spelled-out numbers, audio tags and a respelled proper noun raised false flags on every model, and
+because a dialogue unit re-renders whole, each one doubled the characters billed.
+
+ElevenLabs premade voices that worked well together (global ids, available on every account):
+
+| Voice | id | Character |
+|---|---|---|
+| George | `JBFqnCBsd6RMkjVDRZzb` | warm British storyteller |
+| Laura | `FGY2WhTYpPnrIDTdsKH5` | quirky enthusiast |
+| Alice | `Xb7hH8MSUJpSbSDYk0k2` | clear British educator |
+| Roger | `CwhRBWXzGAHq8TQ4Fs17` | laid-back, casual |
+| Matilda | `XrExE9yKIg1WjnnlVkGX` | professional |
+
 ### Podcast render modes
 
 `generate_podcast` accepts `config.render_mode`:
 
 - **`segments`** (default) — one request per turn, joined with your silence gaps. Exact control,
   per-speaker `voice_settings`/`speed`, and independent per-segment retry.
-- **`dialogue`** — consecutive `eleven_v3` turns are sent as one request and the model paces the
-  exchange itself. Distinctly more natural conversation.
+- **`dialogue`** — consecutive turns on a dialogue-capable model (`eleven_v4`, `eleven_v4_turbo`,
+  `eleven_v3`) are sent as one request and the model paces the exchange itself. Distinctly more
+  natural conversation.
 
 Grouping is per-run: turns that can't join one (OpenAI speakers, other models, lone turns,
 stretches in one voice, turns that alone fill the 2000-character request budget) still render

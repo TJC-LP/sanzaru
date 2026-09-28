@@ -25,15 +25,19 @@ TTSVoice = Literal["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "
 
 # ---------- TTS providers ----------
 TTSProviderName = Literal["openai", "elevenlabs"]
-ElevenLabsModel = Literal["eleven_v3", "eleven_multilingual_v2", "eleven_flash_v2_5", "eleven_turbo_v2_5"]
+ElevenLabsModel = Literal[
+    "eleven_v4", "eleven_v4_turbo", "eleven_v3", "eleven_multilingual_v2", "eleven_flash_v2_5", "eleven_turbo_v2_5"
+]
 
 DEFAULT_TTS_PROVIDER: TTSProviderName = "openai"
 DEFAULT_OPENAI_TTS_MODEL: SpeechModel = "gpt-4o-mini-tts"
 DEFAULT_OPENAI_VOICE: TTSVoice = "alloy"
-DEFAULT_ELEVENLABS_MODEL: ElevenLabsModel = "eleven_v3"
+DEFAULT_ELEVENLABS_MODEL: ElevenLabsModel = "eleven_v4"
 
 OPENAI_TTS_MODELS: list[SpeechModel] = ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"]
 ELEVENLABS_MODELS: list[ElevenLabsModel] = [
+    "eleven_v4",
+    "eleven_v4_turbo",
     "eleven_v3",
     "eleven_multilingual_v2",
     "eleven_flash_v2_5",
@@ -41,8 +45,11 @@ ELEVENLABS_MODELS: list[ElevenLabsModel] = [
 ]
 
 # Per-request text budget. Ours are deliberately conservative: the split is only
-# an upper bound, and over-long requests fail the whole segment.
+# an upper bound, and over-long requests fail the whole segment. Both v4 models
+# accept 10000 (/v1/models, 2026-09-28); half of that, like v3's 3000 of 5000.
 ELEVENLABS_MAX_CHARS: dict[ElevenLabsModel, int] = {
+    "eleven_v4": 5000,
+    "eleven_v4_turbo": 5000,
     "eleven_v3": 3000,
     "eleven_multilingual_v2": 10000,
     "eleven_flash_v2_5": 40000,
@@ -53,7 +60,11 @@ ELEVENLABS_MAX_CHARS: dict[ElevenLabsModel, int] = {
 # tier (Flash/Turbo 4→30, other models 2→15). These are the Free-tier limits:
 # verified against a live Free account, 3 concurrent v3 requests returns HTTP 429.
 # Paid tiers should raise this with SANZARU_ELEVENLABS_MAX_CONCURRENCY.
+# v4 Turbo is *not* in the Flash/Turbo pool: /v1/models puts both v4 models in
+# their own "standard_eleven_v4" concurrency group, so it gets the standard cap.
 ELEVENLABS_DEFAULT_CONCURRENCY: dict[ElevenLabsModel, int] = {
+    "eleven_v4": 2,
+    "eleven_v4_turbo": 2,
     "eleven_v3": 2,
     "eleven_multilingual_v2": 2,
     "eleven_flash_v2_5": 4,
@@ -73,8 +84,8 @@ PodcastRenderMode = Literal["segments", "dialogue"]
 RENDER_MODES: tuple[str, ...] = ("segments", "dialogue")
 DEFAULT_RENDER_MODE: PodcastRenderMode = "segments"
 
-# Only eleven_v3 is trained for multi-speaker dialogue.
-ELEVENLABS_DIALOGUE_MODELS: frozenset[str] = frozenset({"eleven_v3"})
+# The models /v1/text-to-dialogue accepts (both v4s verified live 2026-09-28).
+ELEVENLABS_DIALOGUE_MODELS: frozenset[str] = frozenset({"eleven_v4", "eleven_v4_turbo", "eleven_v3"})
 
 # Per-request budget for the whole conversation, summed over inputs[].text.
 # /v1/text-to-dialogue documents 2,000 as the ceiling for reliable generation:
@@ -93,7 +104,7 @@ ELEVENLABS_DIALOGUE_MAX_CHARS = 2000
 MIN_DIALOGUE_SPEAKERS = 2
 
 # ElevenLabs speed lives in voice_settings and has a much narrower range than
-# OpenAI's 0.25-4.0. eleven_v3 does not support it at all.
+# OpenAI's 0.25-4.0. The v3 and v4 models accept a speed and ignore it.
 ELEVENLABS_SPEED_RANGE = (0.7, 1.2)
 OPENAI_SPEED_RANGE = (0.25, 4.0)
 

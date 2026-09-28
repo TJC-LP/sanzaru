@@ -36,6 +36,7 @@ A **stateless**, lightweight **MCP** server **and agent CLI** that wraps **OpenA
 - Multi-voice podcasts with up to 4 speakers and 10 TTS voices
 - Parallel segment generation with configurable pacing
 - MP3/WAV output with loudness normalization
+- Recommended engine for scripted shows: ElevenLabs `eleven_v4` (the ElevenLabs default) in `dialogue` render mode with `--verify`
 - ElevenLabs `dialogue` render mode: consecutive turns go out together so the model paces them
 - `--verify` transcribes the rendered audio and re-renders segments the TTS silently dropped
 

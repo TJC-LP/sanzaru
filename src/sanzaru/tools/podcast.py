@@ -13,6 +13,7 @@ Speakers choose their provider independently, so a single episode can mix
 OpenAI and ElevenLabs voices — the stitch path is mp3-in, mp3-out.
 """
 
+import difflib
 import pathlib
 import time
 from collections.abc import Callable
@@ -53,7 +54,7 @@ from ..audio.providers import (
     synthesize_speech,
     validate_provider_name,
 )
-from ..audio.verification import TRANSCRIBE_MAX_BYTES, similarity_tokens, transcribe_bytes, words
+from ..audio.verification import TRANSCRIBE_MAX_BYTES, similarity_tokens, strip_audio_tags, transcribe_bytes, words
 from ..config import logger
 from ..exceptions import AudioFileError
 from ..infrastructure import FileSystemRepository
@@ -310,8 +311,38 @@ def _best_window_similarity(needle: str, haystack: str) -> float:
     return best
 
 
+def _best_window_char_similarity(needle: str, haystack: str) -> float:
+    """`needle` against `haystack` by characters, spaces removed — for tails only.
+
+    Word-level scoring charges a proper noun ASR respells (`Sanzaru` ->
+    `Sansaru`) and a compound it joins (`dev log` -> `DevLog`) a whole word
+    each, and an eight-word tail cannot absorb two: 0.667, flagged, the batch
+    re-rendered, for audio that said every word. By characters those are one
+    letter and one space. Missing speech is still missing characters, so a
+    dropped tail scores about as low here as it does by words.
+
+    Windows run one word shorter and longer than the needle so a join or split
+    still lines up. Only called on a tail the word check already failed, and a
+    tail is a handful of words, so this is cheap next to the word scan.
+    """
+    target = "".join(words(needle))
+    hay = words(haystack)
+    if not target:
+        return 1.0
+    if not hay:
+        return 0.0
+    span = len(words(needle))
+    best = 0.0
+    for width in {max(1, span - 1), span, span + 1}:
+        for start in range(max(1, len(hay) - width + 1)):
+            window = "".join(hay[start : start + width])
+            best = max(best, difflib.SequenceMatcher(None, target, window, autojunk=False).ratio())
+    return best
+
+
 def _verdict_for(index: int, speaker: str, intended: str, rendered: str) -> SegmentVerdict:
     """Judge one segment against the audio the unit containing it produced."""
+    intended = strip_audio_tags(intended)
     overall = _best_window_similarity(intended, rendered)
     if len(words(intended)) <= VERIFY_SHORT_SEGMENT_WORDS:
         # No meaningful tail; the question is only whether it is there at all.
@@ -324,7 +355,10 @@ def _verdict_for(index: int, speaker: str, intended: str, rendered: str) -> Segm
             similarity=round(overall, 3),
         )
 
-    tail_score = _best_window_similarity(_tail_of(intended), rendered)
+    tail = _tail_of(intended)
+    tail_score = _best_window_similarity(tail, rendered)
+    if tail_score < VERIFY_TAIL_THRESHOLD:
+        tail_score = max(tail_score, _best_window_char_similarity(tail, rendered))
     if tail_score < VERIFY_TAIL_THRESHOLD:
         reason = "tail_missing"
     elif overall < VERIFY_SEGMENT_THRESHOLD:

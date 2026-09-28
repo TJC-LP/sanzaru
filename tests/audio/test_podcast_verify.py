@@ -89,6 +89,48 @@ class TestVerdictFor:
         assert not verdict.ok
         assert verdict.similarity == 0.0
 
+    # The next three are the eleven_v4 dogfood (2026-09-28): every word was in the
+    # audio, and the check still failed and re-rendered the whole dialogue batch.
+
+    def test_spelled_numbers_match_asr_digits(self):
+        """Scored 0.375 on the tail before numbers compared by value."""
+        intended = "It takes them, says thank you, and ignores them. Same length at point seven as at one point two."
+        rendered = "It takes them, says thank you, and ignores them. Same length at 0.7 as at 1.2."
+        verdict = _verdict_for(3, "Laura", intended, rendered)
+        assert verdict.ok, verdict
+
+    def test_audio_tags_are_not_expected_in_the_transcript(self):
+        """Tags are performed, not read. A stacked-tag short line was two-thirds missing on arrival."""
+        verdict = _verdict_for(0, "Laura", "[excited] [laughs] Yes!", "Right, so. Yes! And then")
+        assert verdict.ok, verdict
+
+    def test_a_respelled_name_and_a_joined_compound_pass(self):
+        """ "Sanzaru dev log" heard as "Sansaru DevLog": two word misses, one letter by characters."""
+        intended = (
+            "[amused] Well. If you heard all of that, I suppose it passed. Thanks for listening to the Sanzaru dev log."
+        )
+        rendered = "Well, if you heard all of that, I suppose it passed. Thanks for listening to the Sansaru DevLog."
+        assert _verdict_for(12, "George", intended, rendered).ok
+
+    @pytest.mark.parametrize(
+        "rendered",
+        [
+            # Tail cut after "listening": the character fallback must not rescue it.
+            "Well, if you heard all of that, I suppose it passed. Thanks for listening",
+            # Tail gone, and the render carries on with words of its own.
+            "Well, if you heard all of that, I suppose it passed. See you next time everyone, bye now.",
+        ],
+    )
+    def test_the_character_fallback_still_catches_a_dropped_tail(self, rendered):
+        intended = "Well. If you heard all of that, I suppose it passed. Thanks for listening to the Sanzaru dev log."
+        assert _verdict_for(12, "George", intended, rendered).reason == "tail_missing"
+
+    def test_a_tagged_line_with_a_dropped_tail_is_still_caught(self):
+        """Stripping tags must not make the check vacuous."""
+        intended = "[whispers] " + SPOKEN
+        verdict = _verdict_for(0, "Alex", intended, "the model is the easy part to demo and the hard part is")
+        assert verdict.reason == "tail_missing"
+
 
 @pytest.mark.unit
 class TestBestWindowSimilarity:
