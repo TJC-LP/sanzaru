@@ -137,7 +137,9 @@ Returns: filename, format. Then view_media(media_type="video", filename=...)."""
 CANCEL_VIDEO = """Cancel a video job that is still queued; the cost is refunded.
 
 A job that has started rendering cannot be canceled (the call errors and the job
-continues). Use this right after a mistaken submit.
+continues). Higgsfield usually starts a job within seconds (measured 2026-09-28: a
+Kling Turbo job was in_progress ~2 s after submit), so cancel mostly helps when its
+queue is backed up — check the price with dry_run *before* submitting instead.
 
 Parameters:
 - video_id: The hf_… id (required)"""

@@ -179,7 +179,7 @@ nothing uploaded or charged) and `--dry-run` prices without submitting.
 | `status ID` | Peek at status (never blocks) |
 | `wait ID...` | Block until terminal; concurrent multi-ID, `--download`, JSONL output |
 | `download ID` | Save the output (`-o`); Higgsfield keeps outputs ~7 days |
-| `cancel ID` | Cancel a job that is still queued (refunded); a started job cannot be canceled |
+| `cancel ID` | Cancel a job that is still queued (refunded); a started job cannot be canceled — Higgsfield usually starts within seconds, so price with `--dry-run` before submitting |
 | `models [--catalog]` | The curated models with ranges and price notes; `--catalog` lists every video model the API offers |
 | `files` | Locally downloaded videos (`--pattern/--type/--sort/--order/--limit`) |
 
