@@ -128,6 +128,17 @@ the file into a code sandbox, no asking for a token or a URL to curl. The viewer
 has the bytes and hands them to the host. If the button is absent the host does not
 support saving, which is not something a tool call can work around.
 
+## Resources are for the user, not for you
+
+The server exposes `sanzaru://image/{filename}`, `sanzaru://video/{filename}` and
+`sanzaru://audio/{filename}` so a **person** can attach their own renders from their
+client's attachment menu. They deliver the whole file and are annotated for a user
+audience.
+
+Do not read media through them to look at it yourself — that ships a full-size file
+where `inspect_image` / `inspect_video_frame` send a right-sized picture. Mention the
+URI when someone asks how to reuse a file in a future conversation.
+
 ## Common Pitfalls
 
 1. **Polling by hand** — `create_video` and `create_image` are async; call `wait_for(ids, download=True)` once instead of looping over `get_*_status`, and don't `download_*` before the job is done
