@@ -5,21 +5,7 @@ from unittest.mock import patch
 
 import pytest
 
-from sanzaru.utils import generate_filename, reject_reserved_name, suffix_for_variant, validate_resource_id
-
-
-@pytest.mark.unit
-class TestSuffixForVariant:
-    """Test file extension mapping for video variants."""
-
-    def test_video_variant(self):
-        assert suffix_for_variant("video") == "mp4"
-
-    def test_thumbnail_variant(self):
-        assert suffix_for_variant("thumbnail") == "webp"
-
-    def test_spritesheet_variant(self):
-        assert suffix_for_variant("spritesheet") == "jpg"
+from sanzaru.utils import generate_filename, reject_reserved_name, validate_resource_id
 
 
 @pytest.mark.unit

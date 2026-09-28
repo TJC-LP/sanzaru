@@ -1,41 +1,21 @@
 # SPDX-License-Identifier: MIT
-"""Type definitions for Sora MCP server.
+"""Type definitions for the sanzaru MCP server.
 
 This module contains TypedDict and Pydantic model definitions used across the server.
 """
 
 from typing import Literal, TypedDict
 
-from openai.types import VideoModel, VideoSeconds, VideoSize
 from openai.types.images_response import Usage as ImageUsage
 from pydantic import BaseModel
 
 
 class DownloadResult(TypedDict):
-    """Result from downloading a video asset."""
+    """Result from downloading a finished video job into the video directory."""
 
     filename: str
-    variant: Literal["video", "thumbnail", "spritesheet"]
-
-
-class VideoSummary(TypedDict):
-    """Summary of a video for list results."""
-
-    id: str
-    status: Literal["queued", "in_progress", "completed", "failed"]
-    created_at: int
-    seconds: str | VideoSeconds
-    size: VideoSize
-    model: VideoModel
-    progress: int
-
-
-class ListResult(TypedDict):
-    """Paginated list of videos."""
-
-    data: list[VideoSummary]
-    has_more: bool | None
-    last: str | None
+    format: str
+    """Container extension without the dot: "mp4" (default) or "mov"."""
 
 
 class VideoFile(TypedDict):
@@ -106,7 +86,8 @@ class WaitJob(TypedDict):
     """Still running at the deadline. The job continues server-side; waiting
     again on the same id resumes."""
     progress: int | None
-    """0-100 for video jobs; None for images (the Responses API reports none)."""
+    """Always None today: neither Higgsfield nor the Responses API reports a
+    percentage. Kept so the result schema is stable if one ever does."""
     error: str | None
     """A non-retryable API error for this id (e.g. an unknown id), when any."""
     download: DownloadResult | ImageDownloadResult | None

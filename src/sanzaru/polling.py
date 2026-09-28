@@ -30,7 +30,6 @@ from typing import Generic, TypeVar
 
 import anyio
 from openai import APIConnectionError, APIStatusError
-from openai.types import Video
 
 from .higgsfield.errors import HiggsfieldAPIError
 from .tools import image as image_tools
@@ -40,8 +39,6 @@ from .types import ImageResponse
 DEFAULT_VIDEO_TIMEOUT = 1800.0
 DEFAULT_IMAGE_TIMEOUT = 600.0
 
-_VIDEO_INITIAL_INTERVAL = 5.0
-_VIDEO_MAX_INTERVAL = 20.0
 _IMAGE_INITIAL_INTERVAL = 2.0
 _IMAGE_MAX_INTERVAL = 10.0
 
@@ -141,35 +138,37 @@ async def wait_for_video(
     *,
     timeout: float = DEFAULT_VIDEO_TIMEOUT,
     interval: float | None = None,
-    on_progress: Callable[[Video], None] | None = None,
-) -> Video:
-    """Poll a Sora video job until it reaches a terminal state.
+    on_progress: Callable[[video_tools.VideoStatus], None] | None = None,
+) -> video_tools.VideoStatus:
+    """Poll a Higgsfield video job (`hf_…`) until it reaches a terminal state.
 
     Args:
-        video_id: The video ID from create_video/remix_video
+        video_id: The `hf_…` id from create_video / edit_video / extend_video
         timeout: Overall deadline in seconds (default 30 minutes)
         interval: Fixed poll interval in seconds; None enables adaptive backoff
-        on_progress: Called with each successfully fetched Video (for progress display)
+            (Higgsfield's documented 2 s x1.5 up to 10 s)
+        on_progress: Called with each successfully fetched status
 
     Returns:
-        The terminal Video — status "completed" OR "failed" (callers decide how
-        to surface failure; the wait itself succeeded)
+        The terminal status — completed, failed, nsfw or canceled (callers decide
+        how to surface a non-completed job; the wait itself succeeded)
 
     Raises:
-        WaitTimeoutError: Deadline expired; carries the last-seen Video
-        openai.APIStatusError: Non-retryable API error (e.g. 404 unknown ID)
-        RuntimeError: If OPENAI_API_KEY not set
+        WaitTimeoutError: Deadline expired; carries the last-seen status
+        HiggsfieldAPIError: Non-retryable API error (e.g. 404 unknown id)
+        ValueError: A malformed id, or a retired Sora `video_…` id
+        RuntimeError: If HF_KEY is not set
     """
     return await _wait_until_terminal(
         lambda: video_tools.get_video_status(video_id),
-        lambda video: video.status not in _ACTIVE_STATUSES,
+        lambda status: status["done"],
         describe=f"Video job {video_id}",
         timeout=timeout,
         interval=interval,
-        initial_interval=_VIDEO_INITIAL_INTERVAL,
-        max_interval=_VIDEO_MAX_INTERVAL,
+        initial_interval=DEFAULT_HF_VIDEO_INTERVAL_INITIAL,
+        max_interval=DEFAULT_HF_VIDEO_INTERVAL_MAX,
         on_progress=on_progress,
-        is_transient=_openai_transient,
+        is_transient=_higgsfield_transient,
     )
 
 

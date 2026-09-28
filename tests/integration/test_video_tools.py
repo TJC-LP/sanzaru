@@ -1,363 +1,330 @@
-# SPDX-License-Identifier: MIT
-"""Integration tests for video tools with mocked OpenAI client."""
+"""Video tools on Higgsfield, over an httpx.MockTransport that routes by path.
 
-from collections.abc import Awaitable, Callable
+The negative properties matter most: a job refused by the cost cap — or a dry
+run — makes no upload and no submit, and a submit happens exactly once.
+"""
 
+import json
+import struct
+
+import httpx
 import pytest
 
+from sanzaru.config import set_higgsfield_client
+from sanzaru.higgsfield.client import HiggsfieldClient
+from sanzaru.higgsfield.errors import CostCapExceededError, UnpricedVideoError
 from sanzaru.storage.local import LocalStorageBackend
-from sanzaru.tools.video import (
-    create_video,
-    delete_video,
-    download_video,
-    get_video_status,
-    list_local_videos,
-    list_videos,
-    remix_video,
-)
+from sanzaru.tools import video
+
+pytestmark = [pytest.mark.integration, pytest.mark.anyio]
+
+RID = "d7e6c0f3-6699-4f6c-bb45-2ad7fd9158ff"
+JOB = f"hf_{RID}"
+PRIOR = "hf_11111111-2222-4333-8444-555555555555"
+KLING_ESTIMATE = {"type": "estimate", "credits": "5.544", "usd": "0.347", "discount": None}
+SEEDANCE_ESTIMATE = {"type": "description", "pricing_description": "roughly $0.4622 per second at 720p"}
 
 
-@pytest.mark.integration
-async def test_sora_create_video_without_reference(mocker, mock_video_queued):
-    """Test video creation calls OpenAI API correctly."""
-    mock_get_client = mocker.patch("sanzaru.tools.video.get_client")
-    mock_get_client.return_value.videos.create = mocker.AsyncMock(return_value=mock_video_queued)
-
-    result = await create_video(prompt="test video", model="sora-2", seconds="8", size="1280x720")
-
-    assert result.id == "vid_queued"
-    assert result.status == "queued"
-    assert result.progress == 0
-    mock_get_client.return_value.videos.create.assert_called_once()
+def _mp4(seconds: float, timescale: int = 1000) -> bytes:
+    """Smallest MP4 our mvhd reader accepts: ftyp + moov/mvhd (version 0)."""
+    mvhd_body = struct.pack(">B3xIIII", 0, 0, 0, timescale, int(seconds * timescale)) + b"\x00" * 80
+    mvhd = struct.pack(">I4s", 8 + len(mvhd_body), b"mvhd") + mvhd_body
+    moov = struct.pack(">I4s", 8 + len(mvhd), b"moov") + mvhd
+    ftyp = struct.pack(">I4s", 16, b"ftyp") + b"isom\x00\x00\x02\x00"
+    return ftyp + moov
 
 
-@pytest.mark.integration
-async def test_sora_get_status(mocker, mock_video_response):
-    """Test status retrieval from OpenAI API."""
-    mock_get_client = mocker.patch("sanzaru.tools.video.get_client")
-    mock_get_client.return_value.videos.retrieve = mocker.AsyncMock(return_value=mock_video_response)
+class FakeHiggsfield:
+    """Routes requests by path and records them."""
 
-    result = await get_video_status("vid_test123")
+    def __init__(self, *, estimate=None, status=None, submit_status=200):
+        self.estimate = estimate if estimate is not None else KLING_ESTIMATE
+        self.status = status or {"status": "completed", "request_id": RID, "video": {"url": "https://cdn.test/o.mp4"}}
+        self.submit_status = submit_status
+        self.requests: list[httpx.Request] = []
+        self.uploads = 0
 
-    assert result.id == "vid_test123"
-    assert result.status == "completed"
-    assert result.progress == 100
-    mock_get_client.return_value.videos.retrieve.assert_called_once_with("vid_test123")
+    def __call__(self, request: httpx.Request) -> httpx.Response:
+        self.requests.append(request)
+        path = request.url.path
+        if request.url.host == "upload.test":
+            return httpx.Response(200)
+        if request.url.host == "cdn.test":
+            return httpx.Response(200, content=b"MP4BYTES")
+        if path.startswith("/estimate/"):
+            return httpx.Response(200, json=self.estimate)
+        if path == "/files/generate-upload-url":
+            self.uploads += 1
+            return httpx.Response(
+                200,
+                json={
+                    "public_url": f"https://files.test/u{self.uploads}",
+                    "upload_url": f"https://upload.test/u{self.uploads}",
+                    "upload_headers": {"Content-Type": json.loads(request.content)["content_type"]},
+                },
+            )
+        if path.endswith("/status"):
+            return httpx.Response(200, json=self.status)
+        if path.endswith("/cancel"):
+            return httpx.Response(202) if self.submit_status == 200 else httpx.Response(400, json={"detail": "started"})
+        return httpx.Response(self.submit_status, json={"status": "queued", "request_id": RID})
+
+    def posts_to(self, prefix: str) -> list[httpx.Request]:
+        return [r for r in self.requests if r.method == "POST" and r.url.path.startswith(prefix)]
+
+    def submits(self) -> list[httpx.Request]:
+        skip = ("/estimate/", "/files/", "/requests/")
+        return [
+            r
+            for r in self.requests
+            if r.method == "POST" and r.url.host == "api.higgsfield.ai" and not r.url.path.startswith(skip)
+        ]
+
+    def puts(self) -> list[httpx.Request]:
+        return [r for r in self.requests if r.method == "PUT"]
 
 
-@pytest.mark.integration
-async def test_sora_download(mocker, tmp_video_path):
-    """Test video download writes file correctly."""
-    storage = LocalStorageBackend(path_overrides={"video": tmp_video_path})
-    mocker.patch("sanzaru.tools.video.get_storage", return_value=storage)
+@pytest.fixture(autouse=True)
+def _no_backoff(mocker):
+    mocker.patch("sanzaru.higgsfield.client.anyio.sleep", new=mocker.AsyncMock())
 
-    # Mock streaming response with async iteration
-    mock_response = mocker.MagicMock()
 
-    # Mock iter_bytes to return async iterator of chunks
-    async def mock_iter():
-        yield b"chunk1"
-        yield b"chunk2"
+@pytest.fixture
+def fake():
+    yield FakeHiggsfield()
+    set_higgsfield_client(None)
 
-    mock_response.iter_bytes.return_value = mock_iter()
 
-    # Mock the streaming context manager
-    mock_stream_ctx = mocker.MagicMock()
-    mock_stream_ctx.__aenter__ = mocker.AsyncMock(return_value=mock_response)
-    mock_stream_ctx.__aexit__ = mocker.AsyncMock(return_value=None)
+@pytest.fixture
+def install(fake):
+    def go(handler: FakeHiggsfield | None = None) -> FakeHiggsfield:
+        handler = handler or fake
+        set_higgsfield_client(HiggsfieldClient("kid", "secret", transport=httpx.MockTransport(handler)))
+        return handler
 
-    mock_get_client = mocker.patch("sanzaru.tools.video.get_client")
-    mock_get_client.return_value.with_streaming_response.videos.download_content.return_value = mock_stream_ctx
+    return go
 
-    result = await download_video("vid_test123", filename="test.mp4", variant="video")
 
-    assert result["filename"] == "test.mp4"
-    assert result["variant"] == "video"
-    mock_get_client.return_value.with_streaming_response.videos.download_content.assert_called_once_with(
-        "vid_test123", variant="video"
+@pytest.fixture
+def storage(tmp_path, mocker):
+    (tmp_path / "videos").mkdir()
+    (tmp_path / "images").mkdir()
+    backend = LocalStorageBackend(path_overrides={"video": tmp_path / "videos", "reference": tmp_path / "images"})
+    mocker.patch("sanzaru.tools.video.get_storage", return_value=backend)
+    mocker.patch("sanzaru.higgsfield.media.get_storage", return_value=backend, create=True)
+    return tmp_path
+
+
+def _body(request: httpx.Request) -> dict:
+    return json.loads(request.content)
+
+
+class TestCreateVideo:
+    async def test_text_to_video_submits_the_translated_body_once(self, install):
+        fake = install()
+        job = await video.create_video("waves at dusk", model="kling-3.0-std", duration=5, audio=False)
+        (submit,) = fake.submits()
+        assert submit.url.path == "/kling-video/v3.0/std/text-to-video"
+        assert _body(submit) == {"prompt": "waves at dusk", "duration": 5, "sound": "off"}
+        assert job["id"] == JOB and job["status"] == "queued"
+        assert job["cost"]["basis"] == "api" and job["cost"]["usd"] == pytest.approx(0.347)
+
+    async def test_default_model_is_seedance_priced_locally(self, install):
+        fake = install(FakeHiggsfield(estimate=SEEDANCE_ESTIMATE))
+        job = await video.create_video("waves", duration=5, resolution="720p", aspect_ratio="16:9")
+        assert fake.submits()[0].url.path == "/bytedance/seedance-2.5/text-to-video"
+        assert job["cost"]["basis"] == "local_table"
+        assert job["cost"]["usd"] == pytest.approx(2.311, abs=1e-3)
+
+    async def test_image_to_video_uploads_the_reference_then_sends_its_url(self, install, storage):
+        (storage / "images" / "cat.png").write_bytes(b"\x89PNG....")
+        fake = install()
+        job = await video.create_video("the cat stretches", model="kling-3.0-std", reference_image="cat.png")
+        assert len(fake.puts()) == 1
+        assert "Authorization" not in fake.puts()[0].headers
+        body = _body(fake.submits()[0])
+        assert fake.submits()[0].url.path == "/kling-video/v3.0/std/image-to-video"
+        assert body["image_url"] == "https://files.test/u1"
+        assert job["arguments"]["image_url"] == "<upload:cat.png>"
+
+    async def test_end_frame_maps_to_the_models_parameter(self, install, storage):
+        for name in ("a.png", "b.png"):
+            (storage / "images" / name).write_bytes(b"\x89PNG")
+        fake = install()
+        await video.create_video("morph", model="kling-3.0-std", reference_image="a.png", end_image="b.png")
+        body = _body(fake.submits()[0])
+        assert set(body) >= {"image_url", "last_image_url"}
+
+    async def test_end_image_without_a_start_frame_is_refused_before_any_request(self, install):
+        fake = install()
+        with pytest.raises(ValueError, match="end_image needs reference_image"):
+            await video.create_video("x", end_image="b.png")
+        assert fake.requests == []
+
+    async def test_invalid_arguments_fail_before_any_request(self, install):
+        fake = install()
+        with pytest.raises(ValueError):
+            await video.create_video("x", model="kling-3.0-std", duration=99)
+        assert fake.requests == []
+
+    async def test_a_prior_job_id_is_used_as_the_start_frame_without_upload(self, install):
+        fake = install()
+        await video.create_video("continue", model="kling-3.0-std", reference_image=PRIOR)
+        assert fake.puts() == []
+        assert _body(fake.submits()[0])["image_url"] == "https://cdn.test/o.mp4"
+
+
+class TestCostCap:
+    async def test_over_cap_refuses_with_no_upload_and_no_submit(self, install, storage):
+        (storage / "images" / "cat.png").write_bytes(b"\x89PNG")
+        fake = install()
+        with pytest.raises(CostCapExceededError) as info:
+            await video.create_video("x", model="kling-3.0-std", reference_image="cat.png", max_cost_usd=0.10)
+        assert info.value.limit_usd == 0.10
+        assert fake.puts() == [] and fake.submits() == [] and fake.uploads == 0
+
+    async def test_unpriced_raw_slug_with_a_cap_refuses(self, install):
+        fake = install(FakeHiggsfield(estimate={"type": "description", "pricing_description": "varies"}))
+        with pytest.raises(UnpricedVideoError):
+            await video.create_video("x", model="vendor/new-model/text-to-video", max_cost_usd=5)
+        assert fake.submits() == []
+
+    async def test_estimate_failure_without_a_cap_still_submits(self, install):
+        class Down(FakeHiggsfield):
+            def __call__(self, request):
+                if request.url.path.startswith("/estimate/"):
+                    self.requests.append(request)
+                    return httpx.Response(500, json={"detail": "boom"})
+                return super().__call__(request)
+
+        fake = install(Down())
+        job = await video.create_video("x", model="kling-3.0-std")
+        assert job["cost"]["basis"] == "unavailable"
+        assert len(fake.submits()) == 1
+
+    async def test_estimate_failure_with_a_cap_refuses(self, install):
+        class Down(FakeHiggsfield):
+            def __call__(self, request):
+                if request.url.path.startswith("/estimate/"):
+                    self.requests.append(request)
+                    return httpx.Response(500, json={"detail": "boom"})
+                return super().__call__(request)
+
+        fake = install(Down())
+        with pytest.raises(UnpricedVideoError):
+            await video.create_video("x", model="kling-3.0-std", max_cost_usd=1)
+        assert fake.submits() == []
+
+    async def test_a_rejected_estimate_is_a_usage_error(self, install):
+        class Picky(FakeHiggsfield):
+            def __call__(self, request):
+                if request.url.path.startswith("/estimate/"):
+                    self.requests.append(request)
+                    return httpx.Response(400, json={"detail": "duration: 99 is greater than the maximum of 15"})
+                return super().__call__(request)
+
+        install(Picky())
+        with pytest.raises(ValueError, match="rejected the arguments"):
+            await video.create_video("x", model="vendor/m/text-to-video", duration=30)
+
+    async def test_dry_run_prices_without_uploading_or_submitting(self, install, storage):
+        (storage / "images" / "cat.png").write_bytes(b"\x89PNG")
+        fake = install()
+        job = await video.create_video("x", model="kling-3.0-std", reference_image="cat.png", dry_run=True)
+        assert job["id"] is None and job["status"] == "dry_run"
+        assert job["cost"]["usd"] == pytest.approx(0.347)
+        assert fake.puts() == [] and fake.submits() == []
+
+
+class TestEditExtend:
+    async def test_extend_uploads_the_source_and_bills_its_duration(self, install, storage):
+        (storage / "videos" / "clip.mp4").write_bytes(_mp4(5.0))
+        fake = install(FakeHiggsfield(estimate=SEEDANCE_ESTIMATE))
+        job = await video.extend_video("the waves crash", "clip.mp4", duration=5, resolution="480p")
+        body = _body(fake.submits()[0])
+        assert fake.submits()[0].url.path == "/bytedance/seedance-2.5/video-extend"
+        assert body["video_url"] == "https://files.test/u1" and body["duration"] == 5
+        assert job["cost"]["basis"] == "local_table"
+        assert job["cost"]["usd"] is not None and job["cost"]["usd"] > 0
+
+    async def test_edit_sends_no_duration(self, install, storage):
+        (storage / "videos" / "clip.mp4").write_bytes(_mp4(4.0))
+        fake = install(FakeHiggsfield(estimate=SEEDANCE_ESTIMATE))
+        await video.edit_video("make it snow", "clip.mp4")
+        body = _body(fake.submits()[0])
+        assert "duration" not in body and body["prompt"] == "make it snow"
+
+    async def test_a_prior_job_is_extended_without_download_or_upload(self, install):
+        fake = install(FakeHiggsfield(estimate=SEEDANCE_ESTIMATE))
+        await video.extend_video("more", PRIOR, duration=4)
+        assert fake.puts() == []
+        assert _body(fake.submits()[0])["video_url"] == "https://cdn.test/o.mp4"
+
+    async def test_extend_cap_uses_the_local_price_before_uploading(self, install, storage):
+        (storage / "videos" / "clip.mp4").write_bytes(_mp4(10.0))
+        fake = install(FakeHiggsfield(estimate=SEEDANCE_ESTIMATE))
+        with pytest.raises(CostCapExceededError):
+            await video.extend_video("more", "clip.mp4", duration=10, max_cost_usd=0.5)
+        assert fake.uploads == 0 and fake.submits() == []
+
+    async def test_non_mp4_sources_are_refused(self, install, storage):
+        (storage / "videos" / "clip.webm").write_bytes(b"webm")
+        install()
+        with pytest.raises(ValueError, match="(?i)mp4"):
+            await video.extend_video("more", "clip.webm")
+
+    async def test_raw_slugs_cannot_edit(self, install):
+        install()
+        with pytest.raises(ValueError, match="curated model"):
+            await video.edit_video("x", "clip.mp4", model="vendor/m/video-edit")
+
+
+class TestStatusDownloadCancel:
+    @pytest.mark.parametrize(
+        ("state", "done"),
+        [("queued", False), ("in_progress", False), ("completed", True), ("failed", True), ("canceled", True)],
     )
-
-
-@pytest.mark.integration
-async def test_sora_list(mocker):
-    """Test listing videos with pagination."""
-    from openai.types import Video
-
-    mock_page = mocker.MagicMock()
-    mock_page.data = [
-        Video(
-            id="vid1",
-            object="video",
-            status="completed",
-            progress=100,
-            model="sora-2",
-            seconds="8",
-            size="1280x720",
-            created_at=1000,
-        ),
-        Video(
-            id="vid2",
-            object="video",
-            status="in_progress",
-            progress=50,
-            model="sora-2",
-            seconds="8",
-            size="720x1280",
-            created_at=2000,
-        ),
-    ]
-    mock_page.has_more = True
-
-    mock_get_client = mocker.patch("sanzaru.tools.video.get_client")
-    mock_get_client.return_value.videos.list = mocker.AsyncMock(return_value=mock_page)
-
-    result = await list_videos(limit=20, order="desc")
-
-    assert len(result["data"]) == 2
-    assert result["data"][0]["id"] == "vid1"
-    assert result["data"][1]["status"] == "in_progress"
-    assert result["has_more"] is True
-    assert result["last"] == "vid2"
-
-
-@pytest.mark.integration
-async def test_sora_delete(mocker):
-    """Test video deletion calls API correctly."""
-    from openai.types import VideoDeleteResponse
-
-    mock_response = VideoDeleteResponse(id="vid_test123", object="video.deleted", deleted=True)
-
-    mock_get_client = mocker.patch("sanzaru.tools.video.get_client")
-    mock_get_client.return_value.videos.delete = mocker.AsyncMock(return_value=mock_response)
-
-    result = await delete_video("vid_test123")
-
-    assert result.id == "vid_test123"
-    assert result.deleted is True
-    mock_get_client.return_value.videos.delete.assert_called_once_with("vid_test123")
-
-
-@pytest.mark.integration
-async def test_sora_remix(mocker, mock_video_queued):
-    """Test video remix creates new job."""
-    mock_get_client = mocker.patch("sanzaru.tools.video.get_client")
-    mock_get_client.return_value.videos.remix = mocker.AsyncMock(return_value=mock_video_queued)
-
-    result = await remix_video("vid_original", "new prompt")
-
-    assert result.id == "vid_queued"
-    assert result.status == "queued"
-    mock_get_client.return_value.videos.remix.assert_called_once_with("vid_original", prompt="new prompt")
-
-
-@pytest.mark.integration
-async def test_create_video_with_reference_image_mime_types(mocker, mock_video_queued, tmp_path):
-    """Verify MIME types are correctly passed for different image formats."""
-    # Test cases: (extension, expected_mime_type)
-    test_cases = [
-        ("test.jpg", "image/jpeg"),
-        ("test.jpeg", "image/jpeg"),
-        ("test.png", "image/png"),
-        ("test.webp", "image/webp"),
-    ]
-
-    for filename, expected_mime in test_cases:
-        # Create a temporary reference image directory
-        reference_path = tmp_path / "references"
-        reference_path.mkdir(exist_ok=True)
-        image_file = reference_path / filename
-        image_file.write_bytes(b"fake image data")
-
-        # Mock storage backend with temp directory
-        storage = LocalStorageBackend(path_overrides={"reference": reference_path})
-        mocker.patch("sanzaru.tools.video.get_storage", return_value=storage)
-
-        # Mock the OpenAI client
-        mock_get_client = mocker.patch("sanzaru.tools.video.get_client")
-        mock_get_client.return_value.videos.create = mocker.AsyncMock(return_value=mock_video_queued)
-
-        # Call create_video with reference image
-        result = await create_video(
-            prompt="test video",
-            model="sora-2",
-            seconds="8",
-            size="1280x720",
-            input_reference_filename=filename,
-        )
-
-        # Verify the video was created
-        assert result.id == "vid_queued"
-        assert result.status == "queued"
-
-        # Verify the SDK was called with correct MIME type tuple
-        call_args = mock_get_client.return_value.videos.create.call_args
-        input_reference_arg = call_args.kwargs["input_reference"]
-
-        # Should be a tuple: (filename, bytes, mime_type)
-        assert isinstance(input_reference_arg, tuple), f"Expected tuple for {filename}"
-        assert len(input_reference_arg) == 3, f"Expected 3-element tuple for {filename}"
-        assert input_reference_arg[0] == filename, f"Filename mismatch for {filename}"
-        assert isinstance(input_reference_arg[1], bytes), f"Expected bytes for {filename}"
-        assert input_reference_arg[2] == expected_mime, f"MIME type mismatch for {filename}: {input_reference_arg[2]}"
-
-
-# ==================== Resource ID Validation ====================
-
-# Every one of these puts the id in a request path. The pinned SDK
-# percent-encodes the segment, so a traversing id is a failed lookup, not a
-# different endpoint; the guard is defence in depth that keeps that true
-# without the SDK, and these tests pin that it fires before any client or
-# storage is built. Keyed by name so a failure says which sink lost its guard.
-# The list is deliberately sink-specific (the DELETE /models case has no image
-# analogue), which is why it is not shared with test_image_tools.py.
-_ID_SINKS: dict[str, Callable[[str], Awaitable[object]]] = {
-    "get_video_status": get_video_status,
-    "download_video": lambda video_id: download_video(video_id, filename="loot.bin"),
-    "delete_video": delete_video,
-    "remix_video": lambda video_id: remix_video(video_id, "new prompt"),
-}
-
-
-@pytest.mark.integration
-@pytest.mark.parametrize("sink", list(_ID_SINKS), ids=list(_ID_SINKS))
-@pytest.mark.parametrize(
-    "video_id",
-    [
-        # What each would reach if the segment ever went unencoded:
-        "../files/file-XYZ/content?",  # GET /v1/files/file-XYZ/content -> any org file into VIDEO_PATH
-        "../files?",  # the org file listing, reflected back to the caller
-        "../models/ft:gpt-4.1:org:custom",  # DELETE against a fine-tuned model
-        "vid_123/content",
-        "vid_123?limit=100",
-        "vid_123#frag",
-        "vid%2F123",
-        "",
-    ],
-)
-async def test_hostile_video_id_raises_before_any_request(mocker, sink, video_id):
-    """The id must be rejected before the client is even constructed."""
-    mock_get_client = mocker.patch("sanzaru.tools.video.get_client")
-    mock_get_storage = mocker.patch("sanzaru.tools.video.get_storage")
-
-    with pytest.raises(ValueError, match="not a valid OpenAI resource id"):
-        await _ID_SINKS[sink](video_id)
-
-    # Nothing was built, so nothing could have been sent.
-    mock_get_client.assert_not_called()
-    mock_get_storage.assert_not_called()
-
-
-@pytest.mark.integration
-async def test_real_video_id_still_works(mocker, mock_video_response):
-    """A production-shaped id is unaffected by the guard."""
-    mock_get_client = mocker.patch("sanzaru.tools.video.get_client")
-    mock_get_client.return_value.videos.retrieve = mocker.AsyncMock(return_value=mock_video_response)
-
-    await get_video_status("video_68d9f7a1b2c34d56789abcdef0123456")
-
-    mock_get_client.return_value.videos.retrieve.assert_called_once_with("video_68d9f7a1b2c34d56789abcdef0123456")
-
-
-@pytest.mark.integration
-async def test_download_derives_filename_from_a_validated_id(mocker, tmp_video_path):
-    """The id is also the default basename, so validating it guards both sinks."""
-    storage = LocalStorageBackend(path_overrides={"video": tmp_video_path})
-    mocker.patch("sanzaru.tools.video.get_storage", return_value=storage)
-
-    async def mock_iter():
-        yield b"chunk1"
-
-    mock_response = mocker.MagicMock()
-    mock_response.iter_bytes.return_value = mock_iter()
-    mock_stream_ctx = mocker.MagicMock()
-    mock_stream_ctx.__aenter__ = mocker.AsyncMock(return_value=mock_response)
-    mock_stream_ctx.__aexit__ = mocker.AsyncMock(return_value=None)
-
-    mock_get_client = mocker.patch("sanzaru.tools.video.get_client")
-    mock_get_client.return_value.with_streaming_response.videos.download_content.return_value = mock_stream_ctx
-
-    result = await download_video("video_68d9f7a1")
-
-    assert result["filename"] == "video_68d9f7a1.mp4"
-
-
-# ==================== list_local_videos Tests ====================
-
-
-@pytest.mark.integration
-async def test_list_local_videos_basic(mocker, tmp_video_path):
-    """Test listing local video files."""
-    # Create test video files
-    (tmp_video_path / "video1.mp4").write_bytes(b"x" * 100)
-    (tmp_video_path / "video2.webm").write_bytes(b"y" * 200)
-    (tmp_video_path / "video3.mov").write_bytes(b"z" * 300)
-
-    storage = LocalStorageBackend(path_overrides={"video": tmp_video_path})
-    mocker.patch("sanzaru.tools.video.get_storage", return_value=storage)
-
-    result = await list_local_videos()
-
-    assert len(result["data"]) == 3
-    filenames = {v["filename"] for v in result["data"]}
-    assert filenames == {"video1.mp4", "video2.webm", "video3.mov"}
-    # Verify no path fields leaked
-    for item in result["data"]:
-        assert "path" not in item
-
-
-@pytest.mark.integration
-async def test_list_local_videos_filter_by_type(mocker, tmp_video_path):
-    """Test filtering local videos by file type."""
-    (tmp_video_path / "video1.mp4").write_bytes(b"x" * 100)
-    (tmp_video_path / "video2.webm").write_bytes(b"y" * 200)
-    (tmp_video_path / "video3.mp4").write_bytes(b"z" * 300)
-
-    storage = LocalStorageBackend(path_overrides={"video": tmp_video_path})
-    mocker.patch("sanzaru.tools.video.get_storage", return_value=storage)
-
-    result = await list_local_videos(file_type="mp4")
-
-    assert len(result["data"]) == 2
-    for item in result["data"]:
-        assert item["file_type"] == "mp4"
-
-
-@pytest.mark.integration
-async def test_list_local_videos_sort_by_size(mocker, tmp_video_path):
-    """Test sorting local videos by size."""
-    (tmp_video_path / "small.mp4").write_bytes(b"x" * 100)
-    (tmp_video_path / "large.mp4").write_bytes(b"y" * 1000)
-    (tmp_video_path / "medium.mp4").write_bytes(b"z" * 500)
-
-    storage = LocalStorageBackend(path_overrides={"video": tmp_video_path})
-    mocker.patch("sanzaru.tools.video.get_storage", return_value=storage)
-
-    result = await list_local_videos(sort_by="size", order="asc")
-
-    sizes = [item["size_bytes"] for item in result["data"]]
-    assert sizes == sorted(sizes)
-
-
-@pytest.mark.integration
-async def test_list_local_videos_limit(mocker, tmp_video_path):
-    """Test limiting the number of results."""
-    for i in range(10):
-        (tmp_video_path / f"video{i}.mp4").write_bytes(b"x" * (i + 1) * 100)
-
-    storage = LocalStorageBackend(path_overrides={"video": tmp_video_path})
-    mocker.patch("sanzaru.tools.video.get_storage", return_value=storage)
-
-    result = await list_local_videos(limit=3)
-
-    assert len(result["data"]) == 3
-
-
-@pytest.mark.integration
-async def test_list_local_videos_empty(mocker, tmp_video_path):
-    """Test listing when no video files exist."""
-    storage = LocalStorageBackend(path_overrides={"video": tmp_video_path})
-    mocker.patch("sanzaru.tools.video.get_storage", return_value=storage)
-
-    result = await list_local_videos()
-
-    assert result["data"] == []
+    async def test_status_reports_terminal_states(self, install, state, done):
+        install(FakeHiggsfield(status={"status": state, "request_id": RID}))
+        status = await video.get_video_status(JOB)
+        assert status["status"] == state and status["done"] is done and status["id"] == JOB
+
+    async def test_nsfw_carries_an_explanation(self, install):
+        install(FakeHiggsfield(status={"status": "nsfw", "request_id": RID}))
+        status = await video.get_video_status(JOB)
+        assert status["done"] and "moderation" in (status["error"] or "")
+
+    async def test_a_sora_id_is_explained(self, install):
+        install()
+        with pytest.raises(ValueError, match="Sora"):
+            await video.get_video_status("video_abc123")
+
+    async def test_download_streams_the_output_into_storage(self, install, storage):
+        fake = install()
+        result = await video.download_video(JOB)
+        assert result == {"filename": f"{JOB}.mp4", "format": "mp4"}
+        assert (storage / "videos" / f"{JOB}.mp4").read_bytes() == b"MP4BYTES"
+        cdn = [r for r in fake.requests if r.url.host == "cdn.test"]
+        assert cdn and "Authorization" not in cdn[0].headers
+
+    async def test_download_of_an_unfinished_job_fails(self, install, storage):
+        install(FakeHiggsfield(status={"status": "in_progress", "request_id": RID}))
+        with pytest.raises(ValueError, match="not completed"):
+            await video.download_video(JOB)
+
+    async def test_cancel_a_queued_job(self, install):
+        install()
+        assert await video.cancel_video(JOB) == {"id": JOB, "canceled": True}
+
+    async def test_cancel_a_started_job_explains(self, install):
+        install(FakeHiggsfield(submit_status=400))
+        with pytest.raises(ValueError, match="only cancels queued"):
+            await video.cancel_video(JOB)
+
+
+class TestListLocalVideos:
+    async def test_lists_the_video_directory(self, storage):
+        (storage / "videos" / "a.mp4").write_bytes(b"x")
+        (storage / "videos" / "b.mov").write_bytes(b"yy")
+        result = await video.list_local_videos(sort_by="name", order="asc")
+        assert [v["filename"] for v in result["data"]] == ["a.mp4", "b.mov"]
