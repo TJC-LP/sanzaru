@@ -23,6 +23,12 @@ AudioChatModel = Literal[
     "gpt-audio-mini-2025-12-15",
 ]
 DEFAULT_AUDIO_CHAT_MODEL: AudioChatModel = "gpt-audio-1.5"
+# Sent when the caller gives no question. Note gpt-audio-1.5 tends to wrap its
+# answer in a JSON object whatever the prompt; no system prompt, developer
+# message, response_format or modalities setting stopped that (measured
+# 2026-09-28), so the reply is passed through rather than unwrapped.
+DEFAULT_AUDIO_CHAT_PROMPT = "Describe this recording: what is said, how many speakers there are, and the tone."
+AUDIO_CHAT_EMPTY_ATTEMPTS = 2
 EnhancementType = Literal["detailed", "storytelling", "professional", "analytical"]
 TTSVoice = Literal["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"]
 

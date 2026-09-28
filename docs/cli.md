@@ -262,12 +262,13 @@ Three verbs, in the order you use them:
 | verb | what it does | cost |
 | --- | --- | --- |
 | `rundown PREMISE` | plans an episode into acts; emits editable JSON | one text call |
-| `simulate BRIEF` | records realtime agents actually conversing | real; see below |
+| `simulate BRIEF` | **experimental:** records realtime agents actually conversing | real; see below |
 | `generate SCRIPT` | speaks a script you wrote (multi-voice TTS); `--verify` checks the audio says it | TTS rates |
 
-Reach for `simulate` when you have a **topic** and want a real conversation, `generate
---render-mode dialogue` when you have a **script** and want it performed naturally, and
-`generate` (segments) when you need exact control over gaps and per-segment retry.
+`generate --provider elevenlabs --render-mode dialogue --verify` is the recommended way to make a
+podcast — from a **script**, or from a **topic** once you have written the script. Use `generate`
+(segments) when you need exact control over gaps and per-segment retry. `rundown` + `simulate` are
+**experimental**: reach for them only when an unscripted conversation is explicitly wanted.
 
 #### `rundown`
 
@@ -479,7 +480,7 @@ batched run re-renders the whole run.
 
 `--render-mode segments|dialogue` (or `config.render_mode`; default `segments`).
 
-**Recommended engine for a scripted multi-voice show:** `--provider elevenlabs` (default model
+**Recommended engine for any multi-voice podcast** (write the script first if you only have a topic): `--provider elevenlabs` (default model
 `eleven_v4`), `--render-mode dialogue`, `--verify`. Use `--model eleven_v4_turbo` for drafts — half
 the character cost and roughly half the render time. Stay in `segments` for exact gaps, per-speaker
 `voice_settings`, or cheap single-line retry. OpenAI stays the default provider because it needs no

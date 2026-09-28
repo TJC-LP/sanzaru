@@ -53,12 +53,14 @@ Implementation lives in `src/sanzaru/audio/providers/`. A provider synthesizes o
 returns mp3 bytes; `providers/base.py` owns text splitting, the bounded parallel fan-out, and
 concatenation.
 
-### Simulated podcasts (realtime)
+### Simulated podcasts (realtime, experimental)
 
-`simulate_podcast` is a third mode, and a different thing entirely: the conversation is
+`simulate_podcast` is an **experimental** third mode, and a different thing entirely: the conversation is
 **generated, not read**. N `gpt-realtime` sessions get personas and a rundown, one is given the
 floor at a time, and its audio is played into the others' ears — so they react to delivery, not
-to a transcript. No script, no TTS step.
+to a transcript. No script, no TTS step. It is the most expensive tool in sanzaru and results vary
+run to run, so use it only when an unscripted conversation is explicitly wanted; for a podcast,
+use the recommended engine below.
 
 ```bash
 sanzaru podcast rundown "your topic" --acts 3 -m 6 -o rundown.json
@@ -80,8 +82,9 @@ Full rationale and measured numbers: [simulated-podcasts.md](simulated-podcasts.
 
 ### Recommended podcast engine
 
-For a scripted show with more than one voice: **ElevenLabs, `eleven_v4`, `render_mode: "dialogue"`,
-`verify` on.** Use `eleven_v4_turbo` (half the character cost, roughly half the render time) while iterating
+For any podcast with more than one voice: **ElevenLabs, `eleven_v4`, `render_mode: "dialogue"`,
+`verify` on** — including one that starts from just a topic: write the script (turns, inline
+direction tags, an open and a close), then render it. Use `eleven_v4_turbo` (half the character cost, roughly half the render time) while iterating
 on a draft. Stay in `segments` mode when you need exact gaps, per-speaker `voice_settings`, or to
 fix one line without re-paying for its neighbours. OpenAI remains the default provider because it
 needs no extra key or extra — it is the zero-setup choice, not the best-sounding one.
@@ -172,7 +175,7 @@ A window that fails leaves a gap and says which one, rather than losing the tran
 
 ### Podcasts
 - `generate_podcast`: Multi-voice podcast from a script (segments or dialogue render mode)
-- `simulate_podcast`: Realtime agents conversing from a rundown — no script
+- `simulate_podcast` (experimental): Realtime agents conversing from a rundown — no script
 
 ## Supported Formats
 
@@ -197,7 +200,7 @@ claude
 - [MCP README](mcp-readme.md) - MCP server configuration
 - [OpenAI Audio APIs](openai-audio.md) - API reference and capabilities
 - [OpenAI Realtime](openai-realtime.md) - Realtime audio features
-- [Simulated Podcasts](simulated-podcasts.md) - Realtime agents in conversation: the producer model, act chunking, cost, QC
+- [Simulated Podcasts](simulated-podcasts.md) (experimental) - Realtime agents in conversation: the producer model, act chunking, cost, QC
 
 ## Attribution
 

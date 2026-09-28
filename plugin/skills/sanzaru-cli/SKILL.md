@@ -1,6 +1,6 @@
 ---
 name: sanzaru-cli
-description: Generate videos (Sora), images (gpt-image-2.5), speech/transcription (OpenAI or ElevenLabs), scripted podcasts, and simulated podcasts (realtime agents that actually converse) from the shell with the sanzaru CLI. Use for long-running media jobs (create → wait → download one-shots, resumable waits, JSON envelopes, batch fan-out) instead of loading the MCP tool surface.
+description: Generate videos (Sora), images (gpt-image-2.5), speech/transcription (OpenAI or ElevenLabs), scripted podcasts (ElevenLabs v4 recommended), and experimental simulated podcasts (realtime agents that actually converse) from the shell with the sanzaru CLI. Use for long-running media jobs (create → wait → download one-shots, resumable waits, JSON envelopes, batch fan-out) instead of loading the MCP tool surface.
 ---
 
 # Sanzaru CLI for agents
@@ -104,15 +104,18 @@ voices that pair well (global ids, every account has them):
 | Roger | `CwhRBWXzGAHq8TQ4Fs17` | laid-back, casual |
 | Matilda | `XrExE9yKIg1WjnnlVkGX` | professional |
 
-## Podcasts: scripted vs simulated
+## Podcasts: scripted (recommended) vs simulated (experimental)
 
-Three verbs, and picking the wrong one wastes either quality or money.
+`podcast generate` is the way to make a podcast. With only a **topic**, write the script yourself
+first — turns, inline direction tags (`[laughs]`, `[whispers]`), a clear open and close — then
+render it. Reach for `simulate` only when the user explicitly wants an unscripted conversation.
 
 | you have | use |
 | --- | --- |
-| a **topic** and want a real conversation | `podcast rundown` then `podcast simulate` |
-| a **script** you want performed naturally | `podcast generate --provider elevenlabs --render-mode dialogue --verify` |
-| a **script** needing exact gaps / per-segment retry | `podcast generate` (default) |
+| a **topic** or a **script** (the default case) | `podcast generate --provider elevenlabs --render-mode dialogue --verify` (write the script first if you only have a topic) |
+| a **script** needing exact gaps / per-segment retry | `podcast generate --render-mode segments --verify` |
+| ElevenLabs not configured | `podcast generate --verify` (OpenAI, zero extra setup) |
+| an explicit ask for an **unscripted** conversation | **experimental:** `podcast rundown` then `podcast simulate` (dry run first, `--max-cost`) |
 
 **Use `podcast generate --verify` on anything you care about.** TTS drops segment tails, and
 occasionally whole short segments, at random and with no error — the `transcript` in the result is
@@ -121,9 +124,9 @@ checks it against the script, and re-renders what is missing once. A segment tha
 will not be fixed by a third render: rewrite its tail to be grammatically part of a longer
 sentence. This replaces the hand-rolled QC loop that used to cost a median of three renders.
 
-`simulate` is not TTS: each host is a `gpt-realtime` session with a persona, and one host's audio
+`simulate` is **experimental** and is not TTS: each host is a `gpt-realtime` session with a persona, and one host's audio
 is played into the others' ears, so they react to delivery and disagree for real. The transcript
-is an *output*. It is also **the most expensive thing sanzaru does** — roughly $0.20 for 7
+is an *output*, so results vary run to run. It is also **the most expensive thing sanzaru does** — roughly $0.20 for 7
 minutes on `gpt-realtime-2.1-mini`, ~3x that on the full model.
 
 ```bash

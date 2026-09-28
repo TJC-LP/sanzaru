@@ -203,3 +203,79 @@ class TestWarningInContext:
             await TranscriptionService().transcribe_audio("short.mp3")
 
         assert "may have stopped early" not in caplog.text
+
+
+class _FakeChatCompletions:
+    """Replays a queue of reply texts, recording every request."""
+
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.calls = []
+
+    async def create(self, *, model, messages, **kwargs):
+        import types
+
+        self.calls.append({"model": model, "messages": messages})
+        content = self.replies.pop(0) if self.replies else "fallback"
+        message = types.SimpleNamespace(content=content)
+        return types.SimpleNamespace(choices=[types.SimpleNamespace(message=message)])
+
+
+@pytest.fixture
+def fake_chat(mocker):
+    def build(*replies):
+        import types
+
+        completions = _FakeChatCompletions(replies)
+        client = types.SimpleNamespace(chat=types.SimpleNamespace(completions=completions))
+        mocker.patch("sanzaru.audio.services.transcription_service.get_client", return_value=client)
+        return completions
+
+    return build
+
+
+def _text_part(call) -> str:
+    user = call["messages"][-1]["content"]
+    return next(part["text"] for part in user if part["type"] == "text")
+
+
+@pytest.mark.integration
+@pytest.mark.anyio
+class TestChatWithAudio:
+    async def test_no_question_sends_the_default_prompt(self, audio_dir, fake_chat):
+        """gpt-audio-1.5 answered a bare clip with router JSON, or nothing."""
+        from sanzaru.audio.constants import DEFAULT_AUDIO_CHAT_PROMPT
+
+        _write_silence(audio_dir, "clip.mp3", 1.0)
+        chat = fake_chat("two speakers discussing a release")
+        await TranscriptionService().chat_with_audio("clip.mp3")
+        assert _text_part(chat.calls[0]) == DEFAULT_AUDIO_CHAT_PROMPT
+
+    async def test_a_question_is_sent_unchanged(self, audio_dir, fake_chat):
+        _write_silence(audio_dir, "clip.mp3", 1.0)
+        chat = fake_chat("a release note")
+        await TranscriptionService().chat_with_audio("clip.mp3", user_prompt="What is this about?")
+        assert _text_part(chat.calls[0]) == "What is this about?"
+
+    async def test_an_empty_reply_is_retried_once(self, audio_dir, fake_chat):
+        _write_silence(audio_dir, "clip.mp3", 1.0)
+        chat = fake_chat("", "the real answer")
+        result = await TranscriptionService().chat_with_audio("clip.mp3", user_prompt="q")
+        assert result.text == "the real answer"
+        assert len(chat.calls) == 2
+
+    async def test_a_reply_is_not_retried(self, audio_dir, fake_chat):
+        _write_silence(audio_dir, "clip.mp3", 1.0)
+        chat = fake_chat("first answer", "never asked for")
+        result = await TranscriptionService().chat_with_audio("clip.mp3", user_prompt="q")
+        assert result.text == "first answer"
+        assert len(chat.calls) == 1
+
+    async def test_still_empty_after_the_retry_is_reported_not_looped(self, audio_dir, fake_chat):
+        from sanzaru.audio.constants import AUDIO_CHAT_EMPTY_ATTEMPTS
+
+        _write_silence(audio_dir, "clip.mp3", 1.0)
+        chat = fake_chat("", "  ", "never reached")
+        result = await TranscriptionService().chat_with_audio("clip.mp3", user_prompt="q")
+        assert result.text.strip() == ""
+        assert len(chat.calls) == AUDIO_CHAT_EMPTY_ATTEMPTS

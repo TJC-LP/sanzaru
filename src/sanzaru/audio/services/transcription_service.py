@@ -17,7 +17,14 @@ from ...config import get_client, logger
 from ...infrastructure import FileSystemRepository
 from ...storage import get_storage
 from .. import AudioProcessor
-from ..constants import DEFAULT_AUDIO_CHAT_MODEL, ENHANCEMENT_PROMPTS, AudioChatModel, EnhancementType
+from ..constants import (
+    AUDIO_CHAT_EMPTY_ATTEMPTS,
+    DEFAULT_AUDIO_CHAT_MODEL,
+    DEFAULT_AUDIO_CHAT_PROMPT,
+    ENHANCEMENT_PROMPTS,
+    AudioChatModel,
+    EnhancementType,
+)
 from ..models import ChatResult, TranscriptionResult
 from ..providers.base import env_concurrency
 from ..windowing import CHUNK_THRESHOLD_SECONDS, Window, merge_window_texts, plan_windows
@@ -245,19 +252,26 @@ class TranscriptionService:
         user_content: list[dict[str, Any]] = [
             {"type": "input_audio", "input_audio": {"data": audio_base64, "format": ext}}
         ]
-        if user_prompt:
-            user_content.append({"type": "text", "text": user_prompt})
+        # An audio clip with no question is not a request: gpt-audio-1.5 answered
+        # one with router-style JSON ({"query": ...}, {"mode": "deploy_status"})
+        # or nothing at all (empty 2 of 3 on a 90 s clip, 2026-09-28).
+        user_content.append({"type": "text", "text": user_prompt or DEFAULT_AUDIO_CHAT_PROMPT})
 
         messages.append({"role": "user", "content": user_content})
 
-        # Chat with audio using OpenAI
-        response = await client.chat.completions.create(
-            model=model,
-            messages=messages,  # type: ignore
-        )
-
-        # Extract text from response
-        text = response.choices[0].message.content or ""
+        # One retry on an empty reply: it happened once in seven otherwise-identical
+        # calls on a deployment, and an empty string reads to the caller as "the
+        # audio has nothing in it". Still empty after that, it is reported as-is.
+        text = ""
+        for _ in range(AUDIO_CHAT_EMPTY_ATTEMPTS):
+            response = await client.chat.completions.create(
+                model=model,
+                messages=messages,  # type: ignore
+            )
+            text = response.choices[0].message.content or ""
+            if text.strip():
+                break
+            logger.warning("chat_with_audio: %s returned an empty reply", model)
 
         return ChatResult(text=text)
 

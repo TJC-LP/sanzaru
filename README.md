@@ -36,11 +36,12 @@ A **stateless**, lightweight **MCP** server **and agent CLI** that wraps **OpenA
 - Multi-voice podcasts with up to 4 speakers and 10 TTS voices
 - Parallel segment generation with configurable pacing
 - MP3/WAV output with loudness normalization
-- Recommended engine for scripted shows: ElevenLabs `eleven_v4` (the ElevenLabs default) in `dialogue` render mode with `--verify`
+- **The recommended way to make a podcast** — from a script, or from a topic (the model writes the script first): ElevenLabs `eleven_v4` (the ElevenLabs default) in `dialogue` render mode with `--verify`. OpenAI is the zero-setup fallback
 - ElevenLabs `dialogue` render mode: consecutive turns go out together so the model paces them
 - `--verify` transcribes the rendered audio and re-renders segments the TTS silently dropped
 
-### Simulated Podcasts
+### Simulated Podcasts (experimental)
+- Experimental, and the most expensive tool in sanzaru — for when you explicitly want an unscripted conversation. For a podcast, prefer the scripted ElevenLabs path above
 - **The conversation is generated, not read** — N `gpt-realtime` agents actually talk to each other
 - Each host hears the others' audio, so they respond to delivery and timing, not to a transcript
 - Pre-production plans acts that record **in parallel**: a 30-minute episode in ~1 minute
@@ -211,11 +212,11 @@ uv run sanzaru --transport http --port 8000
 |----------|-------|-------------|
 | **Video** | `create_video`, `get_video_status`, `download_video`, `list_videos`, `list_local_videos`, `delete_video`, `remix_video` | Generate and manage Sora videos with optional reference images |
 | **Jobs** | `wait_for` | Block server-side on any mix of `video_*`/`resp_*` ids until they finish (progress on every poll, optional download); replaces model-driven polling |
-| **Image** | `generate_image`, `edit_image`, `create_image`, `get_image_status`, `download_image` | Generate with gpt-image-2.5 (default, sync) or GPT-5 (polling) |
+| **Image** | `generate_image`, `edit_image`, `create_image`, `get_image_status`, `download_image`, `inspect_image` | `generate_image` is synchronous — one call, finished file (the default). `create_image` starts a background job for batches and refinement chains; collect with `wait_for`. `edit_image` edits; `inspect_image` shows the model what it rendered |
 | **Reference** | `list_reference_images`, `prepare_reference_image` | Manage and resize images for Sora compatibility |
 | **Audio** | `transcribe_audio`, `chat_with_audio`, `create_audio`, `convert_audio`, `compress_audio`, `list_audio_files`, `get_latest_audio`, `transcribe_with_enhancement` | Transcription, analysis, TTS (OpenAI or ElevenLabs), and file management |
-| **Podcast** | `generate_podcast` | Multi-voice podcast generation with parallel TTS and audio stitching; speakers may mix TTS providers |
-| **Simulated Podcast** | `simulate_podcast` | Realtime agents converse from a rundown — parallel acts, checkpointing, cost ceiling, QC |
+| **Podcast** | `generate_podcast` | The recommended podcast tool: multi-voice episodes with parallel TTS and stitching (ElevenLabs v4 + dialogue + verify recommended); speakers may mix TTS providers |
+| **Simulated Podcast** (experimental) | `simulate_podcast` | Unscripted: realtime agents converse from a rundown — parallel acts, checkpointing, cost ceiling, QC |
 | **Media** | `view_media` | Interactive media player via MCP App protocol |
 
 > **Full API documentation**: See [docs/api-reference.md](docs/api-reference.md)
@@ -232,11 +233,8 @@ video = create_video(
     size="1280x720"
 )
 
-# Poll for completion
-status = get_video_status(video.id)
-
-# Download when ready
-download_video(video.id, filename="mountain_sunrise.mp4")
+# Wait server-side and save it — one call, no polling loop
+wait_for([video.id], download=True)
 ```
 
 ### Generate with Reference Image
@@ -289,7 +287,7 @@ generate_podcast(script={
 })
 ```
 
-### Simulate a Podcast (no script — the agents talk)
+### Simulate a Podcast (experimental — no script, the agents talk)
 ```bash
 # 1. Plan it. Cheap, and the JSON is yours to edit.
 sanzaru podcast rundown "why TTS providers drop sentence tails" \
@@ -314,7 +312,7 @@ sanzaru podcast simulate --resume 6f1a9c02
 - **[Image Generation Guide](docs/image-generation.md)** - Generating and editing reference images
 - **[Sora Prompting Guide](docs/sora2-prompting-guide.md)** - Crafting effective video prompts
 - **[Audio Features](docs/audio/README.md)** - Audio transcription, chat, and TTS
-- **[Simulated Podcasts](docs/audio/simulated-podcasts.md)** - Realtime agents in conversation: producer model, act chunking, cost, QC
+- **[Simulated Podcasts](docs/audio/simulated-podcasts.md)** (experimental) - Realtime agents in conversation: producer model, act chunking, cost, QC
 - **[Performance & Architecture](docs/async-optimizations.md)** - Technical details and benchmarks
 
 ## Transport Modes

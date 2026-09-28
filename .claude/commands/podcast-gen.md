@@ -8,6 +8,10 @@ them together with configurable silence gaps.
 
 ## Choosing the engine
 
+`generate_podcast` is the podcast tool even when you start from just a topic: you write the
+script, then render it. Do not reach for `simulate_podcast` — it is experimental, the most
+expensive tool in sanzaru, and meant only for an explicitly requested unscripted conversation.
+
 **Recommended for any multi-voice script: ElevenLabs `eleven_v4`, `render_mode: "dialogue"`,
 `verify: true`.** The model paces the turns itself and performs inline direction tags —
 `[laughs]`, `[sighs]`, stacked `[whispers] [nervously]` — which v3 dropped in a blind listen.
