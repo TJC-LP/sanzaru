@@ -52,8 +52,8 @@ class TestResolution:
         assert provider.resolve_model(None) == "gpt-4o-mini-tts"
         assert provider.resolve_voice(None) == "alloy"
 
-    def test_elevenlabs_defaults_to_v3(self):
-        assert get_provider("elevenlabs").resolve_model(None) == "eleven_v3"
+    def test_elevenlabs_defaults_to_v4(self):
+        assert get_provider("elevenlabs").resolve_model(None) == "eleven_v4"
 
     def test_elevenlabs_rejects_openai_model(self):
         with pytest.raises(ValueError, match="not an ElevenLabs model"):
@@ -153,12 +153,16 @@ class TestElevenLabsValidation:
         with pytest.raises(ValueError, match="does not carry over"):
             get_provider("elevenlabs").validate(elevenlabs_request(speed=2.0))
 
-    def test_v3_rejects_any_speed_change(self):
-        with pytest.raises(ValueError, match="does not support speed"):
-            get_provider("elevenlabs").validate(elevenlabs_request(model="eleven_v3", speed=1.1))
+    # The API answers 200 and renders at normal pace on these, so a refusal is
+    # the only signal a caller gets that their speed did nothing.
+    @pytest.mark.parametrize("model", ["eleven_v4", "eleven_v4_turbo", "eleven_v3"])
+    def test_speed_ignoring_models_reject_any_speed_change(self, model):
+        with pytest.raises(ValueError, match=f"{model} ignores speed"):
+            get_provider("elevenlabs").validate(elevenlabs_request(model=model, speed=1.1))
 
-    def test_v3_accepts_neutral_speed(self):
-        get_provider("elevenlabs").validate(elevenlabs_request(model="eleven_v3", speed=1.0))
+    @pytest.mark.parametrize("model", ["eleven_v4", "eleven_v4_turbo", "eleven_v3"])
+    def test_speed_ignoring_models_accept_neutral_speed(self, model):
+        get_provider("elevenlabs").validate(elevenlabs_request(model=model, speed=1.0))
 
     def test_voice_settings_speed_takes_precedence(self):
         # request.speed is legal, voice_settings["speed"] is not — the latter wins.

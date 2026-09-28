@@ -31,7 +31,7 @@ from ._io import (
 )
 from ._output import EXIT_CONFIG, EXIT_PARTIAL, EXIT_USAGE, emit, note, success_envelope
 from ._runtime import CLIError, _classify, find_in_group, get_state, run_async
-from .audio import _ELEVENLABS_MODELS, _PROVIDERS, _TTS_MODELS, resolve_tts_model
+from .audio import _ELEVENLABS_DEFAULT, _ELEVENLABS_MODELS, _PROVIDERS, _TTS_MODELS, resolve_tts_model
 
 if TYPE_CHECKING:
     # Runtime import would pull openai/pydantic in at `sanzaru.cli` import time.
@@ -106,7 +106,7 @@ def podcast() -> None:
     "--model",
     default=None,
     help=f"openai: {', '.join(_TTS_MODELS)} [default: gpt-4o-mini-tts]  |  "
-    f"elevenlabs: {', '.join(_ELEVENLABS_MODELS)} [default: eleven_v3]",
+    f"elevenlabs: {', '.join(_ELEVENLABS_MODELS)} [default: {_ELEVENLABS_DEFAULT}]",
 )
 @click.option(
     "--render-mode",

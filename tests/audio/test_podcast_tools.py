@@ -1105,12 +1105,12 @@ class TestValidateScriptProviders:
         with pytest.raises(ValueError, match="between 0.7 and 1.2 for provider='elevenlabs'"):
             _validate_script(minimal_script)
 
-    def test_v3_rejects_speed(self, minimal_script):
+    def test_default_v4_rejects_speed(self, minimal_script):
         minimal_script["speakers"][0].update({"provider": "elevenlabs", "voice": "v1", "speed": 1.1})
-        with pytest.raises(ValueError, match="does not support speed"):
+        with pytest.raises(ValueError, match="eleven_v4 ignores speed"):
             _validate_script(minimal_script)
 
-    def test_v3_accepts_neutral_speed(self, minimal_script):
+    def test_default_v4_accepts_neutral_speed(self, minimal_script):
         minimal_script["speakers"][0].update({"provider": "elevenlabs", "voice": "v1", "speed": 1.0})
         _validate_script(minimal_script)
 
@@ -1149,7 +1149,7 @@ class TestValidateScriptProviders:
         """
         minimal_script["speakers"][0].update({"provider": "elevenlabs", "voice": "v1", "model": "eleven_v3"})
         minimal_script["segments"][0]["speed_override"] = 0.9
-        with pytest.raises(ValueError, match="Segment 0 speed_override: eleven_v3 does not support speed"):
+        with pytest.raises(ValueError, match="Segment 0 speed_override: eleven_v3 ignores speed"):
             _validate_script(minimal_script)
 
     def test_supported_speed_override_passes_the_probe(self, minimal_script):
@@ -1274,7 +1274,7 @@ async def test_generate_podcast_mixed_providers(mocker, podcast_env, fake_eleven
 
     el_call = el_client.text_to_speech.calls[0]
     assert el_call["voice_id"] == "voice_xyz"
-    assert el_call["model_id"] == "eleven_v3"
+    assert el_call["model_id"] == "eleven_v4"
     assert el_call["voice_settings"].stability == 0.4
 
     # Envelope shape is unchanged, so downstream QC tooling doesn't fork.
@@ -1637,7 +1637,7 @@ def test_validation_checks_the_model_the_render_will_use():
 
     _validate_script(script, default_provider="elevenlabs", default_model="eleven_flash_v2_5")
 
-    with pytest.raises(ValueError, match="eleven_v3 does not support speed adjustment"):
+    with pytest.raises(ValueError, match="eleven_v3 ignores speed adjustment"):
         _validate_script(script, default_provider="elevenlabs", default_model="eleven_v3")
 
 

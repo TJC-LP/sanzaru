@@ -32,10 +32,19 @@ from ._runtime import CLIError, _classify, get_state, run_async
 _AUDIO_DEP_MESSAGE = "audio commands require optional dependencies — install with: uv pip install 'sanzaru[audio]'"
 
 # Literal lists, not imports from sanzaru.audio.constants: importing sanzaru.cli
-# must not pull in openai/pydantic (see tests/cli/test_root.py).
+# must not pull in openai/pydantic (see tests/cli/test_root.py). Drift from the
+# constants is caught by tests/cli/test_model_lists.py instead.
 _VOICES = ["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"]
 _TTS_MODELS = ["gpt-4o-mini-tts", "tts-1", "tts-1-hd"]
-_ELEVENLABS_MODELS = ["eleven_v3", "eleven_multilingual_v2", "eleven_flash_v2_5", "eleven_turbo_v2_5"]
+_ELEVENLABS_MODELS = [
+    "eleven_v4",
+    "eleven_v4_turbo",
+    "eleven_v3",
+    "eleven_multilingual_v2",
+    "eleven_flash_v2_5",
+    "eleven_turbo_v2_5",
+]
+_ELEVENLABS_DEFAULT = "eleven_v4"
 _PROVIDERS = ["openai", "elevenlabs"]
 _TRANSCRIBE_MODELS = ["gpt-4o-mini-transcribe", "gpt-4o-transcribe", "whisper-1"]
 _ENHANCEMENTS = ["detailed", "storytelling", "professional", "analytical"]
@@ -289,7 +298,7 @@ async def audio_chat(file: str, model: str, system_prompt: str | None, user_prom
     "--model",
     default=None,
     help=f"openai: {', '.join(_TTS_MODELS)} [default: gpt-4o-mini-tts]  |  "
-    f"elevenlabs: {', '.join(_ELEVENLABS_MODELS)} [default: eleven_v3]",
+    f"elevenlabs: {', '.join(_ELEVENLABS_MODELS)} [default: {_ELEVENLABS_DEFAULT}]",
 )
 @click.option(
     "--voice",

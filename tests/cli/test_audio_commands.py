@@ -588,8 +588,8 @@ def test_audio_speak_elevenlabs_passes_provider_and_settings(mocker, tmp_path):
     assert kwargs["provider"] == "elevenlabs"
     assert kwargs["voice"] == "voice_abc"
     assert kwargs["voice_settings"] == {"stability": 0.5}
-    # eleven_v3 is the ElevenLabs default, not the OpenAI one.
-    assert kwargs["model"] == "eleven_v3"
+    # eleven_v4 is the ElevenLabs default, not the OpenAI one.
+    assert kwargs["model"] == "eleven_v4"
 
 
 @pytest.mark.integration
@@ -707,7 +707,7 @@ def test_podcast_generate_passes_provider(mocker, tmp_path):
 
     assert result.exit_code == 0, result.stderr
     assert generate.call_args.kwargs["provider"] == "elevenlabs"
-    assert generate.call_args.kwargs["model"] == "eleven_v3"
+    assert generate.call_args.kwargs["model"] == "eleven_v4"
 
 
 @pytest.mark.integration

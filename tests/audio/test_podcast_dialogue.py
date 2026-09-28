@@ -326,7 +326,7 @@ class TestDialogueRendering:
         call = client.dialogue_calls[0]
         assert [i.text for i in call["inputs"]] == ["First turn.", "Second turn.", "Third turn."]
         assert [i.voice_id for i in call["inputs"]] == ["voice_a", "voice_b", "voice_a"]
-        assert call["model_id"] == "eleven_v3"
+        assert call["model_id"] == "eleven_v4"
         assert call["output_format"] == "mp3_44100_128"
         # The envelope must not change shape between render modes.
         assert result.segment_count == 3
