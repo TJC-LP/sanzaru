@@ -1,5 +1,11 @@
 # Simulated podcasts
 
+> **Status: experimental.** The most expensive tool in sanzaru, with run-to-run variation. For a
+> podcast — including one that starts from just a topic (write the script, then render it) — the
+> recommended path is `generate_podcast` on ElevenLabs `eleven_v4` with `render_mode: "dialogue"` and
+> `verify`: see [Recommended podcast engine](README.md#recommended-podcast-engine). Use this tool
+> when you explicitly want an unscripted conversation.
+
 `generate_podcast` speaks a script you wrote. `simulate_podcast` records a conversation that
 did not exist until the models had it.
 

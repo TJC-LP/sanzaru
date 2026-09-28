@@ -34,8 +34,8 @@ which arguments, how to wait. For prompt craft (what to say to Sora or an image 
 | | `transcribe_audio` | sync | Transcription (long files are windowed automatically) |
 | | `chat_with_audio` | sync | Audio understanding / Q&A over a file |
 | | `list_audio_files` | sync | List and filter audio files (substring or glob `pattern`, not regex) |
-| **Podcast** | `generate_podcast` | sync | Multi-voice episode from a script; `render_mode` `segments` (exact gaps) or `dialogue` (model paces the turns); `verify` checks the audio says the script |
-| | `simulate_podcast` | sync | **No script** — realtime or gpt-live-1 agents converse from a rundown. Highest quality, real money: call with `dry_run: true` first and set `max_cost_usd` |
+| **Podcast** | `generate_podcast` | sync | **The way to make a podcast** — from a script, or from a topic (write the script yourself first). Recommended: ElevenLabs `eleven_v4`, `render_mode: "dialogue"`, `verify: true` |
+| | `simulate_podcast` | sync | **Experimental.** Unscripted — realtime or gpt-live-1 agents converse from a rundown. Most expensive tool, variable results; only when an unscripted conversation is explicitly wanted. `dry_run: true` first, set `max_cost_usd` |
 | **Viewer** | `view_media` | sync | Opens a video/audio/image inline (MCP App), with a Download button where the host supports it |
 
 ## Which image tool
@@ -86,15 +86,17 @@ Use `get_*_status` only for a one-off check when you are not going to wait.
 
 ## Podcasts
 
-- `generate_podcast` is scripted TTS. Use `verify: true` when the words matter; it re-renders a
-  segment whose tail went missing, once.
-- **Recommended engine for a scripted multi-voice show:** every speaker `"provider": "elevenlabs"`
+- **`generate_podcast` is the podcast tool.** Given only a topic, write the script yourself (turns,
+  inline direction tags, a clear open and close), then render it — don't reach for
+  `simulate_podcast`. Use `verify: true` when the words matter; it re-renders a segment whose tail
+  went missing, once.
+- **Recommended engine:** every speaker `"provider": "elevenlabs"`
   (default model `eleven_v4`), `config.render_mode: "dialogue"`, `verify: true`. Set
   `"model": "eleven_v4_turbo"` for drafts (half the character cost, roughly half the render time). Direct delivery
   with inline tags in the text (`[laughs]`, `[whispers] [nervously]` — v4 performs stacked tags in
   order); `instructions` and `speed` do nothing on v4 (speed is refused). Use `segments` mode for
   exact gaps or per-speaker `voice_settings`. OpenAI stays the default provider only because it
-  needs no extra key. Premade ElevenLabs voices that pair well (global ids):
+  needs no extra key — it is the fallback when ElevenLabs is not configured. Premade ElevenLabs voices that pair well (global ids):
 
   | Voice | id | Character |
   |---|---|---|
@@ -103,7 +105,9 @@ Use `get_*_status` only for a one-off check when you are not going to wait.
   | Alice | `Xb7hH8MSUJpSbSDYk0k2` | clear British educator |
   | Roger | `CwhRBWXzGAHq8TQ4Fs17` | laid-back, casual |
   | Matilda | `XrExE9yKIg1WjnnlVkGX` | professional |
-- `simulate_podcast` records agents actually talking. Always `dry_run: true` first (plans, projects
+- `simulate_podcast` is **experimental**: realtime agents improvise an unscripted conversation.
+  Use it only when the user explicitly asks for an unscripted/simulated conversation (or names
+  the tool). Always `dry_run: true` first (plans, projects
   cost, spends nothing), then set `max_cost_usd`. gpt-realtime bills tokens; `gpt-live-1` bills
   $0.05 per host-minute and runs in **duplex** mode by default (hosts hear each other live). Every
   act is checkpointed; the result carries a `resume_command` if the run stops early.

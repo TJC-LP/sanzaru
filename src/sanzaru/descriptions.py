@@ -5,13 +5,39 @@ These descriptions are LLM-facing and optimized for Claude and other AI assistan
 to understand how to use each tool effectively.
 """
 
+# ==================== SERVER INSTRUCTIONS ====================
+# Sent once per connection (initialize / server/discover), ahead of every tool
+# description, so it carries only the cross-tool guidance a model needs before
+# it picks a tool. Kept short on purpose: clients may truncate long instructions,
+# and anything tool-specific belongs in that tool's own description.
+
+SERVER_INSTRUCTIONS = """Sanzaru generates and inspects media: video (Sora), images, speech, and podcasts.
+
+Podcasts: use `generate_podcast` — for a script, or for just a topic (write the script
+yourself, then render it). Prefer ElevenLabs speakers on eleven_v4 with
+config.render_mode "dialogue" and verify=true when ElevenLabs is available; otherwise
+OpenAI voices. `simulate_podcast` is EXPERIMENTAL (unscripted, the most expensive tool,
+variable results): use it only when the user explicitly wants a generated, unscripted
+conversation, and always `dry_run` first with `max_cost_usd` set.
+
+Images: `generate_image` for a single image (synchronous — one call, finished file).
+`create_image` starts a background job: use it for several images at once or refinement
+chains (previous_response_id), then collect every id with one `wait_for` call.
+Video: `create_video`, then `wait_for([id], download=true)`. Never loop on the
+get_*_status tools. With a reference image, prompt only the motion, not what it shows.
+
+Check your own output before presenting it: `inspect_image` and `inspect_video_frame`
+show you what was rendered. Present finished media with `view_media`."""
+
+
 # ==================== VIDEO TOOL DESCRIPTIONS ====================
 
 CREATE_VIDEO = """Create a new Sora video generation job. This starts an async job and returns immediately with a video_id.
 
-The video is NOT ready immediately - use get_video_status(video_id) to poll for completion.
-Status will be 'queued' -> 'in_progress' -> 'completed' or 'failed'.
-Once status='completed', use download_video(video_id) to save the video to disk.
+The video is NOT ready immediately. Next, call wait_for([video_id], download=true): one call
+that waits server-side and saves the finished video — no polling loop. It returns at its
+deadline with the last-seen status if the video is still rendering; call it again to keep
+waiting. Status goes 'queued' -> 'in_progress' -> 'completed' or 'failed'.
 
 Parameters:
 - prompt: Text description of the video to generate (required)
@@ -24,8 +50,8 @@ Returns Video object with fields: id, status, progress, model, seconds, size."""
 
 GET_VIDEO_STATUS = """Check the status and progress of a video generation job.
 
-Use this to poll for completion after calling create_video or remix_video.
-Call this repeatedly (e.g. every 5-10 seconds) until status changes from 'queued'/'in_progress' to 'completed' or 'failed'.
+A one-off check of a single video. To wait for completion, use wait_for instead of calling
+this repeatedly: it waits server-side, reports progress, and can download in the same call.
 
 The returned Video object contains:
 - status: "queued" | "in_progress" | "completed" | "failed"
@@ -35,13 +61,13 @@ The returned Video object contains:
 
 Typical workflow:
 1. Create video with create_video() -> get video_id
-2. Poll with get_video_status(video_id) until status='completed'
-3. Download with download_video(video_id)"""
+2. wait_for([video_id], download=true) -> waits and saves the video in one call"""
 
 DOWNLOAD_VIDEO = """Download a completed video to disk.
 
-IMPORTANT: Only call this AFTER get_video_status shows status='completed'.
-If the video is not completed, this will fail.
+IMPORTANT: Only for a video that has completed; otherwise this fails. Usually unnecessary:
+wait_for(..., download=true) already saves the video. Use this for a thumbnail or
+spritesheet variant, a custom filename, or a video finished in an earlier call.
 
 The video is automatically saved to the directory configured in VIDEO_PATH.
 Returns the filename of the downloaded file.
@@ -56,7 +82,7 @@ Parameters:
 
 Typical workflow:
 1. Create: create_video() -> video_id
-2. Poll: get_video_status(video_id) until status='completed'
+2. Wait: wait_for([video_id]) until completed
 3. Download: download_video(video_id, filename="my_video.mp4") -> returns filename
 
 Returns DownloadResult with: filename, variant"""
@@ -120,7 +146,7 @@ This creates a brand new video generation job (with a new video_id) based on an 
 The original video must have status='completed' for remix to work.
 
 Like create_video, this returns immediately with a new video_id - the remix is NOT instant.
-You must poll the NEW video_id with get_video_status until it completes.
+Wait on the NEW video_id with wait_for (download=true to save it in the same call).
 
 Parameters:
 - previous_video_id: ID of the completed video to use as a base (required)
@@ -130,10 +156,9 @@ Returns a NEW Video object with a different video_id, status='queued', progress=
 
 Typical workflow:
 1. Create original: create_video("a cat") -> video_id_1
-2. Wait: Poll get_video_status(video_id_1) until completed
+2. Wait: wait_for([video_id_1])
 3. Remix: remix_video(video_id_1, "a dog") -> video_id_2 (NEW ID!)
-4. Wait: Poll get_video_status(video_id_2) until completed
-5. Download: download_video(video_id_2)"""
+4. Wait and save: wait_for([video_id_2], download=true)"""
 
 
 # ==================== REFERENCE IMAGE TOOL DESCRIPTIONS ====================
@@ -217,15 +242,20 @@ Both families also accept any resolution that satisfies all of: max edge
 
 
 CREATE_IMAGE = (
-    """Non-blocking async image generation (gpt-image-2.5-flare by default).
+    """Start a BACKGROUND image job (Responses API) and return its id immediately.
+
+**create_image vs generate_image** — the names say little, so:
+- generate_image: synchronous. One call, and the finished image is saved. Use it for any
+  single image; it is the default.
+- create_image (this one): asynchronous. Returns a `resp_...` id at once, and the image
+  renders in the background. Use it when you need several images at once (start them all,
+  then collect them with ONE wait_for call), or an iterative refinement chain
+  (previous_response_id carries the prior image and conversation forward).
+
+Collect results with wait_for([id, ...], download=true) — it waits server-side for every id
+together and saves each finished image. Do not loop on get_image_status.
 
 Creates images from text prompts OR edits existing images by providing reference images.
-Returns immediately with a response_id - use get_image_status() to poll for completion.
-Supports iterative refinement via previous_response_id.
-
-**Best for:** parallel generation (multiple images at once), iterative refinement chains,
-and workflows where you need to do other work while images generate.
-For simple one-shot generation, generate_image is simpler (no polling needed).
 
 **Text-only generation (no input_images):**
 - Generates image from scratch based on prompt
@@ -334,16 +364,17 @@ Workflows:
 Returns ImageResponse with: id, status, created_at"""
 )
 
-GET_IMAGE_STATUS = """Check status and progress of image generation.
+GET_IMAGE_STATUS = """Check the status of one create_image job.
 
-Use this to poll for completion after calling create_image.
-Call repeatedly until status changes from 'queued'/'in_progress' to 'completed' or 'failed'.
+A one-off check. To wait for completion, use wait_for([response_id, ...], download=true)
+instead of calling this repeatedly — it waits for several ids at once and saves the images.
 
 Returns ImageResponse with: id, status, created_at"""
 
 DOWNLOAD_IMAGE = """Download a completed generated image to reference path.
 
-IMPORTANT: Only call AFTER get_image_status shows status='completed'.
+IMPORTANT: Only for a completed job. Usually unnecessary: wait_for(..., download=true)
+already saves the image. Use this for a custom filename or a job finished earlier.
 
 The image is saved to IMAGE_PATH and can immediately be used with create_video.
 
@@ -357,13 +388,15 @@ Returns ImageDownloadResult with: filename, size, format"""
 # ==================== IMAGES API TOOL DESCRIPTIONS ====================
 
 GENERATE_IMAGE = (
-    """RECOMMENDED default image generation tool. Synchronous — returns the finished image directly.
+    """RECOMMENDED default image tool. SYNCHRONOUS (Images API): one call returns the finished image.
 
-No polling needed. Blocks until the image is ready and saves it to disk in one step.
-Provides token usage for cost tracking.
+Blocks until the image is ready and saves it to disk in one step. Provides token usage for
+cost tracking.
 
-For parallel generation (multiple images at once) or iterative refinement chains,
-use create_image instead (async with previous_response_id support).
+**generate_image vs create_image:** this one is synchronous and the default for any single
+image. create_image starts a background job instead: use it for several images at once
+(start them all, then one wait_for call collects them) or for iterative refinement chains
+(previous_response_id). To edit an existing image, use edit_image.
 
 Parameters:
 - prompt: Text description of the image (required, max 32k chars)
@@ -626,7 +659,9 @@ Parameters:
 - input_file_name: Name of the audio file to analyze (required)
 - model: Audio chat model. Default: "gpt-audio-1.5"
 - system_prompt: Optional system context (e.g., "You are analyzing a medical interview")
-- user_prompt: Optional question or instruction (e.g., "What are the main topics discussed?")
+- user_prompt: Question or instruction (e.g., "What are the main topics discussed?"). Always ask
+  something specific; when omitted, the tool asks for a description of the recording.
+  gpt-audio-1.5 often wraps its answer in a JSON object whatever you ask — read the values.
 
 Returns ChatResult with:
 - response_text: The model's analysis or response
@@ -767,7 +802,12 @@ Example workflows:
 
 # ==================== PODCAST GENERATION TOOL DESCRIPTIONS ====================
 
-GENERATE_PODCAST = """Generate a multi-voice podcast from a structured PodcastScript.
+GENERATE_PODCAST = """Generate a multi-voice podcast from a structured PodcastScript. THE recommended way to
+make a podcast — from a script, or from just a topic.
+
+Given only a topic, write the script yourself (hosts, turns, inline audio tags; ~150 words
+per minute of audio) and render it here. Prefer this over `simulate_podcast`, which is
+experimental: unscripted, far more expensive, and variable from run to run.
 
 Takes a fully-specified script with speaker definitions and segment content, generates
 every segment via TTS in parallel (bounded per provider), and stitches them into a single
@@ -776,7 +816,7 @@ audio file with configurable silence gaps and optional loudness normalization.
 Speakers choose their provider independently, so one episode can mix OpenAI and ElevenLabs
 voices. Provider precedence: speaker.provider > config.provider > the `provider` argument.
 
-**Recommended engine for a scripted conversation (two or more voices):**
+**Recommended engine — prefer ElevenLabs whenever it is configured:**
 ElevenLabs speakers on eleven_v4 (the ElevenLabs default), config.render_mode "dialogue",
 and verify=true. The model paces the exchange and performs inline audio tags — stacked
 ones too ("[laughs] [defensive] Oh, we checked.") — and verify confirms every line is
@@ -1002,7 +1042,13 @@ A 10-minute podcast needs ~1500 words of content.
 }"""
 
 
-SIMULATE_PODCAST = """Record a podcast by having N realtime voice agents actually talk to each other.
+SIMULATE_PODCAST = """EXPERIMENTAL. Record a podcast by having N realtime voice agents actually talk to each other.
+
+For a podcast, use `generate_podcast` first — even when you only have a topic: write the
+script yourself, then render it with ElevenLabs speakers on eleven_v4, render_mode
+"dialogue" and verify=true. That is the recommended path: cheaper, faster, predictable,
+and verified line by line. Use this tool only when the user explicitly asks for an
+unscripted, generated conversation (or asks for simulate_podcast by name).
 
 Nothing here is scripted. Each host is a `gpt-realtime` session with a persona; a producer
 gives one host the floor at a time and plays that audio into the other hosts' ears, so they
@@ -1010,13 +1056,15 @@ respond to what was actually said, including delivery and timing. The conversati
 OUTPUT of this tool, not an input — the transcript comes back in the result.
 
 **Which podcast tool to use:**
-- `simulate_podcast` (this one) — you have a TOPIC and want a real conversation. Highest
-  quality by a wide margin, and the only option that produces genuine disagreement,
-  interruption, and reaction. Costs real money (see below) and takes 1-3 minutes.
-- `generate_podcast` with render_mode="dialogue" — you have a SCRIPT and want it performed
-  naturally. ElevenLabs paces consecutive turns itself.
-- `generate_podcast` with render_mode="segments" — you have a SCRIPT and need exact control
-  over gaps, per-speaker settings, and per-segment retry.
+- `generate_podcast` with ElevenLabs + render_mode="dialogue" + verify — RECOMMENDED for
+  any podcast, topic or script. Given a topic, write the script, then render it: eleven_v4
+  paces the turns itself, performs inline audio tags, and verify confirms every line.
+- `generate_podcast` with render_mode="segments" — a script that needs exact gaps,
+  per-speaker settings, or per-segment retry.
+- `simulate_podcast` (this one, experimental) — only when the user wants the conversation
+  itself to be generated, unscripted. Hosts can genuinely disagree and react, but content
+  and pacing vary run to run, it is the most expensive tool here, and there is no script
+  to check the audio against.
 
 **COST WARNING.** This is the most expensive tool in sanzaru. A 12-minute episode runs
 roughly $0.40 on gpt-realtime-2.1-mini and ~$3 on gpt-realtime-2.1. ALWAYS call once with

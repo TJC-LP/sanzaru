@@ -304,7 +304,9 @@ the CLI classifies them alike (usage, exit 2).
 
 ### Simulated Podcasts (realtime)
 
-A third, categorically different mode: the conversation is **generated, not read**. N
+**Experimental.** User-facing guidance (tool descriptions, skills, README) points podcasts at
+`generate_podcast` on ElevenLabs v4 + dialogue + verify, topic-only requests included, and
+reserves this for an explicitly requested unscripted conversation. A third, categorically different mode: the conversation is **generated, not read**. N
 `gpt-realtime` sessions get personas and a rundown; a producer gives one the floor and plays its
 PCM frames into the others' `input_audio_buffer`, so they respond to delivery, not to a transcript.
 `audio/realtime/` holds the machinery, `tools/simulate_podcast.py` the tool, and

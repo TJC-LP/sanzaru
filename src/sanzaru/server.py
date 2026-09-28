@@ -42,6 +42,7 @@ from starlette.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .config import DEFAULT_IMAGE_EDIT_MODEL, DEFAULT_IMAGE_MODEL, logger
+from .descriptions import SERVER_INSTRUCTIONS
 from .dotenv_loader import load_local_dotenv
 from .exceptions import ConfigurationError
 from .features import check_audio_available, check_image_available, check_video_available
@@ -159,7 +160,12 @@ if check_video_available() or check_audio_available() or check_image_available()
 # mcp 2.x: it is passed to `streamable_http_app()` / `run()` per call. See build_http_app.
 # `version` is stamped into every 2026-07-28 result's `_meta` serverInfo, so report the
 # installed package version rather than the SDK's empty default.
-mcp = MCPServer("sanzaru", version=importlib.metadata.version("sanzaru"), extensions=[_apps])
+mcp = MCPServer(
+    "sanzaru",
+    version=importlib.metadata.version("sanzaru"),
+    instructions=SERVER_INSTRUCTIONS,
+    extensions=[_apps],
+)
 
 
 # ==================== VIDEO TOOLS (CONDITIONAL) ====================

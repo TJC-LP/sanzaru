@@ -1,9 +1,10 @@
 # SPDX-License-Identifier: MIT
 """`sanzaru podcast` — three ways to make an episode.
 
-    rundown   plan only: a premise becomes an editable act-by-act JSON
-    simulate  record realtime agents actually talking to each other
-    generate  speak a script you already wrote (multi-voice TTS)
+    generate  speak a script (multi-voice TTS) — the recommended path, also
+              for a topic: write the script, then render it with ElevenLabs
+    rundown   experimental: plan a simulated episode as editable act-by-act JSON
+    simulate  experimental: record realtime agents actually talking to each other
 
 `rundown` is split out from `simulate` on purpose: planning is cheap and
 recording is not, so the plan should be inspectable and hand-editable before
@@ -96,7 +97,7 @@ def _load_json_arg(value: str, arg_name: str) -> dict[str, object]:
 
 @click.group()
 def podcast() -> None:
-    """Podcast generation: plan a rundown, simulate a real conversation, or speak a script."""
+    """Podcast generation: speak a script (recommended), or plan and simulate an unscripted one (experimental)."""
 
 
 @podcast.command("generate")
@@ -136,7 +137,7 @@ async def podcast_generate(
     verify: bool,
     output: str | None,
 ) -> int:
-    """Render a podcast from a PodcastScript JSON. SCRIPT is inline JSON, @file, or - (stdin).
+    """Render a podcast from a PodcastScript JSON (recommended). SCRIPT is inline JSON, @file, or - (stdin).
 
     \b
     Script shape — only "speakers" and "segments" are required:
@@ -293,10 +294,11 @@ async def podcast_rundown(
     model: str | None,
     output: str | None,
 ) -> int:
-    """Plan an episode. PREMISE is inline text, @file, or - (stdin).
+    """Experimental: plan a simulated episode. PREMISE is inline text, @file, or - (stdin).
 
     \b
-    Pre-production for `podcast simulate`. Acts record in parallel, in separate
+    Pre-production for `podcast simulate` (experimental — for a normal episode,
+    write a script and use `podcast generate`). Acts record in parallel, in separate
     sessions that cannot hear each other, so every act carries `prior_context`
     (what earlier acts already covered) and `handoff` (where to leave off).
     That wiring is the whole point of planning first.
@@ -490,8 +492,13 @@ async def podcast_simulate(
     bitrate: str | None,
     output: str | None,
 ) -> int:
-    """Record a podcast by having realtime agents actually talk to each other.
+    """Experimental: record realtime agents actually talking to each other.
 
+    \b
+    For a normal episode use `podcast generate` — write the script (from a topic
+    if that is all you have), then render it with --provider elevenlabs
+    --render-mode dialogue --verify. Reach for this only when you want the
+    conversation itself generated, unscripted; results vary run to run.
     \b
     BRIEF is a rundown (from `podcast rundown`) or a full SimulationBrief, as
     inline JSON, @file, or - (stdin). Or skip it and pass --premise to plan and
