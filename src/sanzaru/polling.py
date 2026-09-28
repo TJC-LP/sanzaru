@@ -1,16 +1,23 @@
 # SPDX-License-Identifier: MIT
-"""Neutral polling helpers for long-running OpenAI jobs.
+"""Neutral polling helpers for long-running jobs, whatever provider runs them.
 
-The MCP tools expose the raw create → status → download primitives and leave
-polling to the caller; these helpers implement the blocking wait loop for
-callers that need a terminal state (the CLI today, potentially MCP wait tools
-later). Pure async — no CLI/framework imports.
+The MCP tools expose the raw create → status → download primitives; these
+helpers implement the blocking wait loop for callers that need a terminal state
+(`wait_for`, the CLI). Pure async — no CLI/framework imports.
+
+The loop itself knows nothing about a provider. What differs per provider is
+passed in: how to fetch a status, which statuses are terminal, and which
+exceptions are transient (`is_transient`) — OpenAI signals those with
+`APIConnectionError` and 408/409/429/5xx, Higgsfield with
+`HiggsfieldAPIError.transient`. A status payload may be a pydantic model, a
+TypedDict, or anything else; the loop only hands it back.
 
 Behavior:
-- Adaptive backoff by default (video: 5s ×1.5 → 20s cap; image: 2s ×1.5 → 10s
-  cap), with ±10% jitter; passing ``interval`` fixes the cadence instead.
-- Transient API errors (connection/timeout errors, 408/409/429, 5xx) are
-  retried in place until the deadline; anything else (e.g. 404) propagates.
+- Adaptive backoff by default (image: 2s ×1.5 → 10s cap; Higgsfield video: the
+  same, which is its documented cadence), with ±10% jitter; passing
+  ``interval`` fixes the cadence instead.
+- Transient errors are retried in place until the deadline; anything else
+  (e.g. 404) propagates.
 - On deadline expiry, :class:`WaitTimeoutError` carries the last-seen payload.
   The job keeps running server-side — waiting again with the same ID resumes.
 """
@@ -19,12 +26,13 @@ from __future__ import annotations
 
 import random
 from collections.abc import Awaitable, Callable
-from typing import TypeVar
+from typing import Generic, TypeVar
 
 import anyio
 from openai import APIConnectionError, APIStatusError
 from openai.types import Video
 
+from .higgsfield.errors import HiggsfieldAPIError
 from .tools import image as image_tools
 from .tools import video as video_tools
 from .types import ImageResponse
@@ -37,6 +45,10 @@ _VIDEO_MAX_INTERVAL = 20.0
 _IMAGE_INITIAL_INTERVAL = 2.0
 _IMAGE_MAX_INTERVAL = 10.0
 
+# Higgsfield's documented polling guidance: start at 2s, grow ×1.5, cap at 10s.
+DEFAULT_HF_VIDEO_INTERVAL_INITIAL = 2.0
+DEFAULT_HF_VIDEO_INTERVAL_MAX = 10.0
+
 _BACKOFF_FACTOR = 1.5
 _JITTER = 0.1
 
@@ -48,23 +60,36 @@ _ACTIVE_STATUSES = frozenset({"queued", "in_progress", "unknown"})
 # HTTP statuses retried while the deadline allows (connection errors likewise).
 _RETRYABLE_STATUS_CODES = frozenset({408, 409, 429})
 
-_T = TypeVar("_T", Video, ImageResponse)
+_T = TypeVar("_T")
 
 
-class WaitTimeoutError(TimeoutError):
+class WaitTimeoutError(TimeoutError, Generic[_T]):
     """Deadline expired while the job was still running (it keeps running server-side).
+
+    Generic over the status payload, which is whatever the provider's fetch
+    returns (a pydantic model, a TypedDict, ...) — the loop never inspects it.
 
     Attributes:
         last: Most recent status payload seen before the deadline, if any.
     """
 
-    def __init__(self, message: str, last: Video | ImageResponse | None = None) -> None:
+    def __init__(self, message: str, last: _T | None = None) -> None:
         super().__init__(message)
         self.last = last
 
 
-def _is_retryable(exc: APIStatusError) -> bool:
-    return exc.status_code in _RETRYABLE_STATUS_CODES or exc.status_code >= 500
+def _openai_transient(exc: BaseException) -> bool:
+    """OpenAI's transient failures: connection/timeout errors, 408/409/429, 5xx."""
+    if isinstance(exc, APIConnectionError):
+        return True
+    if isinstance(exc, APIStatusError):
+        return exc.status_code in _RETRYABLE_STATUS_CODES or exc.status_code >= 500
+    return False
+
+
+def _higgsfield_transient(exc: BaseException) -> bool:
+    """Higgsfield's transient failures (5xx, 429, transport) — for status reads only."""
+    return isinstance(exc, HiggsfieldAPIError) and exc.transient
 
 
 async def _wait_until_terminal(
@@ -77,6 +102,7 @@ async def _wait_until_terminal(
     initial_interval: float,
     max_interval: float,
     on_progress: Callable[[_T], None] | None,
+    is_transient: Callable[[BaseException], bool],
 ) -> _T:
     deadline = anyio.current_time() + timeout
     delay = initial_interval if interval is None else interval
@@ -85,10 +111,10 @@ async def _wait_until_terminal(
     while True:
         try:
             last = await fetch()
-        except APIConnectionError:  # noqa: S110 — includes timeouts; retry until deadline
-            pass
-        except APIStatusError as exc:
-            if not _is_retryable(exc):
+        except Exception as exc:
+            # Transient failures are retried until the deadline; the job is
+            # still running server-side whether or not this poll got through.
+            if not is_transient(exc):
                 raise
         else:
             if on_progress is not None:
@@ -143,6 +169,7 @@ async def wait_for_video(
         initial_interval=_VIDEO_INITIAL_INTERVAL,
         max_interval=_VIDEO_MAX_INTERVAL,
         on_progress=on_progress,
+        is_transient=_openai_transient,
     )
 
 
@@ -179,4 +206,54 @@ async def wait_for_image(
         initial_interval=_IMAGE_INITIAL_INTERVAL,
         max_interval=_IMAGE_MAX_INTERVAL,
         on_progress=on_progress,
+        is_transient=_openai_transient,
+    )
+
+
+async def wait_until_done(
+    fetch: Callable[[], Awaitable[_T]],
+    is_terminal: Callable[[_T], bool],
+    *,
+    describe: str,
+    timeout: float,
+    interval: float | None = None,
+    initial_interval: float = DEFAULT_HF_VIDEO_INTERVAL_INITIAL,
+    max_interval: float = DEFAULT_HF_VIDEO_INTERVAL_MAX,
+    on_progress: Callable[[_T], None] | None = None,
+    is_transient: Callable[[BaseException], bool] = _higgsfield_transient,
+) -> _T:
+    """Poll any job until `is_terminal` says it is done.
+
+    The provider-agnostic entry point: the caller supplies the status fetch,
+    the terminal test and the transient-error rule. Defaults are Higgsfield's
+    (2s ×1.5 → 10s, `HiggsfieldAPIError.transient`).
+
+    Args:
+        fetch: Awaited once per poll; returns the current status payload
+        is_terminal: True when the payload is a final state (success or failure)
+        describe: Job description used in the timeout message
+        timeout: Overall deadline in seconds
+        interval: Fixed poll interval in seconds; None enables adaptive backoff
+        initial_interval: First adaptive delay
+        max_interval: Adaptive delay cap
+        on_progress: Called with each successfully fetched payload
+        is_transient: True for exceptions worth retrying until the deadline
+
+    Returns:
+        The terminal payload (callers decide how to surface failure)
+
+    Raises:
+        WaitTimeoutError: Deadline expired; carries the last-seen payload
+        Exception: Whatever `fetch` raised, when `is_transient` rejects it
+    """
+    return await _wait_until_terminal(
+        fetch,
+        is_terminal,
+        describe=describe,
+        timeout=timeout,
+        interval=interval,
+        initial_interval=initial_interval,
+        max_interval=max_interval,
+        on_progress=on_progress,
+        is_transient=is_transient,
     )

@@ -5,7 +5,15 @@ import httpx2
 import pytest
 from openai import APIConnectionError, APIStatusError
 
-from sanzaru.polling import WaitTimeoutError, wait_for_image, wait_for_video
+from sanzaru.higgsfield.errors import HiggsfieldAPIError
+from sanzaru.polling import (
+    WaitTimeoutError,
+    _higgsfield_transient,
+    _openai_transient,
+    wait_for_image,
+    wait_for_video,
+    wait_until_done,
+)
 
 
 class FakeClock:
@@ -195,3 +203,109 @@ async def test_wait_for_image_timeout_carries_last_state(mocker, fake_clock):
         await wait_for_image("resp_x", timeout=3.0)
 
     assert excinfo.value.last == stuck
+
+
+# ==================== PROVIDER-AGNOSTIC LOOP ====================
+
+
+class _FlakyError(Exception):
+    pass
+
+
+def _fetcher(*items):
+    """Replays items in order: exceptions are raised, anything else returned."""
+    queue = list(items)
+
+    async def fetch():
+        item = queue.pop(0)
+        if isinstance(item, BaseException):
+            raise item
+        return item
+
+    return fetch
+
+
+def _hf_error(kind: str, status_code: int | None) -> HiggsfieldAPIError:
+    return HiggsfieldAPIError("boom", status_code=status_code, detail="boom", kind=kind)
+
+
+def _done(status: dict) -> bool:
+    return status["status"] in {"completed", "failed", "nsfw", "canceled"}
+
+
+@pytest.mark.unit
+async def test_is_transient_decides_what_is_retried(fake_clock):
+    """A custom exception is retried when the predicate accepts it."""
+    fetch = _fetcher(_FlakyError(), {"status": "completed"})
+
+    result = await wait_until_done(
+        fetch, _done, describe="job", timeout=60, is_transient=lambda exc: isinstance(exc, _FlakyError)
+    )
+
+    assert result == {"status": "completed"}
+    assert fake_clock.sleeps == [2.0]
+
+
+@pytest.mark.unit
+async def test_is_transient_rejection_propagates(fake_clock):
+    fetch = _fetcher(_FlakyError(), {"status": "completed"})
+
+    with pytest.raises(_FlakyError):
+        await wait_until_done(fetch, _done, describe="job", timeout=60, is_transient=lambda exc: False)
+    assert fake_clock.sleeps == []
+
+
+@pytest.mark.unit
+async def test_higgsfield_server_errors_are_retried(fake_clock):
+    fetch = _fetcher(_hf_error("server", 500), _hf_error("transport", None), {"status": "completed"})
+
+    result = await wait_until_done(fetch, _done, describe="job", timeout=60)
+
+    assert result["status"] == "completed"
+    assert fake_clock.sleeps == [2.0, 3.0]
+
+
+@pytest.mark.unit
+async def test_higgsfield_validation_errors_propagate(fake_clock):
+    fetch = _fetcher(_hf_error("not_found", 404), {"status": "completed"})
+
+    with pytest.raises(HiggsfieldAPIError):
+        await wait_until_done(fetch, _done, describe="job", timeout=60)
+
+
+@pytest.mark.unit
+def test_transient_predicates_match_their_provider():
+    assert _openai_transient(_api_error(503))
+    assert _openai_transient(_api_error(429))
+    assert not _openai_transient(_api_error(404))
+    assert not _openai_transient(_hf_error("server", 500))
+    assert _higgsfield_transient(_hf_error("server", 502))
+    assert _higgsfield_transient(_hf_error("other", 429))
+    assert not _higgsfield_transient(_hf_error("validation", 422))
+    assert not _higgsfield_transient(_api_error(503))
+
+
+@pytest.mark.unit
+async def test_wait_until_done_uses_the_higgsfield_cadence(fake_clock):
+    """Dict statuses, 2s ×1.5 → 10s cap, progress on every fetch."""
+    fetch = _fetcher(*([{"status": "in_progress"}] * 6), {"status": "completed"})
+    seen: list[str] = []
+
+    result = await wait_until_done(
+        fetch, _done, describe="job", timeout=600, on_progress=lambda s: seen.append(s["status"])
+    )
+
+    assert result == {"status": "completed"}
+    assert fake_clock.sleeps == [2.0, 3.0, 4.5, 6.75, 10.0, 10.0]
+    assert seen == ["in_progress"] * 6 + ["completed"]
+
+
+@pytest.mark.unit
+async def test_wait_until_done_timeout_carries_the_last_dict(fake_clock):
+    fetch = _fetcher(*([{"status": "queued"}] * 50))
+
+    with pytest.raises(WaitTimeoutError) as info:
+        await wait_until_done(fetch, _done, describe="Video job hf_x", timeout=5)
+
+    assert info.value.last == {"status": "queued"}
+    assert "hf_x" in str(info.value)
