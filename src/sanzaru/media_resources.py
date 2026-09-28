@@ -53,6 +53,7 @@ read at all, so the allowlist is enforced either way.
 from __future__ import annotations
 
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 
 from mcp_types import Completion
@@ -107,6 +108,10 @@ COMPLETION_LIMIT = 100
 #: without anyone reconnecting.
 LISTING_TTL_SECONDS = 5.0
 
+#: Bound retained listings across all identities and media types, even when
+#: callers arrive faster than the TTL expires.
+MAX_LISTING_CACHE_ENTRIES = 128
+
 
 @dataclass(frozen=True)
 class _CacheEntry:
@@ -117,7 +122,7 @@ class _CacheEntry:
 #: Keyed by (identity, media) — never by media alone. On a shared deployment the
 #: storage backend resolves a different directory per caller, so a cache that
 #: dropped the identity would hand one tenant another's filenames.
-_listing_cache: dict[tuple[str, str], _CacheEntry] = {}
+_listing_cache: OrderedDict[tuple[str, str], _CacheEntry] = OrderedDict()
 
 
 def _identity_key() -> str:
@@ -129,6 +134,13 @@ def _identity_key() -> str:
 def clear_listing_cache() -> None:
     """Drop every cached listing. For tests and for a backend swap."""
     _listing_cache.clear()
+
+
+def _expire_listings(now: float) -> None:
+    """Release expired listings, including those belonging to inactive callers."""
+    expired = [key for key, entry in _listing_cache.items() if entry.expires_at <= now]
+    for key in expired:
+        del _listing_cache[key]
 
 
 def content_type_for(filename: str) -> str | None:
@@ -146,10 +158,12 @@ async def list_media(media: str, *, use_cache: bool = True) -> tuple[FileInfo, .
     path_type = MEDIA_PATH_TYPES[media]
     key = (_identity_key(), media)
     now = time.monotonic()
+    _expire_listings(now)
 
     if use_cache:
         cached = _listing_cache.get(key)
-        if cached is not None and cached.expires_at > now:
+        if cached is not None:
+            _listing_cache.move_to_end(key)
             return cached.files
 
     storage = get_storage()
@@ -169,7 +183,14 @@ async def list_media(media: str, *, use_cache: bool = True) -> tuple[FileInfo, .
             reverse=True,
         )
     )
+    # Storage may be slow: start the TTL when the listing arrives, and purge
+    # anything that expired while it was in flight before retaining the result.
+    now = time.monotonic()
+    _expire_listings(now)
     _listing_cache[key] = _CacheEntry(expires_at=now + LISTING_TTL_SECONDS, files=servable)
+    _listing_cache.move_to_end(key)
+    while len(_listing_cache) > MAX_LISTING_CACHE_ENTRIES:
+        _listing_cache.popitem(last=False)
     return servable
 
 

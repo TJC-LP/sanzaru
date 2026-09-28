@@ -8,6 +8,7 @@ without transferring any bytes.
 """
 
 import pytest
+from starlette.testclient import TestClient
 
 from sanzaru import media_resources
 from sanzaru.media_resources import (
@@ -21,6 +22,7 @@ from sanzaru.media_resources import (
     read_media,
     template_uri,
 )
+from sanzaru.storage.local import LocalStorageBackend
 from sanzaru.storage.protocol import FileInfo
 from sanzaru.user_context import UserContext, reset_user_context, set_user_context
 
@@ -111,6 +113,39 @@ class TestListing:
         await list_media("image")
 
         assert storage.list_files.await_count == 2
+
+    async def test_expired_inactive_tenants_are_evicted(self, storage, mocker):
+        storage.list_files.return_value = [_info("a.png")]
+        clock = mocker.patch("sanzaru.media_resources.time.monotonic", return_value=0.0)
+        token = set_user_context(UserContext(email="inactive@example.com"))
+        try:
+            await list_media("image")
+        finally:
+            reset_user_context(token)
+
+        clock.return_value = LISTING_TTL_SECONDS + 0.1
+        await list_media("image")
+
+        # Refreshing a different caller must release the inactive caller's
+        # full listing, not just stop reusing it if they happen to return.
+        assert len(media_resources._listing_cache) == 1
+        assert ("inactive@example.com", "image") not in media_resources._listing_cache
+
+    async def test_capacity_evicts_the_least_recently_used_identity(self, storage, mocker):
+        storage.list_files.return_value = [_info("a.png")]
+        mocker.patch("sanzaru.media_resources.MAX_LISTING_CACHE_ENTRIES", 2)
+        mocker.patch("sanzaru.media_resources.time.monotonic", return_value=0.0)
+
+        # Alice's cache hit makes Bob the oldest entry; Carol must evict Bob.
+        for user in ("alice", "bob", "alice", "carol", "alice", "bob"):
+            token = set_user_context(UserContext(email=f"{user}@example.com"))
+            try:
+                await list_media("image")
+            finally:
+                reset_user_context(token)
+
+        # Alice and Bob fill the cache, Carol lists once, then Bob refetches.
+        assert storage.list_files.await_count == 4
 
     async def test_cache_is_partitioned_by_identity(self, storage):
         """A shared deployment resolves a different directory per caller."""
@@ -249,6 +284,15 @@ class TestServerWiring:
         import sys
 
         monkeypatch.setenv("SANZARU_MEDIA_PATH", str(tmp_path))
+        for name in (
+            "SANZARU_HTTP_TOKEN",
+            "SANZARU_ALLOW_UNAUTHENTICATED_HTTP",
+            "SANZARU_ALLOWED_HOSTS",
+            "SANZARU_ALLOWED_ORIGINS",
+            "SANZARU_IDENTITY_HEADER",
+            "SANZARU_REQUIRE_USER_CONTEXT",
+        ):
+            monkeypatch.delenv(name, raising=False)
         module = importlib.reload(importlib.import_module("sanzaru.server"))
         try:
             yield module
@@ -286,6 +330,53 @@ class TestServerWiring:
         assert len(contents) == 1
         assert contents[0].content == b"\x89PNG\r\n\x1a\nnot-a-real-png"
         assert contents[0].mime_type == "application/octet-stream"
+
+    @pytest.mark.parametrize(
+        ("filename", "message"),
+        [
+            ("large.png", "over the 32 MB resource limit; use view_media"),
+            ("missing.png", "File not found: missing.png"),
+            ("notes.txt", "extension is not an allowlisted media type"),
+        ],
+    )
+    def test_expected_resource_errors_reach_the_http_client(self, server, mocker, tmp_path, filename, message):
+        mocker.patch(
+            "sanzaru.media_resources.get_storage",
+            return_value=LocalStorageBackend(path_overrides={"reference": tmp_path}),
+        )
+        if filename == "large.png":
+            with (tmp_path / filename).open("wb") as stream:
+                stream.truncate(MAX_RESOURCE_BYTES + 1)
+
+        uri = f"sanzaru://image/{filename}"
+        with TestClient(server.build_http_app()) as client:
+            response = client.post(
+                "/mcp",
+                json={
+                    "jsonrpc": "2.0",
+                    "id": 1,
+                    "method": "resources/read",
+                    "params": {
+                        "uri": uri,
+                        "_meta": {
+                            "io.modelcontextprotocol/protocolVersion": "2026-07-28",
+                            "io.modelcontextprotocol/clientCapabilities": {},
+                            "io.modelcontextprotocol/clientInfo": {"name": "test-host", "version": "0"},
+                        },
+                    },
+                },
+                headers={
+                    "Accept": "application/json, text/event-stream",
+                    "Content-Type": "application/json",
+                    "host": "127.0.0.1:8000",
+                    "MCP-Protocol-Version": "2026-07-28",
+                    "MCP-Method": "resources/read",
+                    "MCP-Name": uri,
+                },
+            )
+
+        assert response.status_code == 200
+        assert message in response.json()["error"]["message"]
 
     @pytest.mark.parametrize(
         "uri",

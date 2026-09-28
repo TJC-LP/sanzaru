@@ -20,7 +20,7 @@ from typing import Literal, ParamSpec, TypeVar
 
 from mcp.server.apps import Apps, ResourceCsp
 from mcp.server.mcpserver import Context, MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
+from mcp.server.mcpserver.exceptions import ResourceError, ToolError
 from mcp.server.mcpserver.utilities.types import Image
 from mcp.server.transport_security import TransportSecurityMiddleware, TransportSecuritySettings
 from mcp.shared.exceptions import MCPError
@@ -590,7 +590,12 @@ def _register_media_template(media: str) -> None:
         annotations=Annotations(audience=["user"]),
     )
     async def read_media_resource(filename: str) -> bytes:
-        return await media_resources.read_media(media, filename)
+        try:
+            return await media_resources.read_media(media, filename)
+        except ValueError as exc:
+            # The SDK hides ordinary exception messages. ResourceError keeps
+            # expected refusals and their recovery instructions visible.
+            raise ResourceError(str(exc)) from exc
 
 
 if _RESOURCE_MEDIA:
