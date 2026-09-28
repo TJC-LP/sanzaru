@@ -9,6 +9,7 @@ Migrated from mcp-server-whisper v1.1.0 by Richie Caputo (MIT license).
 from .config import AudioConfig, get_audio_config, get_audio_path
 from .constants import (
     CHAT_WITH_AUDIO_FORMATS,
+    DEFAULT_AUDIO_CHAT_MODEL,
     DEFAULT_MAX_FILE_SIZE_MB,
     DEFAULT_TTS_MAX_LENGTH,
     DEFAULT_TTS_SAMPLE_RATE,
@@ -53,6 +54,7 @@ __all__ = [
     "DEFAULT_TTS_SAMPLE_RATE",
     "ENHANCEMENT_PROMPTS",
     "AudioChatModel",
+    "DEFAULT_AUDIO_CHAT_MODEL",
     "EnhancementType",
     "SortBy",
     "SupportedChatWithAudioFormat",

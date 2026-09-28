@@ -23,7 +23,7 @@ class TestFileFilterSorter:
                 duration_seconds=60.0,
                 format="mp3",
                 transcription_support=["whisper-1"],
-                chat_support=["gpt-4o-audio-preview"],
+                chat_support=["gpt-audio-1.5"],
             ),
             FilePathSupportParams(
                 file_name="file2.wav",
@@ -32,7 +32,7 @@ class TestFileFilterSorter:
                 duration_seconds=120.0,
                 format="wav",
                 transcription_support=["whisper-1"],
-                chat_support=["gpt-4o-audio-preview"],
+                chat_support=["gpt-audio-1.5"],
             ),
             FilePathSupportParams(
                 file_name="file3.mp4",

@@ -1,5 +1,9 @@
 # Sending Audio Files to OpenAI's GPT-4 ChatCompletion API (GPT-4o)
 
+> **Historical (2024) research note.** Every `gpt-4o-*-audio-preview` model named below was retired
+> and answers 404 as of 2026-09-28. The request shape still applies; `chat_with_audio` now defaults
+> to `gpt-audio-1.5` (see `AUDIO_CHAT_MODELS` in `src/sanzaru/audio/constants.py`).
+
 OpenAI’s **GPT-4o** model (the audio-enabled GPT-4 preview) allows you to include audio in your chat conversations. Below, we address each part of your question with references to official documentation and announcements:
 
 ## 1. Direct Audio Input via ChatCompletion API

@@ -16,6 +16,7 @@ from openai.types import AudioModel, AudioResponseFormat
 from openai.types.audio.speech_model import SpeechModel
 
 from ..audio.constants import (
+    DEFAULT_AUDIO_CHAT_MODEL,
     AudioChatModel,
     ElevenLabsModel,
     EnhancementType,
@@ -180,18 +181,18 @@ async def transcribe_audio(
 
 async def chat_with_audio(
     input_file_name: str,
-    model: AudioChatModel = "gpt-4o-audio-preview",
+    model: AudioChatModel = DEFAULT_AUDIO_CHAT_MODEL,
     system_prompt: str | None = None,
     user_prompt: str | None = None,
 ) -> ChatResult:
-    """Interactive audio analysis using GPT-4o audio models.
+    """Interactive audio analysis using OpenAI's audio chat models.
 
     Have a conversation about audio content, ask questions, analyze tone,
     or extract insights from audio.
 
     Args:
         input_file_name: Name of the input audio file to process
-        model: Audio chat model to use (gpt-4o-audio-preview recommended)
+        model: Audio chat model to use (gpt-audio-1.5 by default)
         system_prompt: Optional system prompt for conversation context
         user_prompt: Optional user prompt with questions or instructions
 

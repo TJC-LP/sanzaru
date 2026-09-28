@@ -46,6 +46,14 @@ _ELEVENLABS_MODELS = [
 ]
 _ELEVENLABS_DEFAULT = "eleven_v4"
 _PROVIDERS = ["openai", "elevenlabs"]
+_AUDIO_CHAT_MODELS = [
+    "gpt-audio-1.5",
+    "gpt-audio",
+    "gpt-audio-2025-08-28",
+    "gpt-audio-mini",
+    "gpt-audio-mini-2025-10-06",
+    "gpt-audio-mini-2025-12-15",
+]
 _TRANSCRIBE_MODELS = ["gpt-4o-mini-transcribe", "gpt-4o-transcribe", "whisper-1"]
 _ENHANCEMENTS = ["detailed", "storytelling", "professional", "analytical"]
 
@@ -265,7 +273,13 @@ async def audio_transcribe(
 
 @audio.command("chat")
 @click.argument("file")
-@click.option("--model", default="gpt-4o-audio-preview", show_default=True, help="Audio chat model.")
+@click.option(
+    "--model",
+    type=click.Choice(_AUDIO_CHAT_MODELS),
+    default=_AUDIO_CHAT_MODELS[0],
+    show_default=True,
+    help="Audio chat model.",
+)
 @click.option("--system", "system_prompt", default=None, help="System prompt for context.")
 @click.option("--prompt", "user_prompt", default=None, help="Question/instructions about the audio.")
 @run_async("audio.chat")

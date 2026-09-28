@@ -31,7 +31,7 @@ class TestGlobalCache:
         return FilePathSupportParams(
             file_name="test.mp3",
             transcription_support=["whisper-1"],
-            chat_support=["gpt-4o-audio-preview"],
+            chat_support=["gpt-audio-1.5"],
             modified_time=100.0,
             size_bytes=1000,
             format="mp3",

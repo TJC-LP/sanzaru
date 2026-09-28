@@ -371,6 +371,7 @@ if check_audio_available():
     from openai.types.audio.speech_model import SpeechModel
 
     from .audio.constants import (
+        DEFAULT_AUDIO_CHAT_MODEL,
         AudioChatModel,
         ElevenLabsModel,
         EnhancementType,
@@ -452,7 +453,7 @@ if check_audio_available():
     @_llm_facing
     async def chat_with_audio(
         file_path: str,
-        model: AudioChatModel = "gpt-4o-audio-preview",
+        model: AudioChatModel = DEFAULT_AUDIO_CHAT_MODEL,
         system_prompt: str | None = None,
         user_prompt: str | None = None,
     ):

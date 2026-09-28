@@ -12,14 +12,17 @@ from openai.types.audio.speech_model import SpeechModel
 
 # Type Aliases
 SupportedChatWithAudioFormat = Literal["mp3", "wav"]
+# Every gpt-4o-*-audio-preview model, dated snapshots included, answers 404 on
+# /v1/models as of 2026-09-28; these are the audio chat models still served.
 AudioChatModel = Literal[
-    "gpt-4o-audio-preview",
-    "gpt-4o-audio-preview-2024-10-01",
-    "gpt-4o-audio-preview-2024-12-17",
-    "gpt-4o-audio-preview-2025-06-03",
-    "gpt-4o-mini-audio-preview",
-    "gpt-4o-mini-audio-preview-2024-12-17",
+    "gpt-audio-1.5",
+    "gpt-audio",
+    "gpt-audio-2025-08-28",
+    "gpt-audio-mini",
+    "gpt-audio-mini-2025-10-06",
+    "gpt-audio-mini-2025-12-15",
 ]
+DEFAULT_AUDIO_CHAT_MODEL: AudioChatModel = "gpt-audio-1.5"
 EnhancementType = Literal["detailed", "storytelling", "professional", "analytical"]
 TTSVoice = Literal["alloy", "ash", "ballad", "coral", "echo", "fable", "nova", "onyx", "sage", "shimmer"]
 
@@ -122,12 +125,12 @@ TRANSCRIPTION_MODELS: list[AudioModel] = [
 ]
 
 AUDIO_CHAT_MODELS: list[AudioChatModel] = [
-    "gpt-4o-audio-preview",
-    "gpt-4o-audio-preview-2024-10-01",
-    "gpt-4o-audio-preview-2024-12-17",
-    "gpt-4o-audio-preview-2025-06-03",
-    "gpt-4o-mini-audio-preview",
-    "gpt-4o-mini-audio-preview-2024-12-17",
+    "gpt-audio-1.5",
+    "gpt-audio",
+    "gpt-audio-2025-08-28",
+    "gpt-audio-mini",
+    "gpt-audio-mini-2025-10-06",
+    "gpt-audio-mini-2025-12-15",
 ]
 
 # Supported Audio Formats
