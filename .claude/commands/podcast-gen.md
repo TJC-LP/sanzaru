@@ -236,15 +236,18 @@ on the last segment before the transition:
 
 ---
 
-## Known Limitations (v0.1)
+## Known Limitations
 
-- **Sequential generation**: segments generate one at a time. A 10-minute podcast takes
-  60–90 seconds to generate.
-- **No background music**: audio beds and transitions are not supported yet (v0.2).
-- **Instructions not yet active**: the `instructions` field is recorded but not yet
-  passed to the TTS API — voice character comes from voice selection and speed alone.
+- **No background music**: audio beds and transitions are not supported.
+- **`instructions` is OpenAI-only**: OpenAI speakers get it; ElevenLabs speakers ignore it —
+  direct them with inline audio tags (`[whispers]`, `[laughs]`) in the segment text instead.
+- **Dialogue runs retry as a whole**: in `render_mode: "dialogue"`, a batched run is one
+  request, so a verify failure re-renders (and re-bills) every turn in it. Runs cap at 2000
+  characters; a turn left alone after a split renders as an ordinary segment.
 - **Peak normalization only**: `normalize_loudness: true` uses pydub peak normalization,
   not LUFS-based normalization. Volume will be consistent but not calibrated to -16 LUFS.
+- **Memory**: every segment is held in memory until stitching — roughly 2x the final file
+  size at peak, which matters past about an hour of audio.
 
 ---
 
