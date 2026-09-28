@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import shutil
 import struct
+from collections.abc import Awaitable, Callable
 from pathlib import PurePosixPath
 from typing import Literal
 
@@ -82,6 +83,39 @@ def mp4_duration_seconds(data: bytes) -> float | None:
             if timescale == 0 or duration == 0 or duration == 0xFFFFFFFF:
                 return None
             return duration / timescale
+    return None
+
+
+_ATOM_HEADER = 16
+_MAX_MOOV_BYTES = 8 * 1024 * 1024
+_MAX_TOP_LEVEL_ATOMS = 16
+
+
+async def remote_mp4_duration(read_range: Callable[[int, int], Awaitable[bytes]]) -> float | None:
+    """Duration of a remote MP4 read through `read_range(start, length)`, or None.
+
+    Walks top-level atom headers (16 bytes each) to find `moov` wherever it sits —
+    Higgsfield outputs put it at the end, after `mdat` — then reads just that atom.
+    Bounded in atoms visited and moov size, so a hostile file cannot make it loop
+    or pull a large body.
+    """
+    offset = 0
+    for _ in range(_MAX_TOP_LEVEL_ATOMS):
+        header = await read_range(offset, _ATOM_HEADER)
+        if len(header) < 8:
+            return None
+        size, kind = struct.unpack_from(">I4s", header, 0)
+        if size == 1:
+            if len(header) < 16:
+                return None
+            size = struct.unpack_from(">Q", header, 8)[0]
+        if size < 8:
+            return None  # size 0 ("to end of file") or corrupt: nothing further to walk
+        if kind == b"moov":
+            if size > _MAX_MOOV_BYTES:
+                return None
+            return mp4_duration_seconds(await read_range(offset, size))
+        offset += size
     return None
 
 

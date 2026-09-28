@@ -22,6 +22,7 @@ extend onto a render needs no download and re-upload.
 
 from __future__ import annotations
 
+import functools
 from dataclasses import dataclass
 from typing import Literal, TypedDict
 from urllib.parse import urlsplit
@@ -32,7 +33,7 @@ from ..config import get_higgsfield_client, logger
 from ..higgsfield.errors import HiggsfieldAPIError
 from ..higgsfield.ids import JOB_PREFIX, to_job_id, to_request_id
 from ..higgsfield.limits import make_limiter, max_upload_bytes
-from ..higgsfield.media import content_type_for, probe_duration
+from ..higgsfield.media import content_type_for, probe_duration, remote_mp4_duration
 from ..higgsfield.pricing import VideoCost, enforce_cap, local_estimate, resolve_cost
 from ..higgsfield.types import TERMINAL_STATES, RequestStatus
 from ..storage import get_storage
@@ -178,12 +179,19 @@ async def _submit_job(
         placeholders.setdefault(item.role, []).append(_PLACEHOLDER.format(index))
     slug, draft = build(placeholders)
 
-    # 2. Read stored inputs (job-id inputs resolve later, to their output URL)
-    #    and measure the source video, which edit/extend bill for.
+    # 2. Read stored inputs and measure the source video, which edit/extend
+    #    bill for. A job-id input resolves to its output URL here (reused at
+    #    submit); a job-id *source* is measured with two small ranged reads of
+    #    that output — its moov atom sits after mdat — rather than a download.
+    client = get_higgsfield_client()
     data: dict[int, tuple[bytes, str]] = {}
+    urls: dict[int, str] = {}
     input_seconds: float | None = None
     for index, item in enumerate(inputs):
         if _is_job_id(item.name):
+            urls[index] = await _job_output_url(item.name)
+            if item.role == "video":
+                input_seconds = await remote_mp4_duration(functools.partial(client.fetch_range, urls[index]))
             continue
         data[index] = await _read_input(item)
         if item.role == "video":
@@ -191,7 +199,6 @@ async def _submit_job(
 
     # 3. Price with the placeholders (the estimate endpoint does not fetch
     #    inputs), so an over-budget job is refused before any upload.
-    client = get_higgsfield_client()
     local = local_estimate(spec.family, operation, draft, input_seconds) if spec else None
     try:
         remote = await client.estimate(slug, draft)
@@ -221,21 +228,17 @@ async def _submit_job(
             arguments=shown_arguments,
         )
 
-    # 4. Upload (bounded) and resolve job-id inputs, then submit exactly once.
-    urls: dict[int, str] = {}
+    # 4. Upload the stored inputs (bounded), then submit exactly once.
     limiter = make_limiter()
 
-    async def resolve(index: int, item: _Input) -> None:
+    async def upload(index: int) -> None:
         async with limiter:
-            if _is_job_id(item.name):
-                urls[index] = await _job_output_url(item.name)
-            else:
-                payload, content_type = data[index]
-                urls[index] = await client.upload(payload, content_type)
+            payload, content_type = data[index]
+            urls[index] = await client.upload(payload, content_type)
 
     async with anyio.create_task_group() as tg:
-        for index, item in enumerate(inputs):
-            tg.start_soon(resolve, index, item)
+        for index in data:
+            tg.start_soon(upload, index)
     real: dict[str, list[str]] = {}
     for index, item in enumerate(inputs):
         real.setdefault(item.role, []).append(urls[index])

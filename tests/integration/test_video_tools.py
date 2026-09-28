@@ -34,6 +34,18 @@ def _mp4(seconds: float, timescale: int = 1000) -> bytes:
     return ftyp + moov
 
 
+def _moov_last(seconds: float, payload: int = 4000) -> bytes:
+    """Higgsfield's output layout: ftyp, free, mdat, then moov."""
+    mvhd_body = struct.pack(">B3xIIII", 0, 0, 0, 1000, int(seconds * 1000)) + b"\x00" * 80
+    mvhd = struct.pack(">I4s", 8 + len(mvhd_body), b"mvhd") + mvhd_body
+    moov = struct.pack(">I4s", 8 + len(mvhd), b"moov") + mvhd
+    ftyp = struct.pack(">I4s", 16, b"ftyp") + b"isom\x00\x00\x02\x00"
+    return ftyp + struct.pack(">I4s", 8, b"free") + struct.pack(">I4s", 8 + payload, b"mdat") + b"\x00" * payload + moov
+
+
+MOOV_LAST_MP4 = _moov_last(5.0)
+
+
 class FakeHiggsfield:
     """Routes requests by path and records them."""
 
@@ -50,6 +62,10 @@ class FakeHiggsfield:
         if request.url.host == "upload.test":
             return httpx.Response(200)
         if request.url.host == "cdn.test":
+            rng = request.headers.get("Range")
+            if rng:
+                start, end = (int(x) for x in rng.removeprefix("bytes=").split("-"))
+                return httpx.Response(206, content=MOOV_LAST_MP4[start : end + 1])
             return httpx.Response(200, content=b"MP4BYTES")
         if path.startswith("/estimate/"):
             return httpx.Response(200, json=self.estimate)
@@ -259,6 +275,15 @@ class TestEditExtend:
         await video.extend_video("more", PRIOR, duration=4)
         assert fake.puts() == []
         assert _body(fake.submits()[0])["video_url"] == "https://cdn.test/o.mp4"
+
+    async def test_a_chained_extend_is_priced_from_ranged_reads_of_the_prior_output(self, install):
+        """Live smoke 2026-09-28 found this refused as unpriced: the source duration was never read."""
+        fake = install(FakeHiggsfield(estimate=SEEDANCE_ESTIMATE))
+        job = await video.extend_video("more", PRIOR, duration=4, resolution="480p", max_cost_usd=5)
+        assert job["cost"]["basis"] == "local_table" and job["cost"]["usd"] is not None
+        ranged = [r for r in fake.requests if r.url.host == "cdn.test"]
+        assert ranged and all("Range" in r.headers for r in ranged)
+        assert fake.puts() == [] and len(fake.submits()) == 1
 
     async def test_extend_cap_uses_the_local_price_before_uploading(self, install, storage):
         (storage / "videos" / "clip.mp4").write_bytes(_mp4(10.0))

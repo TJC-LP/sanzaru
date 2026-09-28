@@ -258,6 +258,29 @@ class HiggsfieldClient:
         await self._with_read_retries(put)
         return public_url
 
+    async def fetch_range(self, url: str, start: int, length: int) -> bytes:
+        """Bytes [start, start+length) of an output file (https only, no credentials sent).
+
+        Used to read an output's MP4 header without downloading the clip: Higgsfield
+        writes `moov` after `mdat`, so pricing a chained edit/extend needs two small
+        ranged reads rather than the whole file.
+        """
+        _require_https(url, "output URL")
+        headers = {"Range": f"bytes={start}-{start + length - 1}"}
+
+        async def call() -> bytes:
+            try:
+                response = await self._bare.get(url, headers=headers)
+            except httpx.TransportError as exc:
+                raise _transport_error(exc) from exc
+            if response.is_error:
+                raise error_from_response(response.status_code, _detail(response))
+            # A server that ignores Range answers 200 with the whole body.
+            body = response.content
+            return body[start : start + length] if response.status_code == 200 else body
+
+        return await self._with_read_retries(call)
+
     @asynccontextmanager
     async def stream_output(self, url: str) -> AsyncIterator[AsyncIterator[bytes]]:
         """Stream a completed job's output file (https only, no credentials sent)."""

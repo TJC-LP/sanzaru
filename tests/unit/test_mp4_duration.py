@@ -96,3 +96,52 @@ class TestContentTypes:
     def test_bad_image(self):
         with pytest.raises(ValueError, match="JPEG"):
             content_type_for("a.bmp", "image")
+
+
+def _moov_last(seconds: float, payload: int = 5000) -> bytes:
+    """ftyp, free, mdat, then moov — the layout Higgsfield's outputs use."""
+    import struct as _s
+
+    mvhd_body = _s.pack(">B3xIIII", 0, 0, 0, 1000, int(seconds * 1000)) + b"\x00" * 80
+    mvhd = _s.pack(">I4s", 8 + len(mvhd_body), b"mvhd") + mvhd_body
+    moov = _s.pack(">I4s", 8 + len(mvhd), b"moov") + mvhd
+    ftyp = _s.pack(">I4s", 16, b"ftyp") + b"isom\x00\x00\x02\x00"
+    free = _s.pack(">I4s", 8, b"free")
+    mdat = _s.pack(">I4s", 8 + payload, b"mdat") + b"\x00" * payload
+    return ftyp + free + mdat + moov
+
+
+class TestRemoteDuration:
+    @staticmethod
+    def _reader(data: bytes, calls: list):
+        async def read(start: int, length: int) -> bytes:
+            calls.append((start, length))
+            return data[start : start + length]
+
+        return read
+
+    @pytest.mark.anyio
+    async def test_moov_after_mdat_is_found_with_small_reads(self):
+        from sanzaru.higgsfield.media import remote_mp4_duration
+
+        data, calls = _moov_last(4.0, payload=2_000_000), []
+        assert await remote_mp4_duration(self._reader(data, calls)) == pytest.approx(4.0)
+        # Headers are 16-byte reads; only moov itself is read whole — never mdat.
+        assert all(length <= 16 or length < 1000 for _, length in calls)
+        assert sum(length for _, length in calls) < 2000
+
+    @pytest.mark.anyio
+    async def test_truncated_or_corrupt_files_give_none(self):
+        from sanzaru.higgsfield.media import remote_mp4_duration
+
+        assert await remote_mp4_duration(self._reader(b"\x00\x00\x00\x00junk", [])) is None
+        assert await remote_mp4_duration(self._reader(b"", [])) is None
+
+    @pytest.mark.anyio
+    async def test_the_atom_walk_is_bounded(self):
+        from sanzaru.higgsfield.media import remote_mp4_duration
+
+        free = struct.pack(">I4s", 8, b"free")
+        calls: list = []
+        assert await remote_mp4_duration(self._reader(free * 1000, calls)) is None
+        assert len(calls) <= 16

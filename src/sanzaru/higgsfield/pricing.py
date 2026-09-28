@@ -278,7 +278,8 @@ def enforce_cap(cost: VideoCost, max_cost_usd: float | None, model: str) -> None
     if amount is None:
         raise UnpricedVideoError(
             f"max_cost_usd={max_cost_usd} cannot be enforced for {model}: {cost['note'] or 'no price available'}. "
-            "Drop the cap, or pick a model the API prices (the curated models all are). Nothing was submitted.",
+            "Neither the API nor the local table could price it (for Seedance edit/extend the local price "
+            "needs the source clip's duration). Drop the cap, or choose a model the API prices. Nothing was submitted.",
             estimate_usd=None,
             limit_usd=max_cost_usd,
             basis=cost["basis"],
