@@ -15,6 +15,7 @@ from openai.types.audio.speech_model import SpeechModel
 from pydantic import BaseModel, Field
 
 from .constants import (
+    DEFAULT_AUDIO_CHAT_MODEL,
     DEFAULT_MAX_FILE_SIZE_MB,
     ENHANCEMENT_PROMPTS,
     AudioChatModel,
@@ -166,7 +167,7 @@ class ChatWithAudioInputParams(BaseInputPath):
     system_prompt: str | None = Field(default=None, description="Custom system prompt to use.")
     user_prompt: str | None = Field(default=None, description="Custom user prompt to use.")
     model: AudioChatModel = Field(
-        default="gpt-4o-audio-preview-2024-12-17", description="The audio LLM model to use for transcription"
+        default=DEFAULT_AUDIO_CHAT_MODEL, description="The audio LLM model to use for transcription"
     )
 
 

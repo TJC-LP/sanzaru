@@ -390,7 +390,7 @@ For detailed audio tool documentation, see [docs/audio/README.md](audio/README.m
 - `convert_audio` - Convert to mp3/wav
 - `compress_audio` - Compress for API limits
 - `transcribe_audio` - Whisper transcription
-- `chat_with_audio` - GPT-4o audio analysis
+- `chat_with_audio` - audio analysis with OpenAI's audio chat models (default `gpt-audio-1.5`)
 - `transcribe_with_enhancement` - Enhanced transcription
 - `create_audio` - Text-to-speech generation
 

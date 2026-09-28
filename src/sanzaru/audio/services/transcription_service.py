@@ -17,7 +17,7 @@ from ...config import get_client, logger
 from ...infrastructure import FileSystemRepository
 from ...storage import get_storage
 from .. import AudioProcessor
-from ..constants import ENHANCEMENT_PROMPTS, AudioChatModel, EnhancementType
+from ..constants import DEFAULT_AUDIO_CHAT_MODEL, ENHANCEMENT_PROMPTS, AudioChatModel, EnhancementType
 from ..models import ChatResult, TranscriptionResult
 from ..providers.base import env_concurrency
 from ..windowing import CHUNK_THRESHOLD_SECONDS, Window, merge_window_texts, plan_windows
@@ -205,11 +205,11 @@ class TranscriptionService:
     async def chat_with_audio(
         self,
         filename: str,
-        model: AudioChatModel = "gpt-4o-audio-preview-2025-06-03",
+        model: AudioChatModel = DEFAULT_AUDIO_CHAT_MODEL,
         system_prompt: str | None = None,
         user_prompt: str | None = None,
     ) -> ChatResult:
-        """Chat with audio using GPT-4o audio models.
+        """Chat with audio using OpenAI's audio chat models.
 
         Args:
         ----

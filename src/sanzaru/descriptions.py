@@ -609,7 +609,7 @@ Example workflows:
 4. Word-level timestamps:
    transcribe_audio("speech.wav", response_format="verbose_json", timestamp_granularities=["word"])"""
 
-CHAT_WITH_AUDIO = """Interactive audio analysis using GPT-4o audio understanding models.
+CHAT_WITH_AUDIO = """Interactive audio analysis using OpenAI's audio understanding models.
 
 Have a conversation about audio content. Unlike transcription which just converts
 speech to text, this tool lets you ask questions, analyze tone, extract insights,
@@ -618,17 +618,18 @@ summarize, or discuss the audio content.
 Supported formats: mp3, wav only (use convert_audio for other formats)
 
 Model recommendations:
-- gpt-4o-audio-preview: RECOMMENDED - Best audio understanding (DEFAULT)
-- gpt-4o-mini-audio-preview: Faster but limited audio processing capabilities
+- gpt-audio-1.5: RECOMMENDED - Best audio understanding (DEFAULT)
+- gpt-audio: previous generation
+- gpt-audio-mini: faster and cheaper, with shallower analysis
 
 Parameters:
 - input_file_name: Name of the audio file to analyze (required)
-- model: Audio chat model. Default: "gpt-4o-audio-preview"
+- model: Audio chat model. Default: "gpt-audio-1.5"
 - system_prompt: Optional system context (e.g., "You are analyzing a medical interview")
 - user_prompt: Optional question or instruction (e.g., "What are the main topics discussed?")
 
 Returns ChatResult with:
-- response_text: GPT-4o's analysis or response
+- response_text: The model's analysis or response
 - model: Model used
 
 Example workflows:

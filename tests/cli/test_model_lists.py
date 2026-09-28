@@ -23,3 +23,10 @@ def test_elevenlabs_default_matches_the_constants():
 @pytest.mark.unit
 def test_openai_tts_models_match_the_constants():
     assert cli_audio._TTS_MODELS == constants.OPENAI_TTS_MODELS
+
+
+@pytest.mark.unit
+def test_audio_chat_models_match_the_constants():
+    """The gpt-4o audio-preview models were retired while the CLI still defaulted to one."""
+    assert cli_audio._AUDIO_CHAT_MODELS == constants.AUDIO_CHAT_MODELS
+    assert cli_audio._AUDIO_CHAT_MODELS[0] == constants.DEFAULT_AUDIO_CHAT_MODEL
