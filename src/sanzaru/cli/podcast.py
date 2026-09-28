@@ -113,7 +113,7 @@ def podcast() -> None:
     type=click.Choice(["segments", "dialogue"]),
     default=None,
     help="segments (default): one request per turn, joined with silence gaps. "
-    "dialogue: consecutive ElevenLabs eleven_v3 turns go out together so the model paces them. "
+    "dialogue: consecutive ElevenLabs v3/v4 turns go out together so the model paces them. "
     "Overrides config.render_mode.",
 )
 @click.option(
@@ -160,8 +160,13 @@ async def podcast_generate(
     A speaker's id defaults to its name, so segments can reference it by name.
     An invalid script reports every problem at once, not one per run.
     \b
-    render_mode="dialogue" batches consecutive eleven_v3 turns into one request so
-    the model paces the exchange itself — noticeably more natural than fixed gaps.
+    Recommended for a scripted conversation: ElevenLabs speakers (eleven_v4 is
+    the default model), "render_mode": "dialogue", and --verify. Use
+    eleven_v4_turbo for drafts (half the cost per character, about half the wait).
+    \b
+    render_mode="dialogue" batches consecutive eleven_v4 / eleven_v4_turbo /
+    eleven_v3 turns into one request so the model paces the exchange itself —
+    noticeably more natural than fixed gaps.
     Turns that cannot join a run (OpenAI speakers, other models, lone turns,
     stretches in one voice, turns over the 2000-char request budget) still render per segment, so
     mixed episodes keep working. Inside a dialogue run, pause_after and
@@ -180,7 +185,7 @@ async def podcast_generate(
     \b
     Provider precedence: speaker.provider > config.provider > --provider. Speakers
     may differ, so one episode can mix OpenAI and ElevenLabs voices. ElevenLabs
-    speakers need a voice id, cap speed at 0.7-1.2 (eleven_v3: unsupported), and
+    speakers need a voice id, cap speed at 0.7-1.2 (v3/v4 models: ignored, so refused), and
     ignore `instructions` — use inline audio tags like [whispers] in the text.
     \b
     Segments TTS in parallel internally, bounded per provider; the transcript is

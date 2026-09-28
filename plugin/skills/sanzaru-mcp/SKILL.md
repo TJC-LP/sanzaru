@@ -88,6 +88,21 @@ Use `get_*_status` only for a one-off check when you are not going to wait.
 
 - `generate_podcast` is scripted TTS. Use `verify: true` when the words matter; it re-renders a
   segment whose tail went missing, once.
+- **Recommended engine for a scripted multi-voice show:** every speaker `"provider": "elevenlabs"`
+  (default model `eleven_v4`), `config.render_mode: "dialogue"`, `verify: true`. Set
+  `"model": "eleven_v4_turbo"` for drafts (half the character cost, roughly half the render time). Direct delivery
+  with inline tags in the text (`[laughs]`, `[whispers] [nervously]` — v4 performs stacked tags in
+  order); `instructions` and `speed` do nothing on v4 (speed is refused). Use `segments` mode for
+  exact gaps or per-speaker `voice_settings`. OpenAI stays the default provider only because it
+  needs no extra key. Premade ElevenLabs voices that pair well (global ids):
+
+  | Voice | id | Character |
+  |---|---|---|
+  | George | `JBFqnCBsd6RMkjVDRZzb` | warm British storyteller |
+  | Laura | `FGY2WhTYpPnrIDTdsKH5` | quirky enthusiast |
+  | Alice | `Xb7hH8MSUJpSbSDYk0k2` | clear British educator |
+  | Roger | `CwhRBWXzGAHq8TQ4Fs17` | laid-back, casual |
+  | Matilda | `XrExE9yKIg1WjnnlVkGX` | professional |
 - `simulate_podcast` records agents actually talking. Always `dry_run: true` first (plans, projects
   cost, spends nothing), then set `max_cost_usd`. gpt-realtime bills tokens; `gpt-live-1` bills
   $0.05 per host-minute and runs in **duplex** mode by default (hosts hear each other live). Every

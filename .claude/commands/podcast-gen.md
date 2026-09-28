@@ -6,6 +6,48 @@ The `generate_podcast` tool takes a structured PodcastScript and produces a sing
 downloadable mp3 (or wav) file. It generates each spoken segment via TTS, then stitches
 them together with configurable silence gaps.
 
+## Choosing the engine
+
+**Recommended for any multi-voice script: ElevenLabs `eleven_v4`, `render_mode: "dialogue"`,
+`verify: true`.** The model paces the turns itself and performs inline direction tags —
+`[laughs]`, `[sighs]`, stacked `[whispers] [nervously]` — which v3 dropped in a blind listen.
+Use `"model": "eleven_v4_turbo"` for drafts (half the character cost, roughly half the render time).
+
+- Set `"provider": "elevenlabs"` on each speaker and give an ElevenLabs voice **id** (table below).
+- Put delivery in the text as tags. `instructions` is ignored by ElevenLabs, and `speed` is refused
+  on v4 (the API ignores it), so omit both.
+- Keep each run of consecutive turns under 2000 characters; longer scripts are split into several
+  dialogue requests automatically, at turn boundaries.
+- Fall back to OpenAI voices (the guide below) when no `ELEVENLABS_API_KEY` is configured, or use
+  `render_mode: "segments"` when you need exact pauses or per-speaker `voice_settings`.
+
+ElevenLabs premade voices that pair well (global ids, available on every account):
+
+| Voice | id | Character |
+|---|---|---|
+| George | `JBFqnCBsd6RMkjVDRZzb` | warm British storyteller |
+| Laura | `FGY2WhTYpPnrIDTdsKH5` | quirky enthusiast |
+| Alice | `Xb7hH8MSUJpSbSDYk0k2` | clear British educator |
+| Roger | `CwhRBWXzGAHq8TQ4Fs17` | laid-back, casual |
+| Matilda | `XrExE9yKIg1WjnnlVkGX` | professional |
+
+```json
+{
+  "title": "show_name_ep01",
+  "speakers": [
+    {"id": "host", "name": "George", "voice": "JBFqnCBsd6RMkjVDRZzb", "provider": "elevenlabs"},
+    {"id": "cohost", "name": "Laura", "voice": "FGY2WhTYpPnrIDTdsKH5", "provider": "elevenlabs"}
+  ],
+  "segments": [
+    {"speaker": "host", "text": "[warmly] Welcome back. Today we're asking whether Haskell belongs in private equity."},
+    {"speaker": "cohost", "text": "[laughs] Most people hear Haskell and think ivory tower."}
+  ],
+  "config": {"render_mode": "dialogue"}
+}
+```
+
+Call it with `verify: true`.
+
 ## Step-by-Step Workflow
 
 1. **Clarify the topic and format** — confirm episode topic, number of speakers, desired
@@ -32,7 +74,7 @@ them together with configurable silence gaps.
 
 ---
 
-## Voice Pairing Guide
+## Voice Pairing Guide (OpenAI)
 
 Voice contrast is critical for listener comprehension. Pair voices with clear tonal
 differences so listeners can distinguish speakers without visual cues.

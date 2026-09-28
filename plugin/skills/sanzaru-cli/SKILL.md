@@ -65,27 +65,44 @@ and will bite if you assume otherwise:
 
 - `--voice` is an opaque voice **id** from your library, not a name like `alloy`, and is required.
 - `--instructions` is **ignored** — put inline audio tags (`[whispers]`, `[excited]`) in the text
-  instead, which the default `eleven_v3` understands.
-- Speed is 0.7–1.2, and `eleven_v3` rejects any change. Out-of-range values raise rather than
+  instead. The default `eleven_v4` performs stacked tags in order (`[whispers] [nervously]`).
+- Speed is 0.7–1.2, and `eleven_v4`, `eleven_v4_turbo` and `eleven_v3` refuse any change (the API
+  accepts it on those and silently ignores it). Out-of-range values raise rather than
   being rescaled from OpenAI's 0.25–4.0, so `--speed 2.0` never quietly means two things.
 - `--voice-settings '{"stability":0.4,"similarity_boost":0.85}'` is ElevenLabs-only.
 
 Podcast speakers choose independently (`speaker.provider` > `config.provider` > `--provider`), so
 one episode can mix both. HTTP 429 means you exceeded your tier's concurrency — lower
-`SANZARU_ELEVENLABS_MAX_CONCURRENCY` (defaults are Free-tier: 2, or 4 on flash/turbo).
+`SANZARU_ELEVENLABS_MAX_CONCURRENCY` (defaults are Free-tier: 2, or 4 on flash/turbo; v4 Turbo is
+in the v4 pool and gets 2).
 
 ElevenLabs bills **characters submitted**, audio tags included, against a monthly allowance that
 can be small. Do not count them by hand: every render reports `characters` (and `usage[]` per
 provider on a podcast), and `sanzaru capabilities --quota` reads the remaining allowance without
 spending any of it.
 
-`podcast generate --render-mode dialogue` sends consecutive `eleven_v3` turns as **one** request
+`podcast generate --render-mode dialogue` sends consecutive `eleven_v4` / `eleven_v4_turbo` /
+`eleven_v3` turns as **one** request
 so the model paces the exchange itself — distinctly more natural than fixed silence gaps. Turns
 that cannot join a run (OpenAI speakers, other models, a lone turn, a stretch in one voice, a turn
 that alone fills the 2000-character request budget) still render per segment, so mixed episodes
 keep working. Inside a run, `pause_after` and per-speaker `voice_settings` do not
 apply; use `config.dialogue_stability` (0–1) instead. Stay on the default `segments` when you need
 exact gaps, per-speaker tuning, or cheap per-segment retry.
+
+**Recommended engine for a scripted multi-voice show:** `--provider elevenlabs` (default model
+`eleven_v4`) `--render-mode dialogue --verify`; `--model eleven_v4_turbo` for drafts (half the
+character cost, roughly half the render time). In a blind listen v4 performed stacked tags and laughter that v3
+dropped. OpenAI stays the default provider only because it needs no extra key. Premade ElevenLabs
+voices that pair well (global ids, every account has them):
+
+| Voice | id | Character |
+|---|---|---|
+| George | `JBFqnCBsd6RMkjVDRZzb` | warm British storyteller |
+| Laura | `FGY2WhTYpPnrIDTdsKH5` | quirky enthusiast |
+| Alice | `Xb7hH8MSUJpSbSDYk0k2` | clear British educator |
+| Roger | `CwhRBWXzGAHq8TQ4Fs17` | laid-back, casual |
+| Matilda | `XrExE9yKIg1WjnnlVkGX` | professional |
 
 ## Podcasts: scripted vs simulated
 
@@ -94,7 +111,7 @@ Three verbs, and picking the wrong one wastes either quality or money.
 | you have | use |
 | --- | --- |
 | a **topic** and want a real conversation | `podcast rundown` then `podcast simulate` |
-| a **script** you want performed naturally | `podcast generate --render-mode dialogue` |
+| a **script** you want performed naturally | `podcast generate --provider elevenlabs --render-mode dialogue --verify` |
 | a **script** needing exact gaps / per-segment retry | `podcast generate` (default) |
 
 **Use `podcast generate --verify` on anything you care about.** TTS drops segment tails, and

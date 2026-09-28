@@ -208,10 +208,10 @@ mpeg mpga ogg wav webm`) — none of these commands can create a `.json` or `.ht
 
 | | `openai` | `elevenlabs` |
 |---|---|---|
-| `--model` | `gpt-4o-mini-tts` (default), `tts-1`, `tts-1-hd` | `eleven_v3` (default), `eleven_multilingual_v2`, `eleven_flash_v2_5`, `eleven_turbo_v2_5` |
+| `--model` | `gpt-4o-mini-tts` (default), `tts-1`, `tts-1-hd` | `eleven_v4` (default), `eleven_v4_turbo`, `eleven_v3`, `eleven_multilingual_v2`, `eleven_flash_v2_5`, `eleven_turbo_v2_5` |
 | `--voice` | named voice (default `alloy`) | a voice id from your library — **required** |
-| `--instructions` | style direction | ignored; use inline `[audio tags]` in the text with `eleven_v3` |
-| `--speed` | 0.25–4.0 | 0.7–1.2, and `eleven_v3` rejects any change |
+| `--instructions` | style direction | ignored; use inline `[audio tags]` in the text (`eleven_v4` performs stacked tags in order) |
+| `--speed` | 0.25–4.0 | 0.7–1.2; `eleven_v4`, `eleven_v4_turbo` and `eleven_v3` refuse any change (the API accepts it there and ignores it) |
 | `--voice-settings` | rejected | JSON: `stability`, `similarity_boost`, `style`, `use_speaker_boost`, `speed` |
 
 ElevenLabs needs `ELEVENLABS_API_KEY` and `uv pip install 'sanzaru[elevenlabs]'`; either missing is
@@ -227,10 +227,10 @@ render now reports what it spent, so you no longer have to count the script by h
 
 ```jsonc
 // audio speak
-"result": {"output_file": "...", "provider": "elevenlabs", "model": "eleven_v3",
+"result": {"output_file": "...", "provider": "elevenlabs", "model": "eleven_v4",
            "characters": 1730, "requests": 1}
 // podcast generate — a list, since one episode can mix providers
-"result": {"usage": [{"provider": "elevenlabs", "model": "eleven_v3",
+"result": {"usage": [{"provider": "elevenlabs", "model": "eleven_v4",
                       "characters": 1730, "requests": 1}]}
 ```
 
@@ -479,11 +479,17 @@ batched run re-renders the whole run.
 
 `--render-mode segments|dialogue` (or `config.render_mode`; default `segments`).
 
+**Recommended engine for a scripted multi-voice show:** `--provider elevenlabs` (default model
+`eleven_v4`), `--render-mode dialogue`, `--verify`. Use `--model eleven_v4_turbo` for drafts — half
+the character cost and roughly half the render time. Stay in `segments` for exact gaps, per-speaker
+`voice_settings`, or cheap single-line retry. OpenAI stays the default provider because it needs no
+extra key or extra. Measured numbers: [docs/audio/README.md](audio/README.md#recommended-podcast-engine).
+
 - **`segments`** — one TTS request per turn, joined with your configured silence gaps. Full control,
   and every segment is independent so a single bad render can be retried on its own.
-- **`dialogue`** — consecutive turns sharing a dialogue-capable provider and model (currently
-  ElevenLabs `eleven_v3`) are sent as **one** request, so the model paces the exchange itself.
-  Noticeably more natural back-and-forth.
+- **`dialogue`** — consecutive turns sharing a dialogue-capable provider and model (ElevenLabs
+  `eleven_v4`, `eleven_v4_turbo` or `eleven_v3`) are sent as **one** request, so the model paces
+  the exchange itself. Noticeably more natural back-and-forth.
 
 Grouping is per-run, not per-episode: turns that can't join a run — OpenAI speakers, other models,
 a lone turn, a stretch in one voice, a turn that alone fills the request budget — still render per segment,
@@ -536,7 +542,7 @@ Dialogue mode: N/M segments batched into K conversation request(s)
 on stderr, where `M - N` is how many turns did *not* batch. In an all-ElevenLabs episode those are
 exactly your stranded turns: the first example above reports `2/3 segments batched into 1
 conversation request(s)`, and the 1 is turn 3. In a **mixed** episode the gap also counts turns that
-were never eligible — OpenAI speakers, non-`eleven_v3` models — so treat it as an upper bound there
+were never eligible — OpenAI speakers, models without dialogue support — so treat it as an upper bound there
 and read the shortfall against the turns you expected to batch.
 
 (The ceiling exists because an over-budget request can terminate the stream mid-conversation,

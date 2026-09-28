@@ -335,7 +335,7 @@ async def audio_speak(
 
     \b
     ElevenLabs notes: --voice is a voice id from your library, --speed must be
-    0.7-1.2 (and is unsupported by eleven_v3), and --instructions is ignored —
+    0.7-1.2 (and v3/v4 models ignore it, so it is refused), and --instructions is ignored —
     use inline audio tags such as [whispers] in the text instead.
     """
     try:

@@ -173,13 +173,13 @@ detail — `podcast._stitch_audio` decodes every segment with `AudioSegment.from
 
 | | openai (default) | elevenlabs |
 |---|---|---|
-| Default model | `gpt-4o-mini-tts` | `eleven_v3` |
+| Default model | `gpt-4o-mini-tts` | `eleven_v4` |
 | Voice | named (`alloy`, `onyx`, …) | opaque voice id, required |
-| `instructions` | supported | **ignored** — use inline audio tags (`[whispers]`) with eleven_v3 |
+| `instructions` | supported | **ignored** — use inline audio tags (`[whispers]`, stackable on v4) |
 | `voice_settings` | rejected | stability / similarity_boost / style / use_speaker_boost / speed |
-| Speed | 0.25–4.0 | 0.7–1.2; **eleven_v3 rejects any change** |
-| Chunk limit | 4000 chars | 3000 (v3) / 10000 (multilingual) / 40000 (flash, turbo) |
-| Concurrency | unbounded | 2, or 4 on flash/turbo (Free-tier caps), per subscription tier |
+| Speed | 0.25–4.0 | 0.7–1.2; v3/v4 models accept and ignore it, so the server **refuses any change** |
+| Chunk limit | 4000 chars | 5000 (v4, v4 Turbo) / 3000 (v3) / 10000 (multilingual) / 40000 (flash, turbo) |
+| Concurrency | unbounded | 2, or 4 on flash/turbo (Free-tier caps), per subscription tier; v4 Turbo sits in its own `standard_eleven_v4` group, **not** the Flash/Turbo pool, so it gets 2 |
 
 Every synthesis reports what it submitted. `synthesize_speech` returns a `SpeechResult`
 (audio + `SpeechUsage`) rather than bare bytes, counting characters from the chunks actually
@@ -189,6 +189,11 @@ backend count would have been the same number, computed in more places. ElevenLa
 character against a monthly quota, so this is the number that matters there; OpenAI is not
 metered that way and reports it for information. `sanzaru capabilities --quota` reads the
 allowance itself, and is the only part of that command that touches the network.
+
+The v4/v3 speed rule is measured, not documented: ElevenLabs lists 0.7–1.2 for every model, but the
+same line rendered within 2% of one length at 0.7, 1.0 and 1.2 on `eleven_v4`, `eleven_v4_turbo` and
+`eleven_v3` (`eleven_multilingual_v2` ran 1.79x longer at 0.7). The API returns 200 regardless, so
+`_NO_SPEED_MODELS` refusing is the only way a caller learns their speed did nothing.
 
 Speed ranges are **not** rescaled across providers — an out-of-range value is a `ValueError`, so
 `speed=2.0` never silently means two different things.
@@ -215,9 +220,10 @@ compatible with mixed-provider episodes. A run is only batched when it carries
 ≥`MIN_DIALOGUE_SPEAKERS` distinct *resolved voices* (not speaker ids — two speaker entries can
 share one voice id) — a monologue has no turn-taking to pace, so batching it would cost a dialogue
 request and swallow its `pause_after`s for nothing; at 2 that rule also excludes a lone turn.
-Excluded outright: OpenAI speakers and non-`eleven_v3` models. Runs are split at turn boundaries to
-stay within `ELEVENLABS_DIALOGUE_MAX_CHARS` (2000, the ceiling `/v1/text-to-dialogue` documents for
-reliable generation — past it the stream can terminate early, which reads as a short but successful
+Excluded outright: OpenAI speakers and any model outside `ELEVENLABS_DIALOGUE_MODELS` (`eleven_v4`,
+`eleven_v4_turbo`, `eleven_v3` — both v4s verified live against `/v1/text-to-dialogue`). Runs are
+split at turn boundaries to stay within `ELEVENLABS_DIALOGUE_MAX_CHARS` (2000, the ceiling
+`/v1/text-to-dialogue` documents for reliable generation — past it the stream can terminate early, which reads as a short but successful
 take, so `synthesize_dialogue` refuses over-budget requests outright). That budget is the only
 length rule, and it sits below every `max_chunk_chars`: a turn too long to share a dialogue request
 opens a run of its own, which closes as a single-voice run — a segment unit, chunked normally.
@@ -270,6 +276,18 @@ over `TRANSCRIBE_MAX_BYTES` is `too_large_to_verify` without a call. Neither eve
 episode — the same property `run_qc` has — but both make it **unverified** (`verified=False`),
 never verified: folding "nothing was found" into "nothing was looked at" made the control assert
 its own success (CWE-636). The CLI reports the two as separate blocks for the same reason.
+
+What counts as "the same word" is normalised in `verification.words()`, and each rule closed a false
+positive found dogfooding v4: numbers compare by value (`one point two` against ASR's `1.2` scored
+0.375 on an eight-word tail), inline audio tags are stripped from the *script* side before scoring
+(`strip_audio_tags` — tags are performed, never transcribed, so a stacked-tag short line was mostly
+"missing" on arrival), and a tail that fails by words gets a character-level retry over windows one
+word shorter and longer (`Sanzaru dev log` heard as `Sansaru DevLog` is two word misses, one letter
+by characters). False positives are not free: a flagged dialogue unit re-renders atomically, so each
+one re-billed the whole batch — on the dogfood episode, twice the characters on every model. Missing
+speech is still missing words *and* characters, so real drops stay flagged (a three-word tail drop
+scores 0.687 by characters against the 0.75 floor). `aligned_words()` is deliberately not normalised:
+window splicing needs index alignment with the raw tokens.
 
 Scoring runs off the event loop and the window scan strides by `span // VERIFY_WINDOW_STRIDE_DIVISOR`
 for long needles (tails and short segments still slide one word at a time), so a 40k-char segment

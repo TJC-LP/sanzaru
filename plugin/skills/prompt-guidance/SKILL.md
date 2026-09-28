@@ -71,7 +71,8 @@ one lighting anchor. For edits, describe the *change*, not what is already in th
 ### Audio (TTS)
 - **gpt-4o-mini-tts**: recommended default; `instructions` steer delivery ("warm, unhurried")
 - OpenAI voices: alloy, ash, ballad, coral, echo, fable, nova, onyx, sage, shimmer
-- ElevenLabs (`eleven_v3`): inline audio tags like `[whispers]` instead of `instructions`
+- ElevenLabs (`eleven_v4`, default): inline audio tags like `[whispers]` instead of `instructions`;
+  v4 performs stacked tags in order (`[whispers] [nervously] Like this.`)
 
 ## Common Prompting Pitfalls
 
