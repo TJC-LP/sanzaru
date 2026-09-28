@@ -26,6 +26,8 @@ which arguments, how to wait. For prompt craft (what to say to Sora or an image 
 | | `create_image` | async | Responses API — refinement chains (`previous_response_id`) and parallel batches; `model` picks the mainline model (`gpt-6-astra` default, `gpt-5.6-sol`/`terra`/`luna`) |
 | | `get_image_status` | one-off | Single status check; prefer `wait_for` for waiting |
 | | `download_image` | sync | Download completed image |
+| **Inspect** | `inspect_image` | sync | **See an image yourself** — returns it as visual content; `region` zooms in to read small text |
+| | `inspect_video_frame` | sync | See frames from a video — the only way to check what Sora rendered (needs ffmpeg) |
 | **Reference** | `list_reference_images` | sync | List available images for Sora |
 | | `prepare_reference_image` | sync | Resize image to exact Sora dimensions (`crop` / `pad` / `rescale`) |
 | **Audio** | `create_audio` | sync | Text-to-speech — OpenAI (named voices) or ElevenLabs (voice id) |
@@ -91,6 +93,30 @@ Use `get_*_status` only for a one-off check when you are not going to wait.
   $0.05 per host-minute and runs in **duplex** mode by default (hosts hear each other live). Every
   act is checkpointed; the result carries a `resume_command` if the run stops early.
 
+## Checking your own work
+
+`generate_image` and friends hand back a filename, not a picture. To judge what you
+made, look at it:
+
+```
+generate_image(prompt="a poster reading 'GRAND OPENING'")
+inspect_image("poster.png")                               # is the text right?
+inspect_image("poster.png", region=[400, 200, 1100, 400]) # zoom in to be sure
+
+wait_for([video.id], download=True)
+inspect_video_frame("clip.mp4")                           # did the motion happen?
+```
+
+Worth doing before you tell the user something worked, and before spending a Sora
+render on a reference image you have not looked at. `inspect_image` costs roughly
+1500-3100 visual tokens at its default size, and a `region` crop costs far less, so a
+zoomed check is cheaper than a full-frame one. Trust the note that comes back over the
+pixels when reporting dimensions: you are usually seeing a resized copy, and the note
+says so.
+
+Do **not** use `view_media` for this. That opens a player for the user and returns you
+nothing to look at.
+
 ## Showing the user a file
 
 Call `view_media` after generating anything. It renders a player inline and, on hosts
@@ -112,6 +138,8 @@ support saving, which is not something a tool call can work around.
 6. **Regex in `list_audio_files`** — `pattern` is substring or glob; regex syntax is refused with an error naming the syntax
 7. **Recording a simulated podcast without a dry run** — it is the most expensive thing sanzaru does
 8. **Fetching media bytes to deliver a file** — `view_media` shows a player and a Download button; the bytes never need to pass through you
+9. **Reporting that an image or video is correct without looking** — `inspect_image` / `inspect_video_frame` exist; a "completed" status says nothing about what was rendered
+10. **Reporting an image's dimensions from the pixels you were shown** — inspection returns a resized copy and states the source size in its note; quote the note
 
 ## Deep Reference
 
