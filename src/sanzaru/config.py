@@ -21,6 +21,8 @@ from openai.types import ImageModel
 if TYPE_CHECKING:
     from elevenlabs.client import AsyncElevenLabs
 
+    from .higgsfield.client import HiggsfieldClient
+
 # ---------- Logging configuration ----------
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
@@ -79,6 +81,69 @@ def get_client() -> AsyncOpenAI:
     if not api_key:
         raise RuntimeError("OPENAI_API_KEY is not set")
     return AsyncOpenAI(api_key=api_key)
+
+
+# ---------- Higgsfield client (video generation) ----------
+# Same lazy, cached shape as the ElevenLabs seam below, for the same reason:
+# nothing pays for httpx client construction until a video tool actually runs.
+# There is deliberately no base-URL override — see higgsfield/client.py.
+_higgsfield_override: "HiggsfieldClient | None" = None
+_higgsfield_cached: "HiggsfieldClient | None" = None
+
+
+def set_higgsfield_client(client: "HiggsfieldClient | None") -> None:
+    """Install a process-wide Higgsfield client override; None restores default resolution.
+
+    Used by tests (a client over httpx.MockTransport). Also drops the cache.
+    """
+    global _higgsfield_override, _higgsfield_cached
+    _higgsfield_override = client
+    _higgsfield_cached = None
+
+
+def get_higgsfield_client() -> "HiggsfieldClient":
+    """Get the Higgsfield client, building it from `HF_KEY` on first use.
+
+    Returns:
+        The installed override (see set_higgsfield_client), else a cached client
+
+    Raises:
+        RuntimeError: If HF_KEY is unset or not `key_id:key_secret`
+    """
+    global _higgsfield_cached
+    if _higgsfield_override is not None:
+        return _higgsfield_override
+    if _higgsfield_cached is not None:
+        return _higgsfield_cached
+
+    raw = os.getenv("HF_KEY", "").strip()
+    if not raw:
+        raise RuntimeError("HF_KEY is not set (Higgsfield video generation)")
+    key_id, sep, secret = raw.partition(":")
+    if not sep or not key_id.strip() or not secret.strip():
+        raise RuntimeError("HF_KEY must be key_id:key_secret")
+
+    from .higgsfield.client import HiggsfieldClient
+
+    _higgsfield_cached = HiggsfieldClient(key_id.strip(), secret.strip())
+    return _higgsfield_cached
+
+
+async def close_higgsfield_client() -> None:
+    """Close the lazily-built Higgsfield client, if one was ever created.
+
+    A no-op when video was never used. Failures are swallowed: this runs in the
+    CLI's teardown `finally`, where raising would replace the command's result.
+    """
+    global _higgsfield_cached
+    client = _higgsfield_cached
+    _higgsfield_cached = None
+    if client is None:
+        return
+    try:
+        await client.aclose()
+    except Exception as exc:  # noqa: BLE001 - teardown must not mask the command's outcome
+        logger.debug("Closing the Higgsfield client failed: %s", exc)
 
 
 # ---------- ElevenLabs client (optional TTS provider) ----------
