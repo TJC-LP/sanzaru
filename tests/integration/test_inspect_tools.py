@@ -198,6 +198,18 @@ class TestInspectImage:
 
         assert images[0]._mime_type == "image/jpeg"
 
+    async def test_cmyk_jpeg_is_inspectable_with_the_default_png_encoding(self, image_storage):
+        PILImage.new("CMYK", (100, 80), (0, 255, 255, 0)).save(image_storage / "reference.jpg", "JPEG")
+
+        images, notes = _blocks(await inspect_image("reference.jpg"))
+
+        delivered = _decode(images[0])
+        assert delivered.format == "PNG"
+        assert delivered.size == (100, 80)
+        assert delivered.mode == "RGB"
+        assert delivered.getpixel((50, 40)) == (255, 0, 0)
+        assert "JPEG" in notes[0]
+
     async def test_transparency_survives_the_default_format(self, image_storage):
         PILImage.new("RGBA", (50, 50), (255, 0, 0, 0)).save(image_storage / "alpha.png")
 
