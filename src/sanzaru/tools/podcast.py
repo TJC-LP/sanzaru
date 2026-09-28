@@ -53,7 +53,7 @@ from ..audio.providers import (
     synthesize_speech,
     validate_provider_name,
 )
-from ..audio.verification import TRANSCRIBE_MAX_BYTES, similarity_tokens, transcribe_bytes, words
+from ..audio.verification import TRANSCRIBE_MAX_BYTES, similarity_tokens, strip_audio_tags, transcribe_bytes, words
 from ..config import logger
 from ..exceptions import AudioFileError
 from ..infrastructure import FileSystemRepository
@@ -312,6 +312,7 @@ def _best_window_similarity(needle: str, haystack: str) -> float:
 
 def _verdict_for(index: int, speaker: str, intended: str, rendered: str) -> SegmentVerdict:
     """Judge one segment against the audio the unit containing it produced."""
+    intended = strip_audio_tags(intended)
     overall = _best_window_similarity(intended, rendered)
     if len(words(intended)) <= VERIFY_SHORT_SEGMENT_WORDS:
         # No meaningful tail; the question is only whether it is there at all.
