@@ -5,7 +5,7 @@ import httpx2
 import pytest
 from openai import APIConnectionError, APIStatusError
 
-from sanzaru.higgsfield.errors import HiggsfieldAPIError
+from sanzaru.higgsfield.errors import ErrorKind, HiggsfieldAPIError
 from sanzaru.polling import (
     WaitTimeoutError,
     _higgsfield_transient,
@@ -59,7 +59,7 @@ def _api_error(status_code: int) -> APIStatusError:
     return APIStatusError("boom", response=response, body=None)
 
 
-def _hf_error(kind: str, status_code: int | None) -> HiggsfieldAPIError:
+def _hf_error(kind: ErrorKind, status_code: int | None) -> HiggsfieldAPIError:
     return HiggsfieldAPIError("boom", status_code=status_code, detail="boom", kind=kind)
 
 
