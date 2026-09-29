@@ -148,6 +148,27 @@ def check_elevenlabs_available() -> bool:
     return True
 
 
+def check_higgsfield_available() -> bool:
+    """Check if the Higgsfield video backend has credentials.
+
+    `HF_KEY` must be `key_id:key_secret`; a value without the colon cannot
+    authenticate, so it counts as absent rather than failing on first use.
+    No optional dependency is involved: the client is plain httpx.
+    """
+    key = os.getenv("HF_KEY", "")
+    key_id, sep, secret = key.partition(":")
+    return bool(sep and key_id.strip() and secret.strip())
+
+
+def check_video_generation_available() -> bool:
+    """Video generation needs a place to put videos *and* a Higgsfield key.
+
+    Local video tools (listing, frame inspection, the viewer) need only the
+    path — see check_video_available().
+    """
+    return check_video_available() and check_higgsfield_available()
+
+
 def get_available_features() -> dict[str, bool]:
     """Get a dictionary of available media features.
 
@@ -162,6 +183,15 @@ def get_available_features() -> dict[str, bool]:
         "audio": check_audio_available(),
         "image": check_image_available(),
     }
+
+
+def get_video_providers() -> dict[str, bool]:
+    """Get a dictionary of usable video generation providers.
+
+    Returns:
+        Dict mapping provider name to availability status
+    """
+    return {"higgsfield": check_higgsfield_available()}
 
 
 def get_tts_providers() -> dict[str, bool]:

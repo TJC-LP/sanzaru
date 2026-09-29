@@ -33,7 +33,6 @@ from mcp_types import (
     PromptReference,
     ResourceTemplateReference,
 )
-from openai.types import VideoModel, VideoSeconds, VideoSize
 from openai.types.responses.tool_param import ImageGeneration
 from starlette.applications import Starlette
 from starlette.datastructures import Headers
@@ -45,12 +44,19 @@ from .config import DEFAULT_IMAGE_EDIT_MODEL, DEFAULT_IMAGE_MODEL, logger
 from .descriptions import SERVER_INSTRUCTIONS
 from .dotenv_loader import load_local_dotenv
 from .exceptions import ConfigurationError
-from .features import check_audio_available, check_image_available, check_video_available
+from .features import (
+    check_audio_available,
+    check_image_available,
+    check_video_available,
+    check_video_generation_available,
+)
+from .higgsfield.errors import HiggsfieldAPIError
 from .image_models import ImageQuality
 from .mainline_models import DEFAULT_MAINLINE_MODEL, MainlineModel
 from .storage.factory import get_storage
 from .tools.media_viewer import MEDIA_TYPE_TO_PATH_TYPE
 from .user_context import UserContext, UserContextRequiredError, reset_user_context, set_user_context
+from .video_models import AspectRatio as ReferenceAspectRatio
 
 # Tool annotation presets (MCP 2025-03-26+)
 READ_ONLY_OPEN = ToolAnnotations(read_only_hint=True, open_world_hint=True)
@@ -62,7 +68,7 @@ WRITE_OPEN_IDEMPOTENT = ToolAnnotations(
 WRITE_CLOSED = ToolAnnotations(
     read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=False
 )
-# delete_video: second call 404s but final state is identical (video absent) — idempotent per MCP spec
+# cancel_video: a second call on a canceled job fails, but the job stays canceled — idempotent per MCP spec
 DESTRUCTIVE_OPEN = ToolAnnotations(
     read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=True
 )
@@ -74,7 +80,13 @@ _R = TypeVar("_R")
 #: Failures a tool raises on purpose, whose text is written for the model to read
 #: and act on. Anything else is a crash and is logged with its traceback here,
 #: because the SDK only logs crashes it sees as crashes.
-_ANTICIPATED_TOOL_ERRORS: tuple[type[BaseException], ...] = (ValueError, LookupError, OSError, RuntimeError)
+_ANTICIPATED_TOOL_ERRORS: tuple[type[BaseException], ...] = (
+    ValueError,
+    LookupError,
+    OSError,
+    RuntimeError,
+    HiggsfieldAPIError,
+)
 
 
 def _llm_facing(fn: Callable[_P, Awaitable[_R]]) -> Callable[_P, Awaitable[_R]]:
@@ -169,17 +181,11 @@ mcp = MCPServer(
 
 
 # ==================== VIDEO TOOLS (CONDITIONAL) ====================
+# Local video tools need only the video directory; generation also needs a
+# Higgsfield key. Without HF_KEY the generation tools are simply absent — an
+# absent tool is clearer to a model than one that always fails.
 if check_video_available():
-    from .descriptions import (
-        CREATE_VIDEO,
-        DELETE_VIDEO,
-        DOWNLOAD_VIDEO,
-        GET_VIDEO_STATUS,
-        INSPECT_VIDEO_FRAME,
-        LIST_LOCAL_VIDEOS,
-        LIST_VIDEOS,
-        REMIX_VIDEO,
-    )
+    from .descriptions import INSPECT_VIDEO_FRAME, LIST_LOCAL_VIDEOS
     from .tools import inspect as inspect_video_tools
     from .tools import video
 
@@ -193,46 +199,6 @@ if check_video_available():
     ) -> list[Image | str]:
         return await inspect_video_tools.inspect_video_frame(filename, frames, timestamps, max_dimension)
 
-    @mcp.tool(description=CREATE_VIDEO, annotations=WRITE_OPEN)
-    @_llm_facing
-    async def create_video(
-        prompt: str,
-        model: VideoModel = "sora-2",
-        seconds: VideoSeconds | None = None,
-        size: VideoSize | None = None,
-        input_reference_filename: str | None = None,
-    ):
-        return await video.create_video(prompt, model, seconds, size, input_reference_filename)
-
-    @mcp.tool(description=GET_VIDEO_STATUS, annotations=READ_ONLY_OPEN)
-    @_llm_facing
-    async def get_video_status(video_id: str):
-        return await video.get_video_status(video_id)
-
-    @mcp.tool(description=DOWNLOAD_VIDEO, annotations=WRITE_OPEN_IDEMPOTENT)
-    @_llm_facing
-    async def download_video(
-        video_id: str,
-        filename: str | None = None,
-        variant: Literal["video", "thumbnail", "spritesheet"] = "video",
-    ):
-        return await video.download_video(video_id, filename, variant)
-
-    @mcp.tool(description=LIST_VIDEOS, annotations=READ_ONLY_OPEN)
-    @_llm_facing
-    async def list_videos(limit: int = 20, after: str | None = None, order: Literal["asc", "desc"] = "desc"):
-        return await video.list_videos(limit, after, order)
-
-    @mcp.tool(description=DELETE_VIDEO, annotations=DESTRUCTIVE_OPEN)
-    @_llm_facing
-    async def delete_video(video_id: str):
-        return await video.delete_video(video_id)
-
-    @mcp.tool(description=REMIX_VIDEO, annotations=WRITE_OPEN)
-    @_llm_facing
-    async def remix_video(previous_video_id: str, prompt: str):
-        return await video.remix_video(previous_video_id, prompt)
-
     @mcp.tool(description=LIST_LOCAL_VIDEOS, annotations=READ_ONLY_CLOSED)
     @_llm_facing
     async def list_local_videos(
@@ -244,7 +210,100 @@ if check_video_available():
     ):
         return await video.list_local_videos(pattern, file_type, sort_by, order, limit)
 
-    logger.info("Video tools registered (7 tools)")
+    logger.info("Local video tools registered (2 tools)")
+
+if check_video_generation_available():
+    from .descriptions import (
+        CANCEL_VIDEO,
+        CREATE_VIDEO,
+        DOWNLOAD_VIDEO,
+        EDIT_VIDEO,
+        EXTEND_VIDEO,
+        GET_VIDEO_STATUS,
+    )
+    from .tools import video
+    from .video_models import DEFAULT_VIDEO_MODEL, AspectRatio, Resolution
+
+    @mcp.tool(description=CREATE_VIDEO, annotations=WRITE_OPEN)
+    @_llm_facing
+    async def create_video(
+        prompt: str,
+        model: str = DEFAULT_VIDEO_MODEL,
+        duration: int | None = None,
+        aspect_ratio: AspectRatio | None = None,
+        resolution: Resolution | None = None,
+        audio: bool | None = None,
+        reference_image: str | None = None,
+        end_image: str | None = None,
+        extra: dict[str, object] | None = None,
+        max_cost_usd: float | None = None,
+        dry_run: bool = False,
+    ):
+        return await video.create_video(
+            prompt,
+            model,
+            duration,
+            aspect_ratio,
+            resolution,
+            audio,
+            reference_image,
+            end_image,
+            extra,
+            max_cost_usd,
+            dry_run,
+        )
+
+    @mcp.tool(description=EDIT_VIDEO, annotations=WRITE_OPEN)
+    @_llm_facing
+    async def edit_video(
+        prompt: str,
+        source_video: str,
+        model: str = DEFAULT_VIDEO_MODEL,
+        resolution: Resolution | None = None,
+        audio: bool | None = None,
+        reference_images: list[str] | None = None,
+        extra: dict[str, object] | None = None,
+        max_cost_usd: float | None = None,
+        dry_run: bool = False,
+    ):
+        return await video.edit_video(
+            prompt, source_video, model, resolution, audio, reference_images, extra, max_cost_usd, dry_run
+        )
+
+    @mcp.tool(description=EXTEND_VIDEO, annotations=WRITE_OPEN)
+    @_llm_facing
+    async def extend_video(
+        prompt: str,
+        source_video: str,
+        duration: int | None = None,
+        model: str = DEFAULT_VIDEO_MODEL,
+        resolution: Resolution | None = None,
+        audio: bool | None = None,
+        reference_images: list[str] | None = None,
+        extra: dict[str, object] | None = None,
+        max_cost_usd: float | None = None,
+        dry_run: bool = False,
+    ):
+        return await video.extend_video(
+            prompt, source_video, duration, model, resolution, audio, reference_images, extra, max_cost_usd, dry_run
+        )
+
+    @mcp.tool(description=GET_VIDEO_STATUS, annotations=READ_ONLY_OPEN)
+    @_llm_facing
+    async def get_video_status(video_id: str):
+        return await video.get_video_status(video_id)
+
+    @mcp.tool(description=DOWNLOAD_VIDEO, annotations=WRITE_OPEN_IDEMPOTENT)
+    @_llm_facing
+    async def download_video(video_id: str, filename: str | None = None):
+        return await video.download_video(video_id, filename)
+
+    @mcp.tool(description=CANCEL_VIDEO, annotations=DESTRUCTIVE_OPEN)
+    @_llm_facing
+    async def cancel_video(video_id: str):
+        return await video.cancel_video(video_id)
+
+    logger.info("Video generation tools registered (6 tools, Higgsfield)")
 
 
 # ==================== IMAGE TOOLS (CONDITIONAL) ====================
@@ -292,11 +351,12 @@ if check_image_available():
     @_llm_facing
     async def prepare_reference_image(
         input_filename: str,
-        target_size: VideoSize,
+        aspect_ratio: ReferenceAspectRatio | None = None,
+        size: str | None = None,
         output_filename: str | None = None,
         resize_mode: Literal["crop", "pad", "rescale"] = "crop",
     ):
-        return await reference.prepare_reference_image(input_filename, target_size, output_filename, resize_mode)
+        return await reference.prepare_reference_image(input_filename, aspect_ratio, size, output_filename, resize_mode)
 
     @mcp.tool(description=CREATE_IMAGE, annotations=WRITE_OPEN)
     @_llm_facing
@@ -528,7 +588,7 @@ if check_audio_available():
 # ==================== JOB WAITING (CONDITIONAL) ====================
 # One blocking call in place of a model-driven poll loop over get_*_status.
 # Registered whenever there is a job-producing tool to wait on.
-if check_video_available() or check_image_available():
+if check_video_generation_available() or check_image_available():
     from .descriptions import WAIT_FOR
     from .tools import wait as wait_tools
 
@@ -961,7 +1021,7 @@ def run_server(transport: Literal["stdio", "http"] = "stdio", host: str = "127.0
     """Start the MCP server on the given transport.
 
     Tools are registered conditionally based on installed optional dependencies:
-    - video: Sora video generation (no extra deps, always available)
+    - video: Higgsfield video generation (no extra deps; needs HF_KEY)
     - audio: Whisper transcription, GPT-4o audio, TTS (requires pydub, ffmpeg-python)
     - image: GPT Vision image generation and reference management (requires pillow)
 

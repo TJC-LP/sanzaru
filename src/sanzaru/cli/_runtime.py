@@ -16,7 +16,7 @@ import sys
 import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
-from typing import ParamSpec, TypeVar
+from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 import anyio
 import click
@@ -24,6 +24,9 @@ import click
 if sys.version_info < (3, 11):  # pragma: no cover - 3.11+ has it as a builtin
     # anyio already requires this backport below 3.11, so it is always present.
     from exceptiongroup import BaseExceptionGroup
+
+if TYPE_CHECKING:
+    from ..higgsfield.errors import HiggsfieldAPIError
 
 from ._output import (
     EXIT_CONFIG,
@@ -117,6 +120,7 @@ def _classify(exc: Exception) -> CLIError:
     from openai import APIConnectionError, APIStatusError
 
     from ..exceptions import RealtimeError, TTSError
+    from ..higgsfield.errors import CostCapExceededError, HiggsfieldAPIError
     from ..polling import WaitTimeoutError
 
     exc = unwrap_exception(exc)
@@ -138,6 +142,16 @@ def _classify(exc: Exception) -> CLIError:
         return CLIError(error_type, exc.message, extra={"status_code": exc.status_code})
     if isinstance(exc, APIConnectionError):
         return CLIError("api_error", str(exc))
+    if isinstance(exc, CostCapExceededError):
+        # Nothing was uploaded or submitted; the fix is in the request.
+        return CLIError(
+            "over_budget",
+            str(exc),
+            exit_code=EXIT_USAGE,
+            extra={"estimate_usd": exc.estimate_usd, "limit_usd": exc.limit_usd, "basis": exc.basis},
+        )
+    if isinstance(exc, HiggsfieldAPIError):
+        return _classify_higgsfield(exc)
     if isinstance(exc, (RuntimeError, ImportError)):
         # get_client/get_path raise RuntimeError for missing env; command
         # modules raise ImportError for missing optional extras.
@@ -154,6 +168,37 @@ def _classify(exc: Exception) -> CLIError:
             causes += f"; (+{extra_count} more)"
         return CLIError("internal", f"{len(exc.exceptions)} parallel tasks failed - {causes}")
     return CLIError("internal", f"{type(exc).__name__}: {exc}")
+
+
+def _classify_higgsfield(exc: HiggsfieldAPIError) -> CLIError:
+    """Higgsfield answers by status code and `kind`, not by conventional HTTP codes."""
+    if exc.kind == "concurrency":
+        # A rejected submit created nothing: resubmitting later is safe.
+        return CLIError("concurrency_limit", str(exc), extra={"retryable": True})
+    if exc.kind == "ambiguous_submit":
+        return CLIError("api_error", str(exc), extra={"maybe_submitted": True})
+    status = exc.status_code
+    if status == 401:
+        return CLIError("config", f"HF_KEY rejected by Higgsfield (401): {exc.detail}", exit_code=EXIT_CONFIG)
+    if status == 403:
+        return CLIError(
+            "insufficient_credits",
+            f"Higgsfield API balance is too low: {exc.detail}. The API draws on its own balance, separate "
+            "from a Higgsfield app subscription — top it up in the API console (console.higgsfield.ai).",
+            extra={"status_code": status},
+        )
+    if status == 404:
+        return CLIError("not_found", str(exc), extra={"status_code": status})
+    if status in (400, 422):
+        return CLIError(
+            "usage",
+            f"Higgsfield rejected the arguments: {exc.detail}",
+            exit_code=EXIT_USAGE,
+            extra={"status_code": status},
+        )
+    if status in (423, 503):
+        return CLIError("model_unavailable", str(exc), extra={"status_code": status})
+    return CLIError("api_error", str(exc), extra={"status_code": status})
 
 
 def run_async(command: str) -> Callable[[Callable[P, Coroutine[None, None, int]]], Callable[P, None]]:
@@ -201,9 +246,11 @@ def run_async(command: str) -> Callable[[Callable[P, Coroutine[None, None, int]]
                     # The ElevenLabs client is built lazily on first use rather
                     # than installed here, so this is a no-op (and costs no
                     # import) for every command that never touched it.
-                    from ..config import close_elevenlabs_client
+                    from ..config import close_elevenlabs_client, close_higgsfield_client
 
                     await close_elevenlabs_client()
+                    # Same lazy pattern: only built when a video command used it.
+                    await close_higgsfield_client()
                     from ..storage import set_storage_backend
 
                     set_storage_backend(None)

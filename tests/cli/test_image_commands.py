@@ -5,7 +5,6 @@ import json
 
 import pytest
 from click.testing import CliRunner
-from openai.types import Video
 
 from sanzaru.cli import cli
 from sanzaru.types import ImageGenerateResult
@@ -15,17 +14,18 @@ def _image_response(status: str = "queued", response_id: str = "resp_test1"):
     return {"id": response_id, "status": status, "created_at": 1234567890.0}
 
 
-def _video(status: str = "completed", video_id: str = "video_a") -> Video:
-    return Video(
-        id=video_id,
-        created_at=1,
-        model="sora-2",
-        object="video",
-        progress=100,
-        seconds="8",
-        size="1280x720",
-        status=status,  # type: ignore[arg-type]
-    )
+HF_A = "hf_11111111-1111-4111-8111-111111111111"
+
+
+def _video(status: str = "completed", video_id: str = HF_A) -> dict:
+    """A Higgsfield VideoStatus, as tools.video.get_video_status returns it."""
+    return {
+        "id": video_id,
+        "status": status,
+        "done": status in ("completed", "failed", "nsfw", "canceled"),
+        "error": None,
+        "video_url": "https://cdn.example/out.mp4" if status == "completed" else None,
+    }
 
 
 @pytest.mark.integration
@@ -226,6 +226,53 @@ def test_image_prepare_renders_tuple_sizes(mocker, tmp_path):
 
 
 @pytest.mark.integration
+def test_image_prepare_by_aspect_ratio(mocker, tmp_path):
+    src = tmp_path / "hero.png"
+    src.write_bytes(b"x")
+    prepare = mocker.patch(
+        "sanzaru.tools.reference.prepare_reference_image",
+        mocker.AsyncMock(
+            return_value={
+                "output_filename": "hero_720x1280.png",
+                "original_size": (1024, 1024),
+                "target_size": (720, 1280),
+                "resize_mode": "crop",
+            }
+        ),
+    )
+
+    result = CliRunner().invoke(cli, ["image", "prepare", str(src), "--aspect-ratio", "9:16"])
+
+    assert result.exit_code == 0, result.stderr
+    assert prepare.call_args.kwargs["aspect_ratio"] == "9:16"
+    assert prepare.call_args.kwargs["size"] is None
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("args", [[], ["--aspect-ratio", "16:9", "--size", "1280x720"]])
+def test_image_prepare_needs_exactly_one_target(mocker, tmp_path, args):
+    src = tmp_path / "hero.png"
+    src.write_bytes(b"x")
+    prepare = mocker.patch("sanzaru.tools.reference.prepare_reference_image", mocker.AsyncMock())
+
+    result = CliRunner().invoke(cli, ["image", "prepare", str(src), *args])
+
+    assert result.exit_code == 2
+    assert "exactly one" in result.stdout
+    prepare.assert_not_called()
+
+
+@pytest.mark.integration
+def test_image_prepare_rejects_unknown_aspect(tmp_path):
+    src = tmp_path / "hero.png"
+    src.write_bytes(b"x")
+
+    result = CliRunner().invoke(cli, ["image", "prepare", str(src), "--aspect-ratio", "5:4"])
+
+    assert result.exit_code == 2
+
+
+@pytest.mark.integration
 def test_image_prepare_reports_the_final_name_across_dirs(mocker, tmp_path):
     """#54 on the image side: the input pins the reference dir, so `-o` into a
     different one makes plan_output stage under a sanzaru_tmp_* name. The
@@ -234,7 +281,7 @@ def test_image_prepare_reports_the_final_name_across_dirs(mocker, tmp_path):
     in_dir.mkdir()
     (in_dir / "hero.png").write_bytes(b"x")
 
-    async def fake_prepare(input_filename, target_size, output_filename, resize_mode):
+    async def fake_prepare(input_filename, aspect_ratio, size, output_filename, resize_mode):
         (in_dir / output_filename).write_bytes(b"prepared")
         return {
             "output_filename": output_filename,
@@ -269,12 +316,24 @@ def test_top_level_wait_dispatches_mixed_types(mocker):
         mocker.AsyncMock(return_value=_image_response("completed", "resp_b")),
     )
 
-    result = CliRunner().invoke(cli, ["wait", "video_a", "resp_b"])
+    result = CliRunner().invoke(cli, ["wait", HF_A, "resp_b"])
 
     assert result.exit_code == 0, result.stderr
     lines = [json.loads(line) for line in result.stdout.strip().splitlines()]
     ids = {line["result"]["id"] for line in lines}
-    assert ids == {"video_a", "resp_b"}
+    assert ids == {HF_A, "resp_b"}
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("argv", [["wait", "video_abc"], ["wait", "--type", "video", "video_abc"]])
+def test_top_level_wait_explains_a_sora_id(argv):
+    """A Sora id is not waitable under any --type: say why, don't 404."""
+    result = CliRunner().invoke(cli, argv)
+
+    assert result.exit_code == 2
+    parsed = json.loads(result.stdout)
+    assert parsed["error"]["type"] == "usage"
+    assert "retired the Videos API" in parsed["error"]["message"]
 
 
 @pytest.mark.integration
@@ -298,8 +357,11 @@ def test_capabilities_reports_structure():
     assert all("available" in entry for entry in payload["features"].values())
     assert set(payload["paths_configured"]) == {"video", "reference", "audio"}
     assert isinstance(payload["api_key_present"], bool)
-    assert "create" in payload["commands"]["video"]
+    assert {"create", "edit", "extend", "cancel", "models"} <= set(payload["commands"]["video"])
     assert "generate" in payload["commands"]["image"]
+    assert payload["features"]["video"]["generation"]["provider"] == "higgsfield"
+    assert set(payload["video_providers"]) == {"higgsfield"}
+    assert isinstance(payload["higgsfield_key_present"], bool)
     assert payload["commands"]["capabilities"] == []
 
 

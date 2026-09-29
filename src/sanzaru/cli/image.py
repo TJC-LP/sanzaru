@@ -62,7 +62,7 @@ _GENERATE_SIZES = [
 _QUALITIES = ["auto", "low", "medium", "high", "xhigh", "max"]  # xhigh/max: gpt-image-2.5 only
 _BACKGROUNDS = ["auto", "transparent", "opaque"]
 _FORMATS = ["png", "jpeg", "webp"]
-_VIDEO_SIZES = ["720x1280", "1280x720", "1024x1792", "1792x1024"]
+_ASPECT_RATIOS = ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"]
 
 GenerateSize = Literal[
     "auto",
@@ -583,16 +583,31 @@ async def image_edit(
 
 @image.command("prepare")
 @click.argument("input_image")
-@click.option("--size", type=click.Choice(_VIDEO_SIZES), required=True, help="Target Sora dimensions.")
+@click.option(
+    "--aspect-ratio",
+    type=click.Choice(_ASPECT_RATIOS),
+    default=None,
+    help="Target frame shape, sized to the 720p frame (16:9 -> 1280x720).",
+)
+@click.option("--size", default=None, help="Exact target WIDTHxHEIGHT instead (each edge 64-4096).")
 @click.option("--mode", type=click.Choice(["crop", "pad", "rescale"]), default="crop", show_default=True)
 @click.option("-o", "--output", default=None, help="Output file or directory (default: alongside input).")
 @click.pass_context
 @run_async("image.prepare")
-async def image_prepare(ctx: click.Context, input_image: str, size: str, mode: str, output: str | None) -> int:
-    """Resize an image to Sora dimensions (crop preserves ratio; pad letterboxes)."""
-    from openai.types import VideoSize
+async def image_prepare(
+    ctx: click.Context, input_image: str, aspect_ratio: str | None, size: str | None, mode: str, output: str | None
+) -> int:
+    """Reshape an image to an aspect ratio or exact size (crop keeps the ratio; pad letterboxes).
 
+    Image-to-video framing follows the start image, so this is how you choose the
+    video's shape before `sanzaru video create --image`. Pass exactly one of
+    --aspect-ratio or --size.
+    """
     from ..tools import reference as reference_tools
+    from ..video_models import AspectRatio
+
+    if (aspect_ratio is None) == (size is None):
+        raise CLIError("usage", "pass exactly one of --aspect-ratio or --size", exit_code=EXIT_USAGE)
 
     state = get_state(ctx)
     session = PathSession()
@@ -602,7 +617,8 @@ async def image_prepare(ctx: click.Context, input_image: str, size: str, mode: s
 
     result = await reference_tools.prepare_reference_image(
         input_filename=input_name,
-        target_size=cast(VideoSize, size),
+        aspect_ratio=cast("AspectRatio | None", aspect_ratio),
+        size=size,
         output_filename=plan.filename,
         resize_mode=cast(Literal["crop", "pad", "rescale"], mode),
     )

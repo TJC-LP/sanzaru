@@ -1,5 +1,7 @@
 # Open Source Release Specification
 
+> **Historical (Sora era, before 0.13.0).** OpenAI removed the Sora Videos API on 2026-09-24; sanzaru now generates video through Higgsfield. Video details below describe the old Sora integration.
+
 ## Overview
 
 Production-ready open source release for sanzaru with automated CI/CD, PyPI publishing, dependency security scanning, and quality assurance.

@@ -12,19 +12,24 @@ from ._io import OutputPlan, PathSession, install_overrides, plan_output
 from ._output import EXIT_USAGE, aggregate_exit_code, emit, emit_line, success_envelope
 from ._runtime import CLIError, get_state, parse_duration, run_async
 
-DEFAULT_TIMEOUT_S = 1800.0  # generous cross-type default (Sora pace)
+DEFAULT_TIMEOUT_S = 1800.0  # generous cross-type default (a long Seedance render)
 
 
 def _job_kind(job_id: str, forced: str) -> str:
+    from ..higgsfield.ids import JOB_PREFIX, SORA_RETIRED
+
+    if job_id.startswith("video_"):
+        # A Sora id: no --type makes it waitable again, so say why up front.
+        raise CLIError("usage", SORA_RETIRED, exit_code=EXIT_USAGE)
     if forced != "auto":
         return forced
-    if job_id.startswith("video_"):
+    if job_id.startswith(JOB_PREFIX):
         return "video"
     if job_id.startswith("resp_"):
         return "image"
     raise CLIError(
         "usage",
-        f"cannot infer job type from id {job_id!r} (expected video_* or resp_*); pass --type video|image",
+        f"cannot infer job type from id {job_id!r} (expected hf_* or resp_*); pass --type video|image",
         exit_code=EXIT_USAGE,
     )
 
@@ -33,7 +38,6 @@ def _job_kind(job_id: str, forced: str) -> str:
 @click.argument("job_ids", nargs=-1, required=True)
 @click.option("--type", "forced_type", type=click.Choice(["auto", "video", "image"]), default="auto", show_default=True)
 @click.option("--download", "download_flag", is_flag=True, help="Download each artifact as it completes.")
-@click.option("--variant", type=click.Choice(["video", "thumbnail", "spritesheet"]), default="video", show_default=True)
 @click.option("-o", "--output", default=None, help="Output file (single id) or directory.")
 @click.option("--timeout", "timeout_arg", default=None, help="Deadline across all ids (default 30m).")
 @click.option("--poll-interval", "poll_arg", default=None, help="Fixed poll interval; default adapts per type.")
@@ -44,14 +48,13 @@ async def wait_command(
     job_ids: tuple[str, ...],
     forced_type: str,
     download_flag: bool,
-    variant: str,
     output: str | None,
     timeout_arg: str | None,
     poll_arg: str | None,
 ) -> int:
-    """Poll mixed job(s) to a terminal state — video_* and resp_* ids in one call.
+    """Poll mixed job(s) to a terminal state — hf_* and resp_* ids in one call.
 
-    Type is inferred from the id prefix (video_* → video, resp_* → image);
+    Type is inferred from the id prefix (hf_* → Higgsfield video, resp_* → image);
     one JSONL envelope per job in completion order. Idempotent and resumable.
     One lightweight poll loop per id (a few requests/minute each) — dozens of
     ids in one call are fine.
@@ -95,7 +98,6 @@ async def wait_command(
                 session=session,
                 plan=video_plan,
                 download=download_flag,
-                variant=variant,
                 output=output,
                 timeout=DEFAULT_TIMEOUT_S if timeout is None else timeout,
                 interval=interval,
@@ -173,7 +175,12 @@ async def capabilities(quota: bool) -> int:
     from importlib.metadata import PackageNotFoundError, version
 
     from ..config import is_path_configured
-    from ..features import get_available_features, get_tts_providers
+    from ..features import (
+        check_higgsfield_available,
+        get_available_features,
+        get_tts_providers,
+        get_video_providers,
+    )
     from . import cli
 
     try:
@@ -192,6 +199,18 @@ async def capabilities(quota: bool) -> int:
                 entry["reason"] = f"optional dependencies missing (install sanzaru[{name}])"
         features[name] = entry
 
+    video_entry = features.get("video")
+    if isinstance(video_entry, dict):
+        generation: dict[str, object] = {
+            "provider": "higgsfield",
+            "available": bool(video_entry.get("available")) and check_higgsfield_available(),
+        }
+        if not check_higgsfield_available():
+            generation["reason"] = "HF_KEY not set (key_id:key_secret from the Higgsfield API console)"
+        elif not video_entry.get("available"):
+            generation["reason"] = "video media path not configured"
+        video_entry["generation"] = generation
+
     paths = {
         path_type: is_path_configured(path_type)  # type: ignore[arg-type]
         for path_type in ("video", "reference", "audio")
@@ -208,9 +227,11 @@ async def capabilities(quota: bool) -> int:
         "version": pkg_version,
         "features": features,
         "tts_providers": get_tts_providers(),
+        "video_providers": get_video_providers(),
         "paths_configured": paths,
         "storage_backend": os.getenv("STORAGE_BACKEND", "local"),
         "api_key_present": bool(os.getenv("OPENAI_API_KEY")),
+        "higgsfield_key_present": check_higgsfield_available(),
         "commands": commands,
     }
     if quota:

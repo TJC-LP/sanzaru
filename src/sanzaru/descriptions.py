@@ -11,7 +11,7 @@ to understand how to use each tool effectively.
 # it picks a tool. Kept short on purpose: clients may truncate long instructions,
 # and anything tool-specific belongs in that tool's own description.
 
-SERVER_INSTRUCTIONS = """Sanzaru generates and inspects media: video (Sora), images, speech, and podcasts.
+SERVER_INSTRUCTIONS = """Sanzaru generates and inspects media: video (Higgsfield), images, speech, and podcasts.
 
 Podcasts: use `generate_podcast` — for a script, or for just a topic (write the script
 yourself, then render it). Prefer ElevenLabs speakers on eleven_v4 with
@@ -23,8 +23,11 @@ conversation, and always `dry_run` first with `max_cost_usd` set.
 Images: `generate_image` for a single image (synchronous — one call, finished file).
 `create_image` starts a background job: use it for several images at once or refinement
 chains (previous_response_id), then collect every id with one `wait_for` call.
-Video: `create_video`, then `wait_for([id], download=true)`. Never loop on the
-get_*_status tools. With a reference image, prompt only the motion, not what it shows.
+Video (Higgsfield; default Seedance 2.5): `create_video`, `edit_video` or `extend_video`,
+then `wait_for([id], download=true)`. Every job is priced before submit and returns its
+cost; set `max_cost_usd` above a few dollars and use `dry_run` to price for free.
+Edit/extend bill the source clip too. With a reference image, prompt only the motion.
+Never loop on the get_*_status tools.
 
 Check your own output before presenting it: `inspect_image` and `inspect_video_frame`
 show you what was rendered. Present finished media with `view_media`."""
@@ -32,103 +35,122 @@ show you what was rendered. Present finished media with `view_media`."""
 
 # ==================== VIDEO TOOL DESCRIPTIONS ====================
 
-CREATE_VIDEO = """Create a new Sora video generation job. This starts an async job and returns immediately with a video_id.
+CREATE_VIDEO = """Start a video generation job on Higgsfield and return its id (hf_…) at once.
 
-The video is NOT ready immediately. Next, call wait_for([video_id], download=true): one call
-that waits server-side and saves the finished video — no polling loop. It returns at its
-deadline with the last-seen status if the video is still rendering; call it again to keep
-waiting. Status goes 'queued' -> 'in_progress' -> 'completed' or 'failed'.
+Text-to-video from a prompt, or image-to-video when reference_image is given. The job
+renders in the background: next, call wait_for([id], download=true) — one call that
+waits server-side and saves the finished file. Never loop on get_video_status.
 
-Parameters:
-- prompt: Text description of the video to generate (required)
-- model: "sora-2" (faster, cheaper) or "sora-2-pro" (higher quality). Default: "sora-2"
-- seconds: Duration as string "4", "8", or "12" (NOT an integer). Default: varies by model
-- size: Resolution as "720x1280" (portrait), "1280x720" (landscape), "1024x1792", or "1792x1024". Default: "720x1280"
-- input_reference_filename: Filename of reference image in IMAGE_PATH (e.g., "cat.png"). Use list_reference_images to find available images. Image must match target size. Supported: JPEG, PNG, WEBP. Optional.
+**Models** (model=; default "seedance-2.5"):
+- seedance-2.5: best quality, 4-30 s, 480p|720p, native audio, 6 aspect ratios; also
+  powers edit_video / extend_video. ~$0.46 per second at 720p, ~$0.21/s at 480p.
+- kling-3.0-std | kling-3.0-pro | kling-3.0-4k: 3-15 s, 16:9|9:16|1:1, native audio,
+  start + end frame. ~$0.35 / $0.46 / $1.16 for 5 s. Resolution is set by the tier.
+- kling-3.0-turbo: fastest, ~$0.31 for 5 s; no end frame or audio switch.
+- Any other Higgsfield catalog model by its full id ("vendor/model/operation"); common
+  arguments are mapped best-effort and extra= carries model-specific ones.
 
-Returns Video object with fields: id, status, progress, model, seconds, size."""
+**Cost.** Every job is priced before it is submitted and the price comes back in
+`cost`. Pass max_cost_usd to refuse anything over budget (nothing is uploaded or
+charged), and dry_run=true to validate and price without submitting. Seedance at
+720p for 10 s is about $4.60 — use 480p or a shorter clip for drafts.
 
-GET_VIDEO_STATUS = """Check the status and progress of a video generation job.
-
-A one-off check of a single video. To wait for completion, use wait_for instead of calling
-this repeatedly: it waits server-side, reports progress, and can download in the same call.
-
-The returned Video object contains:
-- status: "queued" | "in_progress" | "completed" | "failed"
-- progress: Integer 0-100 showing completion percentage
-- id: The video_id for use with other tools
-- Other metadata: model, seconds, size, created_at, etc.
-
-Typical workflow:
-1. Create video with create_video() -> get video_id
-2. wait_for([video_id], download=true) -> waits and saves the video in one call"""
-
-DOWNLOAD_VIDEO = """Download a completed video to disk.
-
-IMPORTANT: Only for a video that has completed; otherwise this fails. Usually unnecessary:
-wait_for(..., download=true) already saves the video. Use this for a thumbnail or
-spritesheet variant, a custom filename, or a video finished in an earlier call.
-
-The video is automatically saved to the directory configured in VIDEO_PATH.
-Returns the filename of the downloaded file.
+**With a reference image**, the image already fixes the subject, framing and style:
+prompt ONLY the motion and camera ("she turns and smiles; slow push-in"). Framing
+follows the image (aspect_ratio is refused) — crop it first with
+prepare_reference_image(aspect_ratio=...) to choose the shape.
 
 Parameters:
-- video_id: The ID from create_video or remix_video (required)
-- filename: Custom filename (optional, defaults to video_id with appropriate extension)
-- variant: What to download (default: "video")
-  * "video" -> MP4 video file
-  * "thumbnail" -> WEBP thumbnail image
-  * "spritesheet" -> JPG spritesheet of frames
+- prompt: What happens (required; motion-only with a reference image)
+- model: See above. Default "seedance-2.5"
+- duration: Seconds, within the model's range. Default: the model's (5)
+- aspect_ratio: Text-to-video only. "16:9", "4:3", "1:1", "3:4", "9:16", "21:9"
+- resolution: "480p" | "720p" where the model offers a choice
+- audio: Generate a soundtrack. Default: the model's (on)
+- reference_image: Start frame — a file from list_reference_images, or the hf_… id of
+  a completed job
+- end_image: Optional last frame (needs reference_image)
+- extra: Model-specific parameters, e.g. {"bitrate_mode": "standard"} for Seedance,
+  {"cfg_scale": 0.7} for Kling
+- max_cost_usd: Refuse if the estimate is higher (recommended above a few dollars)
+- dry_run: Price and validate only
 
-Typical workflow:
-1. Create: create_video() -> video_id
-2. Wait: wait_for([video_id]) until completed
-3. Download: download_video(video_id, filename="my_video.mp4") -> returns filename
+Returns: id (hf_…, None for a dry run), status, model, slug, operation, cost
+{usd, credits, basis, usd_after_discount, ...}, arguments."""
 
-Returns DownloadResult with: filename, variant"""
+EDIT_VIDEO = """Re-render an existing video per a prompt (Seedance 2.5): restyle it, change the
+scene or a subject, while keeping its motion, length and framing. Returns an hf_… id;
+then wait_for([id], download=true).
 
-LIST_VIDEOS = """List all video jobs in your OpenAI account with pagination support.
-
-Returns a paginated list of all videos (completed, in-progress, failed, etc.).
-Each video summary includes: id, status, progress, created_at, model, seconds, size.
-
-Parameters:
-- limit: Max number of videos to return (default: 20, max: 100)
-- after: For pagination, pass the 'last' id from previous response (optional)
-- order: "desc" for newest first (default) or "asc" for oldest first
-
-Returns:
-- data: Array of video summaries
-- has_more: Boolean indicating if more results exist
-- last: The ID of the last video (use this as 'after' for next page)
-
-Pagination example:
-1. page1 = list_videos(limit=20) -> get page1.last
-2. page2 = list_videos(limit=20, after=page1.last)
-3. Continue until has_more=false"""
-
-DELETE_VIDEO = """Permanently delete a video from OpenAI's cloud storage.
-
-WARNING: This is permanent and cannot be undone! The video will be deleted from OpenAI's servers.
-This does NOT delete any local files you may have downloaded with download_video.
-
-Use this to:
-- Clean up test videos
-- Remove unwanted content
-- Free up storage quota
+**The source is billed as well as the output**, so an edit costs about twice the
+source's length at Seedance's video-input rate (~$0.28 per billed second at 720p —
+a 5 s clip ≈ $2.77). Pass max_cost_usd, or dry_run=true to see the price first.
 
 Parameters:
-- video_id: The ID of the video to delete (required)
+- prompt: The change to make (required)
+- source_video: An MP4 from list_local_videos, or the hf_… id of a completed job
+  (reuses its output directly — no download needed)
+- model: Default "seedance-2.5" (the only curated model with edit)
+- resolution: "480p" | "720p"
+- audio: Regenerate the soundtrack. Default on
+- reference_images: Images from list_reference_images to guide the edit
+- extra: e.g. {"bitrate_mode": "standard"}
+- max_cost_usd, dry_run: as in create_video"""
 
-Returns confirmation with the deleted video_id and deleted=true."""
+EXTEND_VIDEO = """Continue an existing video by `duration` seconds (Seedance 2.5). Returns an hf_…
+id; then wait_for([id], download=true).
+
+**The source is billed as well as the new footage** (~$0.28 per billed second at
+720p at the video-input rate): extending a 5 s clip by 5 s bills 10 s ≈ $2.77.
+Pass max_cost_usd, or dry_run=true to see the price first.
+
+Parameters:
+- prompt: What happens next (required)
+- source_video: An MP4 from list_local_videos, or the hf_… id of a completed job
+- duration: Seconds to add, 4-30. Default 5
+- model: Default "seedance-2.5"
+- resolution: "480p" | "720p"
+- audio: Default on
+- reference_images: Images to guide the continuation
+- extra, max_cost_usd, dry_run: as in create_video"""
+
+GET_VIDEO_STATUS = """One status check of a video job (hf_…).
+
+A one-off look. To wait for completion use wait_for([id], download=true) instead of
+calling this repeatedly — it waits server-side and saves the file in the same call.
+
+Returns: id, status ("queued" | "in_progress" | "completed" | "failed" | "nsfw" |
+"canceled"), done, error, video_url (Higgsfield keeps outputs about 7 days)."""
+
+DOWNLOAD_VIDEO = """Save a completed video job's output into the video directory.
+
+Usually unnecessary: wait_for(..., download=true) already saves it. Use this for a
+custom filename or a job that finished in an earlier call. Higgsfield keeps outputs
+for about 7 days, so download anything worth keeping.
+
+Parameters:
+- video_id: The hf_… id (required)
+- filename: Optional name (defaults to <id>.mp4)
+
+Returns: filename, format. Then view_media(media_type="video", filename=...)."""
+
+CANCEL_VIDEO = """Cancel a video job that is still queued; the cost is refunded.
+
+A job that has started rendering cannot be canceled (the call errors and the job
+continues). Higgsfield usually starts a job within seconds (measured 2026-09-28: a
+Kling Turbo job was in_progress ~2 s after submit), so cancel mostly helps when its
+queue is backed up — check the price with dry_run *before* submitting instead.
+
+Parameters:
+- video_id: The hf_… id (required)"""
 
 LIST_LOCAL_VIDEOS = """List locally downloaded video files with filtering and sorting.
 
-Use this to discover what video files have been downloaded to the VIDEO_PATH directory.
-These are videos previously downloaded with download_video.
+Use this to discover what video files are in the video directory — videos saved by
+wait_for(download=true) / download_video, or placed there by other means.
 
 Parameters:
-- pattern: Glob pattern to filter filenames (e.g., "sora*.mp4", "*.webm"). Default: all files
+- pattern: Glob pattern to filter filenames (e.g., "hf_*.mp4", "*.webm"). Default: all files
 - file_type: Filter by type: "mp4", "webm", "mov", or "all". Default: "all"
 - sort_by: Sort results by "name", "size", or "modified". Default: "modified"
 - order: "desc" for newest/largest/Z-A first, "asc" for oldest/smallest/A-Z. Default: "desc"
@@ -140,37 +162,16 @@ Example workflow:
 1. list_local_videos(file_type="mp4") -> find downloaded MP4 videos
 2. view_media(media_type="video", filename="my_video.mp4") -> watch it"""
 
-REMIX_VIDEO = """Create a NEW video by remixing an existing completed video with a different prompt.
-
-This creates a brand new video generation job (with a new video_id) based on an existing video.
-The original video must have status='completed' for remix to work.
-
-Like create_video, this returns immediately with a new video_id - the remix is NOT instant.
-Wait on the NEW video_id with wait_for (download=true to save it in the same call).
-
-Parameters:
-- previous_video_id: ID of the completed video to use as a base (required)
-- prompt: New text prompt to guide the remix (required)
-
-Returns a NEW Video object with a different video_id, status='queued', progress=0.
-
-Typical workflow:
-1. Create original: create_video("a cat") -> video_id_1
-2. Wait: wait_for([video_id_1])
-3. Remix: remix_video(video_id_1, "a dog") -> video_id_2 (NEW ID!)
-4. Wait and save: wait_for([video_id_2], download=true)"""
-
 
 # ==================== REFERENCE IMAGE TOOL DESCRIPTIONS ====================
 
-LIST_REFERENCE_IMAGES = """Search and list reference images available for video generation.
+LIST_REFERENCE_IMAGES = """Search and list reference images (the IMAGE_PATH directory).
 
-Use this to discover what reference images are available in the IMAGE_PATH directory.
-These images can be used with create_video's input_reference_filename parameter.
-
-The reference image must match your target video size:
-- "720x1280" or "1280x720" videos -> use 720x1280 or 1280x720 images
-- "1024x1792" or "1792x1024" videos -> use 1024x1792 or 1792x1024 images
+Reference images are inputs: the start (and end) frame for
+create_video(reference_image=..., end_image=...), reference images for
+edit_video / extend_video, and input images for create_image / edit_image.
+Any size works — for video, the output framing follows the image, so reshape it
+first with prepare_reference_image(aspect_ratio=...) to choose the frame.
 
 Parameters:
 - pattern: Glob pattern to filter filenames (e.g., "cat*.png", "*.jpg"). Default: all files
@@ -183,29 +184,35 @@ Returns list of ReferenceImage objects with: filename, size_bytes, modified_time
 
 Example workflow:
 1. list_reference_images(pattern="dog*", file_type="png") -> find dog images
-2. Choose "dog_1280x720.png" from results
-3. create_video(prompt="...", size="1280x720", input_reference_filename="dog_1280x720.png")"""
+2. create_video(prompt="the dog shakes off water; slow push-in", reference_image="dog.png")"""
 
-PREPARE_REFERENCE_IMAGE = """Automatically resize a reference image to match Sora's required dimensions.
+PREPARE_REFERENCE_IMAGE = """Reshape a reference image to a target aspect ratio (or exact size) before animating it.
 
-This tool prepares images for use with create_video by resizing them to exact Sora dimensions.
-The original image is preserved; a new resized copy is created.
+Image-to-video takes no aspect ratio: the video's framing follows the start image.
+So this is how you choose the frame shape — crop a square photo to 9:16 for a
+vertical clip, or to 21:9 for a letterbox shot — before
+create_video(reference_image=...). Also useful to make an end_image match the
+start frame's shape. The original is preserved; a new copy is written.
 
 Parameters:
 - input_filename: Source image filename in IMAGE_PATH (required)
-- target_size: Target video size: "720x1280", "1280x720", "1024x1792", or "1792x1024" (required)
+- aspect_ratio: "16:9", "4:3", "1:1", "3:4", "9:16" or "21:9" — sized to the 720p frame
+  (e.g. 16:9 -> 1280x720, 9:16 -> 720x1280)
+- size: Exact "WIDTHxHEIGHT" instead (each edge 64-4096). Pass aspect_ratio OR size
 - output_filename: Custom output filename (optional, defaults to "{original_name}_{width}x{height}.png")
-- resize_mode: How to handle aspect ratio (default: "crop")
-  * "crop": Scale to cover target, center crop excess (no distortion, may lose edges)
-  * "pad": Scale to fit inside target, add black bars (no distortion, preserves full image)
-  * "rescale": Stretch/squash to exact dimensions (may distort, no cropping/padding)
+- resize_mode: How to reach the target shape (default: "crop")
+  * "crop": Scale to cover, center-crop the excess (no distortion; may lose edges)
+  * "pad": Scale to fit, add black bars (no distortion; keeps the whole image)
+  * "rescale": Stretch/squash to the exact shape (may distort)
 
 Returns PrepareResult with: output_filename, original_size, target_size, resize_mode
 
+Check the crop kept the subject with inspect_image before spending a render on it.
+
 Example workflow:
 1. list_reference_images() -> find "photo.jpg"
-2. prepare_reference_image("photo.jpg", "1280x720", resize_mode="crop") -> "photo_1280x720.png"
-3. create_video(prompt="...", size="1280x720", input_reference_filename="photo_1280x720.png")"""
+2. prepare_reference_image("photo.jpg", aspect_ratio="9:16") -> "photo_720x1280.png"
+3. create_video(prompt="...", reference_image="photo_720x1280.png")"""
 
 
 # ==================== IMAGE GENERATION TOOL DESCRIPTIONS ====================
@@ -1245,7 +1252,7 @@ INSPECT_IMAGE = """Look at an image yourself — returns the picture as visual c
 Use it to check your own work: whether a refinement actually changed what you asked
 (create_image chains), whether an edit landed, whether rendered text is correct and
 spelled right, or whether prepare_reference_image cropped the subject out before you
-spend a Sora render on it. Every other image tool answers with a filename and a size;
+spend a video render on it. Every other image tool answers with a filename and a size;
 this one answers with the image.
 
 This is not view_media — that opens a player for the user. This shows you the image.
@@ -1272,7 +1279,7 @@ Typical flow:
   inspect_image("poster.png", region=[400, 200, 1100, 400]) # zoom in to be sure
 """
 
-INSPECT_VIDEO_FRAME = """Look at frames from a video — the only way to check what Sora rendered.
+INSPECT_VIDEO_FRAME = """Look at frames from a video — the only way to check what a render actually shows.
 
 A video job reporting "completed" says nothing about whether the motion you asked
 for happened, whether the subject stayed in frame, or whether the camera moved the
@@ -1297,13 +1304,13 @@ Typical flow:
 
 WAIT_FOR = """Wait for long-running jobs to finish — one call instead of a polling loop.
 
-Give it the ids that create_video / remix_video (video_*) and create_image (resp_*)
-returned, in any mix, and it blocks server-side until every job reaches a terminal
+Give it the ids that create_video / edit_video / extend_video (hf_*) and create_image
+(resp_*) returned, in any mix, and it blocks server-side until every job reaches a terminal
 state or the deadline passes, reporting progress to the client on every poll.
 Prefer this over calling get_video_status / get_image_status repeatedly.
 
 Parameters:
-- ids: 1-20 job ids (video_* or resp_*), waited on concurrently
+- ids: 1-20 job ids (hf_* or resp_*), waited on concurrently
 - timeout: seconds to wait, default 240, max 1800. The deadline RETURNS rather than
   fails: jobs still running come back with timed_out=true and their last status;
   call wait_for again with the same ids to keep waiting
@@ -1313,7 +1320,7 @@ Parameters:
 
 Returns WaitResult:
 - jobs: one entry per id, in input order — id, kind ("video"|"image"), status,
-  done (terminal or errored), timed_out, progress (0-100, video only), error
+  done (terminal or errored), timed_out, progress (always null — neither provider reports one), error
   (a non-retryable API error such as an unknown id — reported per job, never
   failing the batch), download (filename etc. when downloaded)
 - all_done: every job is terminal
@@ -1338,6 +1345,6 @@ Parameters:
   * image files are in the images directory
   * audio files are in the audio directory
 
-Use list_videos, list_reference_images, or list_audio_files to discover available files.
+Use list_local_videos, list_reference_images, or list_audio_files to discover available files.
 
 Returns metadata: filename, media_type, size_bytes, mime_type"""

@@ -4,37 +4,64 @@
 This module handles reference image operations:
 - Listing available reference images
 - Preparing/resizing images for video generation
+
+Higgsfield image-to-video (Seedance 2.5) takes no aspect ratio: the output's
+framing follows the start image. Cropping or padding the reference to a target
+shape is therefore how a caller chooses the frame, and `prepare_reference_image`
+is that step. Frame sizes per aspect ratio come from `higgsfield.pricing.DIMENSIONS`,
+the single table the video pricing also reads.
 """
 
 import pathlib
 from typing import Literal
 
 import anyio
-from openai.types import VideoSize
 from PIL import Image
 
 from ..config import logger
+from ..higgsfield.pricing import DIMENSIONS
 from ..storage import get_storage
 from ..types import PrepareResult, ReferenceImage
+from ..video_models import AspectRatio
 
 # ==================== Helper Functions for Image Processing ====================
 
 
-def parse_video_dimensions(size: VideoSize) -> tuple[int, int]:
-    """Parse VideoSize string to width/height tuple.
+MIN_EDGE = 64
+MAX_EDGE = 4096
 
-    Args:
-        size: VideoSize string like "1280x720"
 
-    Returns:
-        Tuple of (width, height)
+def parse_size(size: str) -> tuple[int, int]:
+    """Parse a "WxH" string to a (width, height) tuple, each edge 64-4096.
 
     Example:
-        >>> parse_video_dimensions("1920x1080")
-        (1920, 1080)
+        >>> parse_size("1280x720")
+        (1280, 720)
+
+    Raises:
+        ValueError: If the string is not "WxH" or an edge is out of range
     """
-    width_str, height_str = size.split("x")
-    return int(width_str), int(height_str)
+    parts = size.lower().split("x") if isinstance(size, str) else []
+    if len(parts) != 2 or not all(part.isdigit() for part in parts):
+        raise ValueError(f"size={size!r:.40} must be WIDTHxHEIGHT, e.g. '1280x720'")
+    width, height = int(parts[0]), int(parts[1])
+    for edge in (width, height):
+        if not MIN_EDGE <= edge <= MAX_EDGE:
+            raise ValueError(f"size={size!r}: each edge must be {MIN_EDGE}-{MAX_EDGE} pixels")
+    return width, height
+
+
+def target_dimensions(aspect_ratio: AspectRatio | None, size: str | None) -> tuple[int, int]:
+    """Resolve exactly one of `aspect_ratio` / `size` to (width, height)."""
+    if (aspect_ratio is None) == (size is None):
+        raise ValueError("pass exactly one of aspect_ratio (e.g. '16:9') or size (e.g. '1280x720')")
+    if size is not None:
+        return parse_size(size)
+    dims = DIMENSIONS.get(("720p", aspect_ratio or ""))
+    if dims is None:
+        allowed = sorted({aspect for res, aspect in DIMENSIONS if res == "720p"})
+        raise ValueError(f"aspect_ratio={aspect_ratio!r} is not supported; use one of {allowed}")
+    return dims
 
 
 def load_and_convert_image(path: pathlib.Path, filename: str) -> Image.Image:
@@ -239,15 +266,17 @@ async def list_reference_images(
 
 async def prepare_reference_image(
     input_filename: str,
-    target_size: VideoSize,
+    aspect_ratio: AspectRatio | None = None,
+    size: str | None = None,
     output_filename: str | None = None,
     resize_mode: Literal["crop", "pad", "rescale"] = "crop",
 ) -> PrepareResult:
-    """Prepare a reference image by resizing to match Sora dimensions.
+    """Reshape a reference image to a target aspect ratio or exact size.
 
     Args:
         input_filename: Source image filename (not path) in IMAGE_PATH
-        target_size: Target Sora video size
+        aspect_ratio: Target frame shape ("16:9", "9:16", ...), sized to the 720p frame
+        size: Exact target "WxH" (each edge 64-4096); pass this or aspect_ratio, not both
         output_filename: Optional custom output name (defaults to auto-generated)
         resize_mode: Resizing strategy - "crop" (cover + crop), "pad" (fit + letterbox), or "rescale" (stretch to fit)
 
@@ -256,15 +285,16 @@ async def prepare_reference_image(
 
     Raises:
         RuntimeError: If IMAGE_PATH not configured
-        ValueError: If input file invalid or path traversal detected
+        ValueError: If input file invalid, path traversal detected, or not exactly
+            one of aspect_ratio / size given
     """
     storage = get_storage()
-    target_width, target_height = parse_video_dimensions(target_size)
+    target_width, target_height = target_dimensions(aspect_ratio, size)
 
     # Generate output filename from the input filename string (before entering context managers)
     if output_filename is None:
         stem = input_filename.rsplit(".", 1)[0] if "." in input_filename else input_filename
-        output_filename = f"{stem}_{target_size}.png"
+        output_filename = f"{stem}_{target_width}x{target_height}.png"
 
     # Use storage backend context managers for local path access
     async with (

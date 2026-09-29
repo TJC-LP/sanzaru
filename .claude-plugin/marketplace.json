@@ -8,7 +8,7 @@
     {
       "name": "sanzaru",
       "source": "./plugin",
-      "description": "MCP server for OpenAI multimodal APIs (Sora video, image generation, audio)"
+      "description": "MCP server + agent CLI for multimodal media: Higgsfield video (Seedance 2.5, Kling 3.0), OpenAI images/audio, ElevenLabs podcasts"
     }
   ]
 }

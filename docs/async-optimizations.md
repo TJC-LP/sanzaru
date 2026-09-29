@@ -1,5 +1,7 @@
 # Async Optimizations
 
+> **Historical (Sora era, before 0.13.0).** OpenAI removed the Sora Videos API on 2026-09-24; sanzaru now generates video through Higgsfield. Video details below describe the old Sora integration.
+
 ## Overview
 
 Sanzaru is fully asynchronous, utilizing `anyio` and `aiofiles` for non-blocking operations. This design enables high throughput under concurrent load and takes full advantage of Python 3.14's free-threading capabilities.

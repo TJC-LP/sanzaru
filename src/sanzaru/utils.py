@@ -4,7 +4,6 @@
 import re
 import time
 from pathlib import PurePosixPath
-from typing import Literal
 
 # An OpenAI resource id is a *path segment*: the SDK builds `/videos/{video_id}`,
 # `/videos/{video_id}/content` and `/responses/{response_id}` from it. openai
@@ -32,10 +31,10 @@ _RESOURCE_ID_PATTERN = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
 def validate_resource_id(value: str, param: str) -> str:
-    """Check an OpenAI resource id before it is interpolated into a request path.
+    """Check a provider resource id before it is interpolated into a request path.
 
-    Consumed by the video and image tools (`tools/video.py`, `tools/image.py`)
-    on every `video_id` / `response_id` they forward to the SDK.
+    Consumed by the image tools (`tools/image.py`) on every `response_id` they
+    forward to the OpenAI SDK, and by `higgsfield/ids.py` on every `hf_…` job id.
 
     Args:
         value: Caller-supplied id (video id, response id, ...)
@@ -134,18 +133,6 @@ def reject_reserved_name(filename: str, param: str = "output filename") -> str:
             "(a run manifest or act checkpoint) — choose another name"
         )
     return filename
-
-
-def suffix_for_variant(variant: Literal["video", "thumbnail", "spritesheet"]) -> str:
-    """Get the file extension for a video asset variant.
-
-    Args:
-        variant: Asset type
-
-    Returns:
-        File extension without dot (e.g., "mp4", "webp", "jpg")
-    """
-    return {"video": "mp4", "thumbnail": "webp", "spritesheet": "jpg"}[variant]
 
 
 def generate_filename(base_id: str, suffix: str, *, use_timestamp: bool = False) -> str:

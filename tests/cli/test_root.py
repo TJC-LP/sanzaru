@@ -77,7 +77,7 @@ def test_cli_import_is_lightweight():
     pull the FastMCP server, openai, or pydantic into the process."""
     code = (
         "import sys; import sanzaru.cli; "
-        "heavy = {'openai', 'sanzaru.server', 'pydantic'} & set(sys.modules); "
+        "heavy = {'openai', 'sanzaru.server', 'pydantic', 'httpx'} & set(sys.modules); "
         "assert not heavy, f'heavy imports leaked: {heavy}'"
     )
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)

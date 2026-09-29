@@ -75,6 +75,8 @@ def test_a_planted_base_url_is_ignored(tmp_path, caplog):
         "DATABRICKS_VIDEO_DIR",
         "DATABRICKS_IMAGE_DIR",
         "DATABRICKS_AUDIO_DIR",
+        # What max_cost_usd is enforced against; a planted $0 would disarm it.
+        "SANZARU_HIGGSFIELD_PRICE_SEEDANCE_2_5",
     ],
 )
 def test_credential_and_transport_variables_are_ignored(tmp_path, monkeypatch, key):
@@ -123,6 +125,17 @@ def test_the_documented_variables_still_load(tmp_path):
 
     assert os.environ["OPENAI_API_KEY"] == "sk-abc"
     assert os.environ["SANZARU_MEDIA_PATH"] == str(media)
+
+
+def test_the_higgsfield_key_loads(tmp_path, monkeypatch):
+    """HF_KEY is a credential the documented workflow puts in .env, like OPENAI_API_KEY."""
+    monkeypatch.delenv("HF_KEY", raising=False)
+    _write_env(tmp_path, "HF_KEY=kid:secret\nSANZARU_HIGGSFIELD_MAX_CONCURRENCY=2\n")
+
+    load_local_dotenv(tmp_path)
+
+    assert os.environ["HF_KEY"] == "kid:secret"
+    assert os.environ["SANZARU_HIGGSFIELD_MAX_CONCURRENCY"] == "2"
 
 
 def test_a_real_exported_value_outranks_the_file(tmp_path, monkeypatch):

@@ -1,4 +1,4 @@
-# Sora Prompting Deep Reference
+# Video Prompting Deep Reference (Higgsfield: Seedance 2.5, Kling 3.0)
 
 ## Camera Direction Vocabulary
 
@@ -24,8 +24,8 @@ Break action into **beats** — discrete, sequential steps:
 
 **Rules:**
 - Each beat = one clear action
-- 4s clip = 2-3 beats
-- 8s clip = 4-6 beats
+- 4-5 s clip = 2-3 beats
+- 8-10 s clip = 4-6 beats (Seedance runs to 30 s; Kling to 15 s)
 - Never combine conflicting motions ("walks forward while turning around")
 
 ## Lighting & Color
@@ -43,39 +43,35 @@ Don't say "well-lit" or "moody." Specify sources and colors:
 - Instead of "colorful": "teal, rust, gold, cream"
 - Instead of "dark": "charcoal, deep navy, muted bronze"
 
-## Dialogue
+## Sound and dialogue
 
-Place dialogue in a `<dialogue>` block below the prose description:
+Seedance 2.5 and Kling 3.0 generate native audio by default (`audio=false` for a silent clip). Name
+what should be heard — "rain on a tin roof", "crowd murmur, no music" — and put spoken lines in
+quotes with the speaker:
 
 ```
-A coffee shop at golden hour. Two friends sit across from each other,
-one leaning forward earnestly while the other stirs their drink slowly.
-
-<dialogue>
-Friend 1: "I think we should just go for it."
-Friend 2: (pauses, looks down at coffee) "You really think so?"
-</dialogue>
+A coffee shop at golden hour. Two friends sit across from each other.
+The first leans in: "I think we should just go for it." The second pauses, stirring: "You really think so?"
 ```
 
-**Rules:**
-- 4s clip = 1-2 short exchanges max
-- 8s clip = 3-4 lines
-- Keep lines concise and natural
+- 4-5 s clip = 1-2 short lines; keep them concise and natural
 - Label speakers consistently
 
-## Remix Strategy
+## Edit and extend strategy (Seedance 2.5)
 
-Use `remix_video` to **nudge, not gamble**. Make one change at a time:
+Use `edit_video` to **nudge, not gamble**. Make one change at a time and say what to keep:
 
-**Good remix prompts:**
-- "Same shot, switch from 35mm to 85mm lens"
-- "Same lighting, new color palette: teal, sand, rust"
-- "Keep framing, slow the camera movement by half"
-- "Same scene, add light rain"
+**Good edit prompts:**
+- "Same shot, make it snowing"
+- "Keep the camera move and the actor; change the palette to teal, sand, rust"
+- "Render it as a watercolor, same framing"
 
-**Bad remix prompts:**
+**Bad edit prompts:**
 - "Completely different scene" (just create a new video)
 - "Change everything but keep it similar" (too vague)
+
+`extend_video` continues the shot: describe what happens **next**, in the same style. Both bill the
+source as well as the output — draft at 480p.
 
 **When a shot keeps failing:**
 1. Freeze the camera (static shot)
@@ -93,13 +89,13 @@ Use `remix_video` to **nudge, not gamble**. Make one change at a time:
 | Lens | "Anamorphic 2.0x," "85mm portrait," "24mm wide angle" |
 | Processing | "Cross-processed," "bleach bypass," "day-for-night" |
 
-## Video Size Reference
+## Frame shape reference
 
-| Size | Orientation | Models |
-|------|-------------|--------|
-| `1280x720` | Landscape 16:9 | sora-2, sora-2-pro |
-| `720x1280` | Portrait 9:16 | sora-2, sora-2-pro |
-| `1792x1024` | Wide landscape | sora-2-pro only |
-| `1024x1792` | Tall portrait | sora-2-pro only |
+| Setting | Values | Models |
+|---------|--------|--------|
+| `aspect_ratio` (text-to-video) | 16:9, 4:3, 1:1, 3:4, 9:16, 21:9 | seedance-2.5 |
+| `aspect_ratio` (text-to-video) | 16:9, 9:16, 1:1 | kling-3.0-* |
+| `resolution` | 480p, 720p | seedance-2.5 (Kling's tier sets it: std/pro/4k) |
 
-**Important**: Reference images MUST match the target video size exactly. Use `prepare_reference_image` to resize.
+**Image-to-video has no aspect ratio** — framing follows the start image. Crop it first with
+`prepare_reference_image(input, aspect_ratio="9:16")` (or `size="WxH"`).

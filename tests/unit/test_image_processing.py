@@ -6,37 +6,66 @@ from PIL import Image
 
 from sanzaru.tools.reference import (
     load_and_convert_image,
-    parse_video_dimensions,
+    parse_size,
     resize_crop,
     resize_pad,
     resize_rescale,
     save_image,
+    target_dimensions,
 )
 
 
 @pytest.mark.unit
-class TestParseVideoDimensions:
-    """Test VideoSize string parsing."""
+class TestParseSize:
+    """ "WxH" parsing for an exact target size."""
 
-    def test_landscape_720p(self):
-        width, height = parse_video_dimensions("1280x720")
-        assert width == 1280
-        assert height == 720
+    def test_landscape(self):
+        assert parse_size("1280x720") == (1280, 720)
 
-    def test_portrait_720p(self):
-        width, height = parse_video_dimensions("720x1280")
-        assert width == 720
-        assert height == 1280
+    def test_portrait_and_case(self):
+        assert parse_size("720X1280") == (720, 1280)
 
-    def test_landscape_1080p(self):
-        width, height = parse_video_dimensions("1920x1080")
-        assert width == 1920
-        assert height == 1080
+    @pytest.mark.parametrize("bad", ["1280", "1280x", "x720", "12a0x720", "1280x720x3", "-1x720", ""])
+    def test_malformed_is_refused(self, bad):
+        with pytest.raises(ValueError, match="WIDTHxHEIGHT"):
+            parse_size(bad)
 
-    def test_pro_sizes(self):
-        """Test larger sizes supported by sora-2-pro."""
-        assert parse_video_dimensions("1024x1792") == (1024, 1792)
-        assert parse_video_dimensions("1792x1024") == (1792, 1024)
+    @pytest.mark.parametrize("bad", ["63x720", "1280x4097", "0x0"])
+    def test_edges_out_of_range_are_refused(self, bad):
+        with pytest.raises(ValueError, match="64-4096"):
+            parse_size(bad)
+
+    def test_bounds_are_inclusive(self):
+        assert parse_size("64x4096") == (64, 4096)
+
+
+@pytest.mark.unit
+class TestTargetDimensions:
+    """Exactly one of aspect_ratio / size; aspect ratios map onto the 720p frame."""
+
+    @pytest.mark.parametrize(
+        ("aspect", "expected"),
+        [("16:9", (1280, 720)), ("9:16", (720, 1280)), ("1:1", (960, 960))],
+    )
+    def test_aspect_ratio_uses_the_shared_720p_table(self, aspect, expected):
+        assert target_dimensions(aspect, None) == expected
+
+    def test_every_aspect_ratio_has_a_frame(self):
+        for aspect in ("16:9", "4:3", "1:1", "3:4", "9:16", "21:9"):
+            width, height = target_dimensions(aspect, None)
+            assert width > 0 and height > 0
+
+    def test_size_passes_through(self):
+        assert target_dimensions(None, "1000x500") == (1000, 500)
+
+    @pytest.mark.parametrize(("aspect", "size"), [(None, None), ("16:9", "1280x720")])
+    def test_exactly_one_is_required(self, aspect, size):
+        with pytest.raises(ValueError, match="exactly one"):
+            target_dimensions(aspect, size)
+
+    def test_unknown_aspect_is_refused(self):
+        with pytest.raises(ValueError, match="not supported"):
+            target_dimensions("5:4", None)  # type: ignore[arg-type]
 
 
 @pytest.mark.unit

@@ -41,7 +41,7 @@ async def test_sora_list_references_with_multiple_files(mocker, tmp_reference_pa
 
 
 @pytest.mark.integration
-async def test_sora_prepare_reference_end_to_end(mocker, tmp_reference_path):
+async def test_prepare_reference_by_aspect_ratio_end_to_end(mocker, tmp_reference_path):
     """Test complete image preparation workflow with real files."""
     mocker.patch(
         "sanzaru.tools.reference.get_storage",
@@ -52,8 +52,8 @@ async def test_sora_prepare_reference_end_to_end(mocker, tmp_reference_path):
     source = tmp_reference_path / "source.png"
     Image.new("RGB", (400, 200)).save(source, "PNG")
 
-    # Prepare for 1280x720 (landscape) using crop mode
-    result = await prepare_reference_image("source.png", "1280x720", resize_mode="crop")
+    # Prepare for 16:9 (the 720p frame, 1280x720) using crop mode
+    result = await prepare_reference_image("source.png", aspect_ratio="16:9", resize_mode="crop")
 
     assert result["output_filename"] == "source_1280x720.png"
     assert result["original_size"] == (400, 200)
@@ -68,6 +68,45 @@ async def test_sora_prepare_reference_end_to_end(mocker, tmp_reference_path):
     img = Image.open(output_file)
     assert img.size == (1280, 720)
     assert img.mode == "RGB"
+
+
+@pytest.mark.integration
+async def test_prepare_reference_by_exact_size(mocker, tmp_reference_path):
+    mocker.patch(
+        "sanzaru.tools.reference.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
+    Image.new("RGB", (300, 300)).save(tmp_reference_path / "square.png", "PNG")
+
+    result = await prepare_reference_image("square.png", size="640x360", resize_mode="pad")
+
+    assert result["output_filename"] == "square_640x360.png"
+    assert result["target_size"] == (640, 360)
+    assert Image.open(tmp_reference_path / "square_640x360.png").size == (640, 360)
+
+
+@pytest.mark.integration
+async def test_prepare_reference_vertical_default_name(mocker, tmp_reference_path):
+    mocker.patch(
+        "sanzaru.tools.reference.get_storage",
+        return_value=LocalStorageBackend(path_overrides={"reference": tmp_reference_path}),
+    )
+    Image.new("RGB", (400, 200)).save(tmp_reference_path / "wide.jpg", "JPEG")
+
+    result = await prepare_reference_image("wide.jpg", aspect_ratio="9:16")
+
+    assert result["output_filename"] == "wide_720x1280.png"
+    assert Image.open(tmp_reference_path / "wide_720x1280.png").size == (720, 1280)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("kwargs", [{}, {"aspect_ratio": "16:9", "size": "1280x720"}, {"size": "10x10"}])
+async def test_prepare_reference_refuses_bad_targets_before_io(mocker, kwargs):
+    storage = mocker.patch("sanzaru.tools.reference.get_storage")
+
+    with pytest.raises(ValueError):
+        await prepare_reference_image("any.png", **kwargs)
+    storage.return_value.local_path.assert_not_called()
 
 
 @pytest.mark.integration

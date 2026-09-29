@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: MIT
 """wait_for: block server-side on a batch of long-running job ids.
 
-`create_video`, `remix_video` and `create_image` return immediately with an id,
+`create_video`, `edit_video`, `extend_video` and `create_image` return immediately with an id,
 and until now the MCP surface offered only `get_*_status` to find out when the
 job finished — so the model ran the poll loop itself, one round trip per check.
 This tool moves the loop into the server, where `polling.py` already knows the
@@ -35,6 +35,9 @@ import anyio
 from openai import APIStatusError
 
 from ..config import logger
+from ..higgsfield.errors import HiggsfieldAPIError
+from ..higgsfield.ids import JOB_PREFIX, SORA_RETIRED
+from ..higgsfield.limits import make_limiter
 from ..polling import WaitTimeoutError, wait_for_image, wait_for_video
 from ..types import WaitJob, WaitResult
 from . import image as image_tools
@@ -48,7 +51,7 @@ call at 300 s), so a wait that sends no progress still returns before the
 client gives up. With progress flowing the cap below applies instead."""
 
 MAX_WAIT_TIMEOUT = 1800.0
-"""Sora's own worst case (`polling.DEFAULT_VIDEO_TIMEOUT`). Longer waits should
+"""A long Seedance render (`polling.DEFAULT_VIDEO_TIMEOUT`). Longer waits should
 be re-issued, which also re-validates that the caller is still there."""
 
 MAX_WAIT_IDS = 20
@@ -59,14 +62,18 @@ ProgressCallback = Callable[[int, int, str], Awaitable[None]]
 
 def job_kind(job_id: str) -> JobKind:
     """Infer the job type from the id prefix, as the CLI's `wait` does."""
-    if job_id.startswith("video_"):
+    if job_id.startswith(JOB_PREFIX):
         return "video"
     if job_id.startswith("resp_"):
         return "image"
-    raise ValueError(f"cannot infer job type from id {job_id!r}: expected a video_* or resp_* id")
+    if job_id.startswith("video_"):
+        raise ValueError(SORA_RETIRED)
+    raise ValueError(f"cannot infer job type from id {job_id!r}: expected an hf_* (video) or resp_* (image) id")
 
 
-def _describe(exc: APIStatusError) -> str:
+def _describe(exc: APIStatusError | HiggsfieldAPIError) -> str:
+    if isinstance(exc, HiggsfieldAPIError):
+        return f"HTTP {exc.status_code}: {exc.detail}" if exc.status_code else str(exc)
     return f"HTTP {exc.status_code}: {exc.message}" if getattr(exc, "message", None) else f"HTTP {exc.status_code}"
 
 
@@ -154,6 +161,10 @@ async def wait_for(
             async for message in receive:
                 await report(message)
 
+    # Bounds the downloads (and so the storage writes) a 20-id wait can start at
+    # once. Built per call: a limiter binds to the event loop that created it.
+    limiter = make_limiter()
+
     async def one(job_id: str) -> None:
         nonlocal settled
         job = jobs[job_id]
@@ -162,13 +173,15 @@ async def wait_for(
                 video = await wait_for_video(
                     job_id,
                     timeout=timeout,
-                    on_progress=lambda v: note(job_id, v.status, v.progress),
+                    on_progress=lambda v: note(job_id, v["status"]),
                 )
-                job["status"] = video.status
-                job["progress"] = video.progress
+                job["status"] = video["status"]
                 job["done"] = True
-                if download and video.status == "completed":
-                    job["download"] = await video_tools.download_video(job_id)
+                if video["error"]:
+                    job["error"] = video["error"]
+                if download and video["status"] == "completed":
+                    async with limiter:
+                        job["download"] = await video_tools.download_video(job_id)
             else:
                 response = await wait_for_image(
                     job_id,
@@ -178,15 +191,14 @@ async def wait_for(
                 job["status"] = response["status"]
                 job["done"] = True
                 if download and response["status"] == "completed":
-                    job["download"] = await image_tools.download_image(job_id)
+                    async with limiter:
+                        job["download"] = await image_tools.download_image(job_id)
         except WaitTimeoutError as exc:
             job["timed_out"] = True
             last = exc.last
             if isinstance(last, dict):
-                job["status"] = last["status"]
-            elif last is not None:
-                job["status"] = last.status
-        except APIStatusError as exc:
+                job["status"] = str(last["status"])
+        except (APIStatusError, HiggsfieldAPIError) as exc:
             # Non-retryable (polling already retried the transient ones): an
             # unknown id, a permission problem. Reported on the job so the other
             # ids in the batch still get their answer.
