@@ -60,6 +60,8 @@ def test_a_planted_base_url_is_ignored(tmp_path, caplog):
         "OPENAI_BASE_URL",
         "OPENAI_API_BASE",
         "ELEVENLABS_BASE_URL",
+        # Where HF_KEY is sent.
+        "HIGGSFIELD_BASE_URL",
         "DATABRICKS_HOST",
         "HTTPS_PROXY",
         "HTTP_PROXY",

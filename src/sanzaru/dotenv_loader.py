@@ -82,10 +82,11 @@ logger = logging.getLogger("sanzaru")
 #:   subdirectory names, but the backend joins them into the volume path
 #:   unsanitized, so `..` in one walks out of the per-user prefix into another
 #:   tenant's files. Same rule: export them.
-#: - Any Higgsfield base URL or `SANZARU_HIGGSFIELD_PRICE_*`. The client has no
-#:   base-URL override at all (a planted one would be where `HF_KEY` is sent),
-#:   and the price table is what `max_cost_usd` is enforced against — the same
-#:   reasoning as the realtime prices above.
+#: - `HIGGSFIELD_BASE_URL` or `SANZARU_HIGGSFIELD_PRICE_*`. The base URL is where
+#:   `HF_KEY` is sent, so a planted one redirects the credential; the client
+#:   reads it from the process environment only. The price table is what
+#:   `max_cost_usd` is enforced against — the same reasoning as the realtime
+#:   prices above.
 ALLOWED_ENV_KEYS = frozenset(
     {
         # Credentials the documented workflow puts here (setup.sh writes the first).

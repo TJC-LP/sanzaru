@@ -14,6 +14,7 @@ import pathlib
 import sys
 from functools import lru_cache
 from typing import TYPE_CHECKING, Literal
+from urllib.parse import urlsplit
 
 from openai import AsyncOpenAI
 from openai.types import ImageModel
@@ -86,7 +87,10 @@ def get_client() -> AsyncOpenAI:
 # ---------- Higgsfield client (video generation) ----------
 # Same lazy, cached shape as the ElevenLabs seam below, for the same reason:
 # nothing pays for httpx client construction until a video tool actually runs.
-# There is deliberately no base-URL override — see higgsfield/client.py.
+# `HIGGSFIELD_BASE_URL` overrides the API endpoint under the rules in
+# higgsfield/client.py: process environment only, https or loopback http.
+HIGGSFIELD_BASE_URL_ENV = "HIGGSFIELD_BASE_URL"
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 _higgsfield_override: "HiggsfieldClient | None" = None
 _higgsfield_cached: "HiggsfieldClient | None" = None
 
@@ -101,6 +105,38 @@ def set_higgsfield_client(client: "HiggsfieldClient | None") -> None:
     _higgsfield_cached = None
 
 
+def higgsfield_base_url() -> str:
+    """The Higgsfield API base URL: `HIGGSFIELD_BASE_URL` when set, else the production API.
+
+    The credential is sent to this URL, so the override must be https, or plain
+    http to a loopback host (a sandbox's credential-proxy forwarder), with no
+    userinfo, query or fragment. A trailing slash is dropped so request paths
+    join cleanly.
+
+    Raises:
+        RuntimeError: If HIGGSFIELD_BASE_URL is set to anything else
+    """
+    from .higgsfield.client import BASE_URL
+
+    raw = (os.getenv(HIGGSFIELD_BASE_URL_ENV) or "").strip()
+    if not raw:
+        return BASE_URL
+    parts = urlsplit(raw)
+    try:
+        host = parts.hostname
+        parts.port  # noqa: B018 - raises ValueError on a malformed port
+    except ValueError:
+        host = None
+    clean = host is not None and parts.username is None and parts.password is None
+    clean = clean and not parts.query and not parts.fragment
+    if clean and (parts.scheme == "https" or (parts.scheme == "http" and host in _LOOPBACK_HOSTS)):
+        return raw.rstrip("/")
+    raise RuntimeError(
+        f"{HIGGSFIELD_BASE_URL_ENV} must be an https URL, or http to 127.0.0.1, ::1 or localhost, "
+        "with no credentials, query or fragment"
+    )
+
+
 def get_higgsfield_client() -> "HiggsfieldClient":
     """Get the Higgsfield client, building it from `HF_KEY` on first use.
 
@@ -108,7 +144,8 @@ def get_higgsfield_client() -> "HiggsfieldClient":
         The installed override (see set_higgsfield_client), else a cached client
 
     Raises:
-        RuntimeError: If HF_KEY is unset or not `key_id:key_secret`
+        RuntimeError: If HF_KEY is unset or not `key_id:key_secret`, or
+            HIGGSFIELD_BASE_URL is not an accepted URL (see higgsfield_base_url)
     """
     global _higgsfield_cached
     if _higgsfield_override is not None:
@@ -125,7 +162,7 @@ def get_higgsfield_client() -> "HiggsfieldClient":
 
     from .higgsfield.client import HiggsfieldClient
 
-    _higgsfield_cached = HiggsfieldClient(key_id.strip(), secret.strip())
+    _higgsfield_cached = HiggsfieldClient(key_id.strip(), secret.strip(), base_url=higgsfield_base_url())
     return _higgsfield_cached
 
 
