@@ -54,6 +54,63 @@ class TestGetHiggsfieldClient:
         assert config.get_higgsfield_client() is not first
 
 
+class TestHiggsfieldBaseUrl:
+    def test_unset_or_blank_uses_the_production_api(self, mocker):
+        for env in ({}, {"HIGGSFIELD_BASE_URL": "   "}):
+            mocker.patch.dict(os.environ, env, clear=True)
+            assert config.higgsfield_base_url() == "https://api.higgsfield.ai"
+
+    @pytest.mark.parametrize(
+        ("value", "expected"),
+        [
+            ("https://proxy.example.com/", "https://proxy.example.com"),
+            ("https://proxy.example.com/px/higgsfield", "https://proxy.example.com/px/higgsfield"),
+            ("http://127.0.0.1:8103", "http://127.0.0.1:8103"),
+            ("  http://localhost:8103/  ", "http://localhost:8103"),
+            ("http://[::1]:8103", "http://[::1]:8103"),
+        ],
+    )
+    def test_accepts_https_and_loopback_http(self, mocker, value, expected):
+        mocker.patch.dict(os.environ, {"HIGGSFIELD_BASE_URL": value}, clear=True)
+        assert config.higgsfield_base_url() == expected
+
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "http://proxy.example.com",  # plaintext to a remote host
+            "http://127.0.0.1.attacker.example:8103",
+            "ftp://127.0.0.1",
+            "https://user:pass@proxy.example.com",
+            "https://proxy.example.com/?next=x",
+            "https://proxy.example.com/#frag",
+            "https://proxy.example.com:notaport",
+            "127.0.0.1:8103",  # no scheme
+        ],
+    )
+    def test_rejects_anything_else(self, mocker, value):
+        mocker.patch.dict(os.environ, {"HIGGSFIELD_BASE_URL": value}, clear=True)
+        with pytest.raises(RuntimeError, match="HIGGSFIELD_BASE_URL must be"):
+            config.higgsfield_base_url()
+
+    def test_client_sends_the_credential_to_the_override(self, mocker):
+        mocker.patch.dict(
+            os.environ, {"HF_KEY": "kid:secret", "HIGGSFIELD_BASE_URL": "http://127.0.0.1:8103"}, clear=True
+        )
+        client = config.get_higgsfield_client()
+        assert str(client._api.base_url) == "http://127.0.0.1:8103"
+        assert client._api.headers["Authorization"] == "Key kid:secret"
+        # The credential-free client has no base URL: uploads and downloads use absolute URLs.
+        assert str(client._bare.base_url) == ""
+
+    def test_a_bad_override_fails_before_a_client_exists(self, mocker):
+        mocker.patch.dict(
+            os.environ, {"HF_KEY": "kid:secret", "HIGGSFIELD_BASE_URL": "http://evil.example"}, clear=True
+        )
+        with pytest.raises(RuntimeError, match="HIGGSFIELD_BASE_URL must be"):
+            config.get_higgsfield_client()
+        assert config._higgsfield_cached is None
+
+
 @pytest.mark.anyio
 class TestCloseHiggsfieldClient:
     async def test_closes_and_forgets_the_cached_client(self, mocker):

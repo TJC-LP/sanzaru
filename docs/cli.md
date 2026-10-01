@@ -174,6 +174,12 @@ separately from a Higgsfield app/CLI subscription, and exposes no balance endpoi
 submit is **estimated first** and the cost is in the envelope; `--max-cost` refuses (exit 2,
 nothing uploaded or charged) and `--dry-run` prices without submitting.
 
+`HIGGSFIELD_BASE_URL` overrides the API endpoint, for sandboxes that reach the API through a
+credential proxy holding the real key. It is read from the process environment only (a `.env`
+cannot set it), and it must be https, or plain http to `127.0.0.1`, `::1` or `localhost`; anything
+else is a config error (exit 3). Presigned uploads and output downloads never use it and never
+carry the key.
+
 | Command | Purpose |
 |---------|---------|
 | `create PROMPT` | Text-to-video, or image-to-video with `--image`. `--model` (curated id or any catalog slug; default `seedance-2.5`), `--duration N`, `--aspect-ratio`, `--resolution 480p\|720p`, `--audio/--no-audio`, `--image PATH\|hf_id`, `--end-image PATH`, `--arg KEY=JSON` (repeatable), `--args @file.json`, `--max-cost USD`, `--dry-run`, `--retry-busy DURATION`, one-shot flags |

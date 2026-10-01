@@ -20,11 +20,15 @@ Retry policy — the one design decision in this module:
 | `cancel`, upload URL, presigned PUT    | backoff 2 s x1.5 (free or idempotent calls)            |
 | output download (`stream_output`)      | no — the caller (download) decides                     |
 
-Two httpx clients, never one: `_api` carries the credential and is pinned to
-`BASE_URL`; `_bare` carries nothing and serves the presigned upload PUT and the
-output download, so the key can never be sent to a storage or CDN host. There
-is no base-URL override on purpose — an overridable endpoint is somewhere the
-key can be redirected, and tests inject an `httpx.MockTransport` instead.
+Two httpx clients, never one: `_api` carries the credential and talks to the
+API base URL; `_bare` carries nothing and serves the presigned upload PUT and the
+output download, so the key can never be sent to a storage or CDN host. The API
+base URL is `BASE_URL` unless `HIGGSFIELD_BASE_URL` is set in the process
+environment (`config.higgsfield_base_url`), which is how a sandbox reaches a
+credential proxy that holds the real key. An overridable endpoint is somewhere
+the key can be sent, so the override is read from the process environment only
+(the `.env` loader never sets it) and must be https, or plain http to a loopback
+host. Tests inject an `httpx.MockTransport` instead.
 """
 
 from __future__ import annotations
@@ -120,10 +124,17 @@ def _uuid(request_id: str) -> str:
 class HiggsfieldClient:
     """Async client for the Higgsfield API. Build via `config.get_higgsfield_client()`."""
 
-    def __init__(self, key_id: str, key_secret: str, *, transport: httpx.AsyncBaseTransport | None = None) -> None:
+    def __init__(
+        self,
+        key_id: str,
+        key_secret: str,
+        *,
+        base_url: str = BASE_URL,
+        transport: httpx.AsyncBaseTransport | None = None,
+    ) -> None:
         self._key_id = key_id
         self._api = httpx.AsyncClient(
-            base_url=BASE_URL,
+            base_url=base_url,
             headers={"Authorization": f"Key {key_id}:{key_secret}", "Content-Type": "application/json"},
             timeout=_TIMEOUT,
             transport=transport,
