@@ -107,11 +107,31 @@ jobs:
       - name: Report what resolved
         run: /tmp/fresh/bin/python -m pip list 2>/dev/null || uv pip list --python /tmp/fresh/bin/python
 
+      - name: The base install carries no MCP stack
+        run: |
+          if uv pip list --python /tmp/fresh/bin/python | grep -iE '^(mcp|starlette|uvicorn) '; then
+            echo "::error::the base install pulled in the MCP stack; it belongs in the [mcp] extra"
+            exit 1
+          fi
+
+      - name: Bare `sanzaru` without the extra says how to install it
+        run: |
+          set +e
+          /tmp/fresh/bin/sanzaru 2> /tmp/stderr.txt
+          code=$?
+          cat /tmp/stderr.txt
+          [ "$code" = 3 ] && grep -q 'sanzaru\[mcp\]' /tmp/stderr.txt
+
+      - name: Install the mcp extra into a second clean venv
+        run: |
+          uv venv /tmp/fresh-mcp
+          uv pip install --python /tmp/fresh-mcp/bin/python "$(ls dist/*.whl)[mcp]"
+
       - name: Import the server entrypoint
         # The CLI lazy-imports the server, so `--help` passes even when the MCP
         # server is unimportable. Import server.py directly — that is the failure
         # a Claude Desktop user actually hits.
-        run: /tmp/fresh/bin/python -c "import sanzaru.server; print('sanzaru.server imports OK')"
+        run: /tmp/fresh-mcp/bin/python -c "import sanzaru.server; print('sanzaru.server imports OK')"
 
       - name: Smoke the console script
         run: /tmp/fresh/bin/sanzaru --help > /dev/null && echo "sanzaru --help OK"

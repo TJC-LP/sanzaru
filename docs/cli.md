@@ -6,11 +6,14 @@ long-running jobs, and output to any path you choose. The CLI is **stateless** �
 only handles, every command is independently resumable, and nothing is tracked between
 invocations.
 
-Bare `sanzaru` (no subcommand) still starts the MCP server, exactly as before — existing
-`.mcp.json` and Claude Desktop configs are unaffected. `sanzaru serve` is the explicit alias.
+The base install is just this CLI — it carries none of the MCP stack (`mcp`, `starlette`,
+`uvicorn`). Bare `sanzaru` (no subcommand) and `sanzaru serve` start the MCP server and need
+`sanzaru[mcp]` (or `sanzaru[all]`); without it they exit 3 and print the install command. Configs
+that launch the server (`.mcp.json`, Claude Desktop) should name the extra: `uvx "sanzaru[mcp]"`.
 
 ```bash
 uv tool install sanzaru        # or: uvx sanzaru ..., pipx install sanzaru
+uv tool install 'sanzaru[mcp]' # the same CLI plus the MCP server
 export OPENAI_API_KEY=sk-...
 sanzaru capabilities            # no API key needed — discover what works here
 ```

@@ -1782,13 +1782,10 @@ dependencies = [
     { name = "async-lru" },
     { name = "click" },
     { name = "httpx" },
-    { name = "mcp" },
     { name = "openai" },
     { name = "pydantic" },
     { name = "pydantic-settings" },
     { name = "python-dotenv" },
-    { name = "starlette" },
-    { name = "uvicorn" },
 ]
 
 [package.optional-dependencies]
@@ -1798,8 +1795,11 @@ all = [
     { name = "audioop-lts", marker = "python_full_version >= '3.13'" },
     { name = "elevenlabs" },
     { name = "ffmpeg-python" },
+    { name = "mcp" },
     { name = "pillow" },
     { name = "pydub" },
+    { name = "starlette" },
+    { name = "uvicorn" },
 ]
 audio = [
     { name = "aioresult" },
@@ -1814,6 +1814,11 @@ elevenlabs = [
 image = [
     { name = "pillow" },
 ]
+mcp = [
+    { name = "mcp" },
+    { name = "starlette" },
+    { name = "uvicorn" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -1824,6 +1829,7 @@ dev = [
     { name = "pytest-cov" },
     { name = "pytest-mock" },
     { name = "ruff" },
+    { name = "sanzaru", extra = ["mcp"] },
     { name = "types-aiofiles" },
 ]
 
@@ -1839,18 +1845,18 @@ requires-dist = [
     { name = "elevenlabs", marker = "extra == 'elevenlabs'", specifier = ">=2.60.0" },
     { name = "ffmpeg-python", marker = "extra == 'audio'" },
     { name = "httpx", specifier = ">=0.27.0" },
-    { name = "mcp", specifier = ">=2.2.0,<3" },
+    { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.2.0,<3" },
     { name = "openai", specifier = ">=3.14.0,<4" },
     { name = "pillow", marker = "extra == 'image'", specifier = ">=12.0.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic-settings", specifier = ">=2.11.0" },
     { name = "pydub", marker = "extra == 'audio'" },
     { name = "python-dotenv", specifier = ">=1.0.0" },
-    { name = "sanzaru", extras = ["video", "audio", "image", "elevenlabs"], marker = "extra == 'all'" },
-    { name = "starlette", specifier = ">=0.27" },
-    { name = "uvicorn", specifier = ">=0.31.1" },
+    { name = "sanzaru", extras = ["mcp", "video", "audio", "image", "elevenlabs"], marker = "extra == 'all'" },
+    { name = "starlette", marker = "extra == 'mcp'", specifier = ">=0.27" },
+    { name = "uvicorn", marker = "extra == 'mcp'", specifier = ">=0.31.1" },
 ]
-provides-extras = ["video", "audio", "image", "elevenlabs", "databricks", "all"]
+provides-extras = ["mcp", "video", "audio", "image", "elevenlabs", "databricks", "all"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -1861,6 +1867,7 @@ dev = [
     { name = "pytest-cov", specifier = ">=6.0.0" },
     { name = "pytest-mock", specifier = ">=3.14.0" },
     { name = "ruff", specifier = ">=0.14.3" },
+    { name = "sanzaru", extras = ["mcp"] },
     { name = "types-aiofiles" },
 ]
 

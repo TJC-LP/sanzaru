@@ -51,11 +51,6 @@ dependencies = [
   # API (gpt-live-1). Capped at <4 for the same reason as mcp: the import paths
   # and parameter types below are load-bearing.
   "openai>=3.14.0,<4",
-  # 2.x renamed the high-level server (mcp.server.fastmcp -> mcp.server.mcpserver)
-  # and implements protocol 2026-07-28; server.py targets that API. Capped at <3
-  # because the import path is load-bearing: an uncapped major bump is how 0.8.0
-  # shipped uninstallable while uv.lock kept every dev and CI environment green.
-  "mcp>=2.2.0,<3",
   "click>=8.2.0",
   "httpx>=0.27.0",
   "anyio>=4.0.0",
@@ -67,11 +62,6 @@ dependencies = [
   # and README promises that for every install, not only `uv sync`. It used to
   # arrive transitively via pydantic-settings — a coincidence, not a contract.
   "python-dotenv>=1.0.0",
-  # server.py imports both directly (middleware types, the HTTP entrypoint).
-  # They arrive transitively via mcp today; declared so an mcp minor reshuffling
-  # its dependencies cannot break `sanzaru --transport http`. Floors match mcp's.
-  "starlette>=0.27",
-  "uvicorn>=0.31.1",
 ]
 
 [project.urls]
@@ -81,6 +71,21 @@ Documentation = "https://github.com/TJC-LP/sanzaru/tree/main/docs"
 "Source Code" = "https://github.com/TJC-LP/sanzaru"
 
 [project.optional-dependencies]
+# The MCP server. The base install is the agent CLI and carries nothing of this:
+# `sanzaru <group> <verb>` never imports mcp, starlette or uvicorn (a test blocks
+# them and runs the whole command tree). Bare `sanzaru` / `sanzaru serve` need it.
+mcp = [
+  # 2.x renamed the high-level server (mcp.server.fastmcp -> mcp.server.mcpserver)
+  # and implements protocol 2026-07-28; server.py targets that API. Capped at <3
+  # because the import path is load-bearing: an uncapped major bump is how 0.8.0
+  # shipped uninstallable while uv.lock kept every dev and CI environment green.
+  "mcp>=2.2.0,<3",
+  # server.py imports both directly (middleware types, the HTTP entrypoint).
+  # They arrive transitively via mcp today; declared so an mcp minor reshuffling
+  # its dependencies cannot break `sanzaru --transport http`. Floors match mcp's.
+  "starlette>=0.27",
+  "uvicorn>=0.31.1",
+]
 video = []  # No extra deps: the Higgsfield client is httpx (core); needs HF_KEY
 audio = [
   "pydub",
@@ -99,11 +104,12 @@ elevenlabs = [
 ]
 databricks = []  # httpx already a core dep; extra exists for signaling intent
 all = [
-  "sanzaru[video,audio,image,elevenlabs]",  # databricks intentionally excluded from "all"
+  "sanzaru[mcp,video,audio,image,elevenlabs]",  # databricks intentionally excluded from "all"
 ]
 
 [dependency-groups]
 dev = [
+  "sanzaru[mcp]",  # the server tests, and `uv run sanzaru` from a bare `uv sync`
   "ruff>=0.14.3",
   "pytest>=8.0.0",
   "pytest-asyncio>=0.24.0",

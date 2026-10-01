@@ -37,14 +37,19 @@ import io
 import json
 import math
 import shutil
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import anyio
-from mcp.server.mcpserver.utilities.types import Image
 from PIL import Image as PILImage
 
 from ..config import logger
 from ..storage import get_storage
+
+if TYPE_CHECKING:
+    # Only the two MCP-facing tools below build one, and they import it at call
+    # time. This module also hosts the ffmpeg helpers the Higgsfield client and
+    # the CLI use, so a top-level import would put `mcp` on the CLI's path.
+    from mcp.server.mcpserver.utilities.types import Image
 
 #: Long edge we fit to by default. The standard resolution tier's own ceiling —
 #: below it nothing is downscaled twice, and it is ample for judging composition,
@@ -303,6 +308,8 @@ async def inspect_image(
         len(data),
     )
     note = _note(filename, source_size, source_format, delivered, fmt, data, region=region, forced=forced)
+    from mcp.server.mcpserver.utilities.types import Image
+
     return [Image(data=data, format=fmt), note]
 
 
@@ -423,6 +430,8 @@ async def inspect_video_frame(
     demuxer = safe_video_demuxer(filename)
     ffmpeg, ffprobe = _require_ffmpeg()
     storage = get_storage()
+
+    from mcp.server.mcpserver.utilities.types import Image
 
     blocks: list[Image | str] = []
 
