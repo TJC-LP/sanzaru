@@ -1,7 +1,7 @@
 {
   "name": "sanzaru",
   "description": "MCP server for multimodal media: Higgsfield video (Seedance 2.5, Kling 3.0) with per-job cost estimates and caps, gpt-image-2.5, TTS (OpenAI or ElevenLabs), transcription, scripted podcasts, and simulated podcasts where realtime or gpt-live-1 agents actually converse. Ships three skills: sanzaru-mcp (the tool surface), sanzaru-cli (the shell surface), prompt-guidance (how to write the prompts).",
-  "version": "0.13.0",
+  "version": "0.14.0",
   "author": {
     "name": "TJC L.P.",
     "url": "https://github.com/TJC-LP"
