@@ -12,6 +12,8 @@
 
 A **stateless**, lightweight **MCP** server **and agent CLI** that wraps **Higgsfield video generation** (Seedance 2.5, Kling 3.0) and **OpenAI's image, transcription, audio and TTS APIs**, plus ElevenLabs for podcasts.
 
+> **0.14.0:** the base install is the agent CLI only. Anything that launches the MCP server (`.mcp.json`, Claude Desktop, `sanzaru serve`) must install `sanzaru[mcp]` or `sanzaru[all]`. `HIGGSFIELD_BASE_URL` can point video at a credential proxy.
+>
 > **0.13.0:** OpenAI removed the Sora Videos API and every Sora model on 2026-09-24. sanzaru now generates video through the [Higgsfield API](https://higgsfield.ai/higgsfield-api) — set `HF_KEY`. Old `video_…` ids and the `list_videos` / `delete_video` / `remix_video` tools are gone.
 
 ## Features
