@@ -16,7 +16,7 @@ A stateless MCP server (`mcp.server.mcpserver.MCPServer`, mcp SDK 2.x, protocol 
 ## Development Commands
 
 ```bash
-# Install dependencies
+# Install dependencies (CI uses --all-extras; the dev group already includes the mcp extra)
 uv sync
 
 # Run the MCP server (stdio mode - default)
@@ -168,6 +168,14 @@ back-compat for every existing config is guarded by tests. Key design points:
 - **Lazy imports**: command bodies import `sanzaru.tools.*` at call time so `sanzaru --help`
   never pays the openai/MCPServer import cost (enforced by a startup-weight test); missing
   optional extras surface as `config` envelopes (exit 3) with the install command.
+- **Separate installs**: the base `sanzaru` wheel is the CLI and carries no MCP stack. `mcp`,
+  `starlette` and `uvicorn` live in the `mcp` extra (included in `all` and in the `dev` group).
+  Only `server.py` and `media_resources.py` may import them at module level; `tools/inspect.py`
+  imports the SDK's `Image` inside the two MCP-facing tools because the same module hosts the
+  ffmpeg helpers the Higgsfield client uses. `tests/cli/test_root.py` imports every other module
+  with those packages blocked. Bare `sanzaru` / `serve` check `find_spec("mcp")` and exit 3 with
+  the install command (a `find_spec`, not a caught `ImportError`, so a broken `mcp` still
+  surfaces as itself). Anything that launches the server must install `sanzaru[mcp]`.
 - CLI tests live in `tests/cli/` (CliRunner; mock at the `sanzaru.tools.*` layer).
 
 ### TTS Providers

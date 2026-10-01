@@ -142,8 +142,14 @@ uv add "sanzaru[all]"
 # Specific features
 uv add "sanzaru[audio]"       # With audio support
 uv add "sanzaru[elevenlabs]"  # ElevenLabs as a second TTS provider
-uv add sanzaru                # Base (video via HF_KEY + image; no extra deps)
+uv add sanzaru                # Base: the agent CLI only (video via HF_KEY; no MCP dependencies)
+uv add "sanzaru[mcp]"         # + the MCP server (bare `sanzaru` / `sanzaru serve`)
 ```
+
+The base install is the CLI and carries nothing from the MCP stack (`mcp`, `starlette`,
+`uvicorn`). Anything that launches the server — a `.mcp.json`, Claude Desktop, `codex mcp add` —
+must install the `mcp` extra; `sanzaru[all]` includes it. Running bare `sanzaru` without it exits 3
+with the install command.
 
 <details>
 <summary><strong>Alternative Installation Methods</strong></summary>

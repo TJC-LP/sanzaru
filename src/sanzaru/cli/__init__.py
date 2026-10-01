@@ -23,7 +23,7 @@ import click
 from ._runtime import CLIState
 
 WORKFLOW_HELP = """\
-sanzaru: MCP server (no subcommand) or agent CLI (sanzaru <group> <verb>).
+sanzaru: MCP server (no subcommand; needs `sanzaru[mcp]`) or agent CLI (sanzaru <group> <verb>).
 
 \b
 Async job workflow (video, image create):
@@ -90,9 +90,9 @@ def cli(
         # VIDEO_PATH/IMAGE_PATH/AUDIO_PATH vars still take precedence).
         os.environ["SANZARU_MEDIA_PATH"] = media_dir
     if ctx.invoked_subcommand is None:
-        from ..server import run_server  # lazy: keeps `sanzaru <cmd> --help` off the FastMCP import path
+        from .serve import run_mcp_server
 
-        run_server(transport="http" if transport == "http" else "stdio", host=host, port=port)
+        run_mcp_server(transport, host, port)
 
 
 def _register_commands() -> None:

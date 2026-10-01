@@ -84,6 +84,51 @@ def test_cli_import_is_lightweight():
     assert proc.returncode == 0, proc.stderr
 
 
+# The base install is the agent CLI; MCP lives behind the `mcp` extra. These guard
+# both halves: nothing but the server may import the MCP stack, and a CLI-only
+# install must say how to get the server rather than die on an ImportError.
+_BLOCK_MCP = (
+    "import sys\n"
+    "class _Block:\n"
+    "    def find_spec(self, name, path=None, target=None):\n"
+    "        if name.split('.')[0] in {'mcp', 'mcp_types', 'starlette', 'uvicorn'}:\n"
+    "            raise ImportError(f'{name} is blocked: the CLI install has no MCP stack')\n"
+    "sys.meta_path.insert(0, _Block())\n"
+)
+
+
+@pytest.mark.integration
+def test_everything_but_the_server_imports_without_the_mcp_stack():
+    """Every module except the two MCP-facing ones imports with mcp/starlette/uvicorn absent."""
+    code = (
+        _BLOCK_MCP
+        + "import importlib, pkgutil, sanzaru\n"
+        + "skip = {'sanzaru.server', 'sanzaru.media_resources'}\n"
+        + "for info in pkgutil.walk_packages(sanzaru.__path__, 'sanzaru.'):\n"
+        + "    if info.name in skip or '.app.' in info.name:\n"
+        + "        continue\n"
+        + "    importlib.import_module(info.name)\n"
+        + "import sanzaru.cli\n"
+        + "sanzaru.cli.cli.main(['--help'], standalone_mode=False)\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert proc.returncode == 0, proc.stderr
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("argv", [[], ["serve"]])
+def test_server_without_the_mcp_extra_exits_3_with_the_install_command(argv):
+    code = (
+        "import sys; sys.modules['mcp'] = None\n"  # find_spec treats a None entry as not installed
+        "import sanzaru.cli\n"
+        f"sanzaru.cli.cli.main({argv!r}, standalone_mode=False)\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+    assert proc.returncode == 3, proc.stderr
+    assert "sanzaru[mcp]" in proc.stderr
+    assert "Traceback" not in proc.stderr
+
+
 # ==================== EXCEPTION GROUP UNWRAPPING ====================
 
 if sys.version_info < (3, 11):  # pragma: no cover - 3.11+ has it as a builtin
