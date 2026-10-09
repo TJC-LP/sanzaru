@@ -790,10 +790,18 @@ class TestActWallClock:
     """
 
     async def test_the_act_lands_early_rather_than_racing_the_session_limit(
-        self, fake_realtime, connect_factory, brief, hosts
+        self, mocker, fake_realtime, connect_factory, brief, hosts
     ):
+        # The producer's clock advances one second per read, so every turn costs
+        # wall time. Fake turns themselves take microseconds: on 3.15 a whole act
+        # measured 0 s, and a real-clock version of this test never tripped.
+        # Patched on the producer's own `time` reference: the event loop reads
+        # time.monotonic too, and must keep the real one.
+        ticks = iter(range(1_000_000))
+        clock = mocker.patch("sanzaru.audio.realtime.producer.time")
+        clock.monotonic.side_effect = lambda: float(next(ticks))
         # A budget so small the second turn's projection already crosses it.
-        settings = SimulationSettings(turn_seconds=15.0, act_budget_s=0.001)
+        settings = SimulationSettings(turn_seconds=15.0, act_budget_s=3.0)
         factory, handed = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
 
         result = await run_act(brief, hosts, settings, connect=factory)

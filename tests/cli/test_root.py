@@ -131,9 +131,6 @@ def test_server_without_the_mcp_extra_exits_3_with_the_install_command(argv):
 
 # ==================== EXCEPTION GROUP UNWRAPPING ====================
 
-if sys.version_info < (3, 11):  # pragma: no cover - 3.11+ has it as a builtin
-    from exceptiongroup import ExceptionGroup
-
 
 @pytest.mark.unit
 def test_classify_unwraps_single_error_task_group():

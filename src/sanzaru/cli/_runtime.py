@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import functools
 import os
-import sys
 import time
 from collections.abc import Callable, Coroutine
 from dataclasses import dataclass
@@ -20,10 +19,6 @@ from typing import TYPE_CHECKING, ParamSpec, TypeVar
 
 import anyio
 import click
-
-if sys.version_info < (3, 11):  # pragma: no cover - 3.11+ has it as a builtin
-    # anyio already requires this backport below 3.11, so it is always present.
-    from exceptiongroup import BaseExceptionGroup
 
 if TYPE_CHECKING:
     from ..higgsfield.errors import HiggsfieldAPIError

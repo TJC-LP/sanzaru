@@ -19,7 +19,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, replace
 from io import BytesIO
-from typing import Literal, NoReturn, NotRequired, TypedDict, cast
+from typing import Literal, NoReturn, NotRequired, cast
 
 import anyio
 from aioresult import ResultCapture  # type: ignore[import-untyped]
@@ -27,6 +27,7 @@ from openai.types.audio.speech_model import SpeechModel
 from pydantic import BaseModel, Field
 from pydub import AudioSegment  # type: ignore[import-untyped]
 from pydub.effects import normalize as pydub_normalize  # type: ignore[import-untyped]
+from typing_extensions import TypedDict
 
 from ..audio.constants import (
     DEFAULT_RENDER_MODE,
