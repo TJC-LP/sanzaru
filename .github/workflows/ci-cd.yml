@@ -17,11 +17,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.15'
-
+      # uv installs the interpreter itself (UV_PYTHON, else .python-version).
+      # setup-python lags new releases: 3.15.0 shipped before its manifest did.
       - name: Set up uv
         uses: astral-sh/setup-uv@v7
 
@@ -42,19 +39,16 @@ jobs:
       fail-fast: false
       matrix:
         python-version: ['3.11', '3.12', '3.13', '3.14', '3.15', '3.15t']
-    # uv picks the interpreter from the repo's .python-version over the one
-    # setup-python installed, so without this every leg ran the pinned 3.14t
-    # and a "Test (3.10)" passed on a package that could not import on 3.10.
+    # Without this uv takes the interpreter from the repo's .python-version, so
+    # every leg ran the pinned 3.14t and a "Test (3.10)" passed on a package
+    # that could not import on 3.10.
     env:
       UV_PYTHON: ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v5
 
-      - name: Set up Python ${{ matrix.python-version }}
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-
+      # uv installs the interpreter itself (UV_PYTHON, else .python-version).
+      # setup-python lags new releases: 3.15.0 shipped before its manifest did.
       - name: Set up uv
         uses: astral-sh/setup-uv@v7
 
@@ -101,11 +95,8 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python-version }}
-
+      # uv installs the interpreter itself (UV_PYTHON, else .python-version).
+      # setup-python lags new releases: 3.15.0 shipped before its manifest did.
       - name: Set up uv
         uses: astral-sh/setup-uv@v7
 

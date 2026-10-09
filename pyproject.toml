@@ -135,6 +135,9 @@ sanzaru = ["app/media-viewer/dist/*.html"]
 
 [tool.uv]
 # Use `uv sync` to install dependencies.
+# 0.13.0 is the first uv that ships CPython 3.15.0 (0.12 stops at rc3), and
+# setup-uv reads this to pick the CI uv.
+required-version = ">=0.13.0"
 
 [tool.ruff]
 line-length = 120
