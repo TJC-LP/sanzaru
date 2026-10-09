@@ -1,6 +1,6 @@
 [project]
 name = "sanzaru"
-version = "0.14.0"
+version = "0.14.1"
 description = "Unified MCP server for multimodal media: Higgsfield video (Seedance, Kling), OpenAI images, speech and transcription, ElevenLabs podcasts"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -100,7 +100,7 @@ image = [
 # Optional second TTS provider. Deliberately not part of `audio` — the default
 # OpenAI path must stay installable without it.
 elevenlabs = [
-  "elevenlabs>=2.60.0",
+  "elevenlabs>=2.71.0,<3",
 ]
 databricks = []  # httpx already a core dep; extra exists for signaling intent
 all = [

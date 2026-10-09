@@ -32,7 +32,7 @@ if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
 
     from elevenlabs.client import AsyncElevenLabs
-    from elevenlabs.types.model_settings_response_model import ModelSettingsResponseModel
+    from elevenlabs.types.to_dialogue_settings_response_model import ToDialogueSettingsResponseModel
     from elevenlabs.types.voice_settings import VoiceSettings
 
 _MODELS: tuple[str, ...] = get_args(ElevenLabsModel)
@@ -51,7 +51,7 @@ _BACKOFF_BASE_SECONDS = 1.0
 # trick with a typed cast so call sites stay checkable.
 _OMIT_STR = cast(str, ...)
 _OMIT_SETTINGS = cast("VoiceSettings", ...)
-_OMIT_MODEL_SETTINGS = cast("ModelSettingsResponseModel", ...)
+_OMIT_MODEL_SETTINGS = cast("ToDialogueSettingsResponseModel", ...)
 
 # The voice id is a URL *path segment*: the Fern-generated SDK interpolates it
 # into f"v1/text-to-speech/{voice_id}" and string-concatenates that onto the
@@ -232,9 +232,9 @@ class ElevenLabsTTSProvider:
 
         settings = _OMIT_MODEL_SETTINGS
         if stability is not None:
-            from elevenlabs.types.model_settings_response_model import ModelSettingsResponseModel
+            from elevenlabs.types.to_dialogue_settings_response_model import ToDialogueSettingsResponseModel
 
-            settings = ModelSettingsResponseModel(stability=stability)
+            settings = ToDialogueSettingsResponseModel(stability=stability)
 
         stream = client.text_to_dialogue.convert(
             inputs=[DialogueInput(text=turn.text, voice_id=turn.voice) for turn in turns],

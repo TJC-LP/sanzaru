@@ -388,7 +388,13 @@ class TestDialogueRendering:
 
         await generate_podcast(dialogue_script(dialogue_stability=0.3))
 
-        assert client.dialogue_calls[0]["settings"].stability == 0.3
+        # elevenlabs 2.69 deleted the settings class this path used to import, and
+        # only a set stability reaches the import — so pin the SDK's own type.
+        from elevenlabs.types.to_dialogue_settings_response_model import ToDialogueSettingsResponseModel
+
+        settings = client.dialogue_calls[0]["settings"]
+        assert isinstance(settings, ToDialogueSettingsResponseModel)
+        assert settings.stability == 0.3
 
     async def test_stability_omitted_when_unset(self, mocker, podcast_env):
         from sanzaru.tools.podcast import generate_podcast
