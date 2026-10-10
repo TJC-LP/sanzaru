@@ -18,11 +18,8 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v5
 
-      - name: Set up Python
-        uses: actions/setup-python@v6
-        with:
-          python-version: '3.14'
-
+      # uv builds on the interpreter from .python-version, so setup-python only
+      # added a version label that was not the one in use.
       - name: Set up uv
         uses: astral-sh/setup-uv@v7
 

@@ -800,7 +800,9 @@ class TestActWallClock:
         ticks = iter(range(1_000_000))
         clock = mocker.patch("sanzaru.audio.realtime.producer.time")
         clock.monotonic.side_effect = lambda: float(next(ticks))
-        # A budget so small the second turn's projection already crosses it.
+        # Coupled to how often run_act reads the clock: act_started reads 0, turn
+        # 0's check reads 1, turn 1's reads 2, and 2 + 2/1 = 4 >= 3 cues the close
+        # on turn 1. An extra monotonic() read per turn only cues it sooner.
         settings = SimulationSettings(turn_seconds=15.0, act_budget_s=3.0)
         factory, handed = connect_factory(fake_realtime.Connection(seconds=1.0), fake_realtime.Connection(seconds=1.0))
 

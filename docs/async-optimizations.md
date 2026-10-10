@@ -123,7 +123,7 @@ source .venv/bin/activate
 uv sync
 ```
 
-**Note:** The async optimizations provide immediate benefits on standard Python 3.10+, with additional gains on 3.14t.
+**Note:** The async optimizations provide immediate benefits on standard Python 3.11+, with additional gains on free-threaded builds (3.15t is tested in CI).
 
 ## Architecture Benefits
 

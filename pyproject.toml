@@ -186,6 +186,10 @@ markers = [
 ]
 
 [tool.mypy]
+# Check against the requires-python floor, not the 3.15t interpreter that
+# .python-version gives the lint job: stubs for a newer stdlib accept APIs that
+# 3.11 does not have.
+python_version = "3.11"
 disable_error_code = ["import-untyped", "import-not-found"]
 # Test directories deliberately have no __init__.py, so two files named
 # conftest.py are ambiguous to mypy and it refuses to check *anything*
