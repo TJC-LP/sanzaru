@@ -13,9 +13,10 @@ every segment with `AudioSegment.from_mp3`.
 import os
 from collections.abc import Sequence
 from dataclasses import dataclass, replace
-from typing import Protocol, TypedDict, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 import anyio
+from typing_extensions import TypedDict
 
 from ...config import logger
 from ..constants import TTSProviderName

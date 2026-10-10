@@ -8,9 +8,10 @@ Provides two tools:
 
 import base64
 import mimetypes
-from typing import Literal, TypedDict
+from typing import Literal
 
 import anyio
+from typing_extensions import TypedDict
 
 from ..config import logger
 from ..storage.factory import get_storage

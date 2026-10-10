@@ -36,15 +36,10 @@ import json
 import math
 import os
 import pathlib
-import sys
 import time
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass, field
 from typing import ClassVar, Literal
-
-if sys.version_info < (3, 11):  # pragma: no cover - 3.11+ has it as a builtin
-    # anyio already requires this backport below 3.11, so it is always present.
-    from exceptiongroup import BaseExceptionGroup
 
 import anyio
 from aioresult import ResultCapture  # type: ignore[import-untyped]
