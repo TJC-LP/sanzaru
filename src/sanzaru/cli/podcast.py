@@ -126,6 +126,14 @@ def podcast() -> None:
     "with no error. Costs one transcription per unit.",
 )
 @click.option("-o", "--output", default=None, help="Output file or directory (default: media dir).")
+@click.option(
+    "--timestamps",
+    "timestamps_path",
+    default=None,
+    metavar="FILE",
+    help="Write each turn's start and end, and every word's, in the finished episode to this local "
+    "JSON file (ElevenLabs forced alignment; needs ELEVENLABS_API_KEY with any provider).",
+)
 @click.pass_context
 @run_async("podcast.generate")
 async def podcast_generate(
@@ -136,6 +144,7 @@ async def podcast_generate(
     render_mode: str | None,
     verify: bool,
     output: str | None,
+    timestamps_path: str | None,
 ) -> int:
     """Render a podcast from a PodcastScript JSON (recommended). SCRIPT is inline JSON, @file, or - (stdin).
 
@@ -242,13 +251,45 @@ async def podcast_generate(
         filename=plan.filename,
         verify=verify,
     )
+    timing_entry: dict[str, object] | None = None
+    if timestamps_path is not None:
+        timing_entry = await _episode_timing(parsed, result.output_file, timestamps_path)
     final_path = await finalize_output(session, plan, result.output_file)
     payload: dict[str, object] = result.model_dump(mode="json")
     payload["file"] = {"path": final_path}
+    if timing_entry is not None:
+        payload["timestamps"] = timing_entry
     reconcile_output_name(payload, final_path)
     _note_verification(result, state.quiet)
     emit(success_envelope("podcast.generate", payload, elapsed_s=time.monotonic() - started))
     return 0
+
+
+async def _episode_timing(script: dict[str, object], episode: str, path: str) -> dict[str, object]:
+    """Align the rendered episode to its script's turns and write the timing to `path`.
+
+    Runs on the finished file, so the times include the pauses, the dialogue
+    pacing, loudness normalization and any re-render that --verify made.
+    """
+    from ..audio.timing import align_turns
+    from ..storage import get_storage
+    from .audio import timing_summary, write_timing
+
+    segments = script.get("segments")
+    turns: list[str] = []
+    speakers: list[str | None] = []
+    if isinstance(segments, list):
+        for segment in segments:
+            if isinstance(segment, dict):
+                text = segment.get("text")
+                speaker = segment.get("speaker")
+                turns.append(text if isinstance(text, str) else "")
+                speakers.append(speaker if isinstance(speaker, str) else None)
+    audio_bytes = await get_storage().read("audio", episode)
+    timing, timed_turns = await align_turns(audio_bytes, episode, turns, speakers)
+    summary = timing_summary(timing, write_timing(path, timing))
+    summary["turns"] = len(timed_turns)
+    return summary
 
 
 @podcast.command("rundown")

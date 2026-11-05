@@ -210,11 +210,24 @@ the token cap, so raise `--turn-tokens` and resume instead of paying for the sam
   `sanzaru image prepare hero.png --aspect-ratio 16:9` (image-to-video framing follows the image) then
   `video create "she turns and smiles" --image ...`.
 
+## Word timing
+
+`gpt-transcribe` (the default) returns text only. For word start and end times:
+
+- audio you rendered: `audio speak ... --timestamps words.json` or
+  `podcast generate ... --timestamps timing.json` (adds each turn's start and end);
+- audio whose text you know: `audio align FILE @script.txt -o words.json`;
+- audio whose text you do not know: `audio transcribe --model scribe_v2 --timestamps word FILE`.
+
+The first three use ElevenLabs forced alignment on the finished file and need
+`ELEVENLABS_API_KEY` whatever the TTS provider.
+
 ## Command map
 
 `video` create/edit/extend/status/wait/download/cancel/models/files · `image`
 generate/edit/create/status/wait/download/prepare/files · `audio`
-transcribe(--enhance; auto-windows files over 8 min)/chat/speak(--provider)/convert/compress/files(--latest) ·
-`podcast` rundown/simulate/generate(--provider, --render-mode) ·
+transcribe(gpt-transcribe default; scribe_v2 for word times; --enhance; auto-windows files over 8 min)/align/chat/
+speak(--provider, --timestamps)/convert/compress/files(--latest) ·
+`podcast` rundown/simulate/generate(--provider, --render-mode, --timestamps) ·
 `wait` (mixed ids) · `capabilities` · `serve` (MCP server; bare `sanzaru` does the same).
 Every command supports `-h`; details in docs/cli.md.
