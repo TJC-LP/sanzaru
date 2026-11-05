@@ -1,9 +1,9 @@
 [project]
 name = "sanzaru"
-version = "0.14.1"
+version = "0.15.0"
 description = "Unified MCP server for multimodal media: Higgsfield video (Seedance, Kling), OpenAI images, speech and transcription, ElevenLabs podcasts"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = {text = "MIT"}
 authors = [
     {name = "Richie Caputo", email = "rcaputo3@tjclp.com"}
@@ -33,11 +33,11 @@ classifiers = [
     "Intended Audience :: Developers",
     "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Multimedia :: Video",
     "Topic :: Multimedia :: Sound/Audio",
@@ -62,6 +62,9 @@ dependencies = [
   # and README promises that for every install, not only `uv sync`. It used to
   # arrive transitively via pydantic-settings — a coincidence, not a contract.
   "python-dotenv>=1.0.0",
+  # pydantic refuses typing.TypedDict below 3.12 when it builds a schema from
+  # one (every MCP tool return type), so TypedDicts come from here.
+  "typing-extensions>=4.12.0",
 ]
 
 [project.urls]
@@ -110,13 +113,13 @@ all = [
 [dependency-groups]
 dev = [
   "sanzaru[mcp]",  # the server tests, and `uv run sanzaru` from a bare `uv sync`
-  "ruff>=0.14.3",
+  "ruff>=0.17.0",
   "pytest>=8.0.0",
   "pytest-asyncio>=0.24.0",
   "pytest-mock>=3.14.0",
   "pytest-cov>=6.0.0",
   "pre-commit>=3.6.0",
-  "mypy>=1.18.0",
+  "mypy>=2.4.0",
   "types-aiofiles",
 ]
 
@@ -132,10 +135,13 @@ sanzaru = ["app/media-viewer/dist/*.html"]
 
 [tool.uv]
 # Use `uv sync` to install dependencies.
+# 0.13.0 is the first uv that ships CPython 3.15.0 (0.12 stops at rc3), and
+# setup-uv reads this to pick the CI uv.
+required-version = ">=0.13.0"
 
 [tool.ruff]
 line-length = 120
-target-version = "py310"
+target-version = "py311"
 
 [tool.ruff.lint]
 select = [
@@ -148,15 +154,22 @@ select = [
   "B",   # flake8-bugbear
   "C4",  # flake8-comprehensions
   "SIM", # flake8-simplify
+  "TID251", # banned-api (below)
 ]
 # Ignore line-too-long for strings (allows readable multi-line tool descriptions)
 ignore = ["E501"]
+
+[tool.ruff.lint.flake8-tidy-imports.banned-api]
+"typing.TypedDict".msg = "Use typing_extensions.TypedDict: pydantic rejects typing.TypedDict below Python 3.12."
 
 [tool.ruff.lint.per-file-ignores]
 # Ignore SIM117 in tests - nested with statements are intentional for pytest.raises
 "tests/**/*.py" = ["SIM117"]
 
 [tool.ruff.format]
+# ruff 0.17 started formatting code blocks inside Markdown; the docs keep their
+# hand-wrapped examples.
+exclude = ["*.md"]
 quote-style = "double"
 indent-style = "space"
 
@@ -173,6 +186,10 @@ markers = [
 ]
 
 [tool.mypy]
+# Check against the requires-python floor, not the 3.15t interpreter that
+# .python-version gives the lint job: stubs for a newer stdlib accept APIs that
+# 3.11 does not have.
+python_version = "3.11"
 disable_error_code = ["import-untyped", "import-not-found"]
 # Test directories deliberately have no __init__.py, so two files named
 # conftest.py are ambiguous to mypy and it refuses to check *anything*

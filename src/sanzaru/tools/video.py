@@ -24,10 +24,11 @@ from __future__ import annotations
 
 import functools
 from dataclasses import dataclass
-from typing import Literal, TypedDict
+from typing import Literal
 from urllib.parse import urlsplit
 
 import anyio
+from typing_extensions import TypedDict
 
 from ..config import get_higgsfield_client, logger
 from ..higgsfield.errors import HiggsfieldAPIError

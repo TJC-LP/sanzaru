@@ -184,7 +184,7 @@ src/mcp_server_whisper/
 
 ## Technology Stack
 
-- **Language**: Python 3.10+
+- **Language**: Python 3.11+
 - **Audio Processing**: pydub, audioop-lts (Python 3.13+)
 - **Async Framework**: anyio (structured concurrency), aiofiles
 - **Concurrency**: aioresult for result collection from task groups

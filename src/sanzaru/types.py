@@ -4,10 +4,11 @@
 This module contains TypedDict and Pydantic model definitions used across the server.
 """
 
-from typing import Literal, TypedDict
+from typing import Literal
 
 from openai.types.images_response import Usage as ImageUsage
 from pydantic import BaseModel
+from typing_extensions import TypedDict
 
 
 class DownloadResult(TypedDict):

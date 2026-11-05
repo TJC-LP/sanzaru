@@ -6,15 +6,11 @@ spends nothing.
 """
 
 import json
-import sys
 
 import pytest
 from click.testing import CliRunner
 
 from sanzaru.cli import cli
-
-if sys.version_info < (3, 11):  # pragma: no cover - 3.11+ has it as a builtin
-    from exceptiongroup import BaseExceptionGroup
 
 pytestmark = pytest.mark.integration
 

@@ -22,9 +22,9 @@ This document helps contributors work effectively in this repository.
 - Example: `create_video(prompt="wide tracking shot of a neon-lit rainy alley, cinematic, 35mm", aspect_ratio="16:9", duration=8, max_cost_usd=5)`
 
 ## Coding Style & Naming Conventions
-- Python 3.10+, typed (prefer `TypedDict`, explicit return types).
+- Python 3.11+, typed (prefer `TypedDict`, explicit return types).
 - `snake_case` for functions/vars, `PascalCase` for classes, constants UPPER_SNAKE.
-- Lint/format with `ruff` (line length 120, py310). Run: `uv run ruff check .` and `uv run ruff format .`.
+- Lint/format with `ruff` (line length 120, py311). Run: `uv run ruff check .` and `uv run ruff format .`.
 
 ## Testing Guidelines
 - Tests: `uv run pytest` (unit + integration with mocked clients); for live checks, create → `wait_for` → download for videos/images.

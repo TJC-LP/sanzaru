@@ -30,7 +30,9 @@ import math
 import os
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import Literal, TypedDict
+from typing import Literal
+
+from typing_extensions import TypedDict
 
 from .errors import CostCapExceededError, UnpricedVideoError
 from .types import EstimateResponse

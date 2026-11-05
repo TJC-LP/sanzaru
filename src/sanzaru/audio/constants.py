@@ -4,7 +4,7 @@
 Migrated from mcp-server-whisper v1.1.0 by Richie Caputo (MIT license).
 """
 
-from enum import Enum
+from enum import StrEnum
 from typing import Literal
 
 from openai.types import AudioModel
@@ -254,7 +254,7 @@ ENHANCEMENT_PROMPTS: dict[EnhancementType, str] = {
 }
 
 
-class SortBy(str, Enum):
+class SortBy(StrEnum):
     """Sorting options for audio files."""
 
     NAME = "name"

@@ -65,7 +65,7 @@ A **stateless**, lightweight **MCP** server **and agent CLI** that wraps **Higgs
 > **Note:** Content guardrails are enforced by OpenAI. This server does not run local moderation.
 
 ## Requirements
-- Python 3.10+
+- Python 3.11+ (tested through 3.15 and 3.15t)
 - `OPENAI_API_KEY` for images, audio and podcasts
 - `HF_KEY` for video — a Higgsfield **API** key (`key_id:key_secret`) from the API console. The API is
   prepaid and billed separately from a Higgsfield app/CLI subscription; the video tools register only when it is set
@@ -429,7 +429,7 @@ Fully asynchronous architecture with proven scalability:
 - ✅ 32+ concurrent operations verified
 - ✅ 8-10x speedup for parallel tasks
 - ✅ Non-blocking I/O with `aiofiles` + `anyio`
-- ✅ Python 3.14 free-threading ready
+- ✅ Free-threaded Python ready (3.15t tested in CI)
 
 See [docs/async-optimizations.md](docs/async-optimizations.md) for technical details.
 

@@ -7,7 +7,9 @@ terminal state; `video` is present only on `completed`.
 
 from __future__ import annotations
 
-from typing import Literal, NotRequired, TypedDict
+from typing import Literal, NotRequired
+
+from typing_extensions import TypedDict
 
 RequestState = Literal["queued", "in_progress", "completed", "failed", "nsfw", "canceled"]
 TERMINAL_STATES: frozenset[str] = frozenset({"completed", "failed", "nsfw", "canceled"})
