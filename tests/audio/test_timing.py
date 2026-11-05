@@ -71,9 +71,10 @@ async def test_align_returns_words_without_turns(fake_client):
 
 @pytest.mark.unit
 async def test_a_tag_only_turn_has_no_span(fake_client):
-    _, turns = await timing.align_turns(b"mp3", "ep.mp3", ["Hello.", "[laughs]", "Bye."])
+    _, turns = await timing.align_turns(b"mp3", "ep.mp3", ["[laughs]", "Hello.", "[laughs]", "Bye.", "[sighs]"])
 
-    assert [t.index for t in turns] == [0, 2]
+    assert fake_client.forced_alignment.texts == ["Hello. Bye."]
+    assert [(t.index, t.text, t.start) for t in turns] == [(1, "Hello.", 0.0), (3, "Bye.", pytest.approx(0.7))]
 
 
 @pytest.mark.unit

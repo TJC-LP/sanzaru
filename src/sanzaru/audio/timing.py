@@ -109,12 +109,15 @@ async def align_turns(
     if speakers is not None and len(speakers) != len(turns):
         raise ValueError(f"{len(speakers)} speakers for {len(turns)} turns")
 
+    # A turn that is only tags has nothing to align and stays out of the
+    # joined text, so it never adds a doubled, leading or trailing space.
+    spoken = [(index, text) for index, text in enumerate(cleaned) if text]
     offsets: list[tuple[int, int]] = []
     position = 0
-    for turn in cleaned:
-        offsets.append((position, position + len(turn)))
-        position += len(turn) + 1
-    joined = " ".join(cleaned)
+    for _, text in spoken:
+        offsets.append((position, position + len(text)))
+        position += len(text) + 1
+    joined = " ".join(text for _, text in spoken)
 
     client = get_elevenlabs_client()
     response = await _with_retries(
@@ -128,9 +131,7 @@ async def align_turns(
     ends = [character.end for character in response.characters]
 
     timed_turns: list[TimedTurn] = []
-    for index, (text, (first, last)) in enumerate(zip(cleaned, offsets, strict=True)):
-        if first == last:
-            continue
+    for (index, text), (first, last) in zip(spoken, offsets, strict=True):
         start, end = starts[first], ends[last - 1]
         timed_turns.append(
             TimedTurn(
