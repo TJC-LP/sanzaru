@@ -508,7 +508,7 @@ if check_audio_available():
     @_llm_facing
     async def transcribe_audio(
         file_path: str,
-        model: AudioModel = "gpt-4o-mini-transcribe",
+        model: AudioModel = "gpt-transcribe",
         response_format: AudioResponseFormat = "text",
         prompt: str | None = None,
         timestamp_granularities: list[Literal["word", "segment"]] | None = None,
@@ -530,7 +530,7 @@ if check_audio_available():
     async def transcribe_with_enhancement(
         file_path: str,
         enhancement_type: EnhancementType = "detailed",
-        model: AudioModel = "gpt-4o-mini-transcribe",
+        model: AudioModel = "gpt-transcribe",
     ):
         return await audio.transcribe_with_enhancement(file_path, enhancement_type, model)
 

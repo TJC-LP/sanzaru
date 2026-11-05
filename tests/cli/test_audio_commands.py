@@ -28,6 +28,7 @@ def test_audio_transcribe_single_file(mocker):
     assert parsed["result"]["text"] == "hello world"
     assert parsed["input"] == {"index": 0, "file": "meeting.mp3"}
     assert transcribe.call_args.kwargs["input_file_name"] == "meeting.mp3"
+    assert transcribe.call_args.kwargs["model"] == "gpt-transcribe"
 
 
 @pytest.mark.integration

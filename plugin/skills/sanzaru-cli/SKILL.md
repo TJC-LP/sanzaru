@@ -5,7 +5,7 @@ description: Generate videos (Higgsfield — Seedance 2.5, Kling 3.0; priced bef
 
 # Sanzaru CLI for agents
 
-`sanzaru <group> <verb>` wraps Higgsfield video, gpt-image-2.5, TTS/Whisper, and podcast APIs
+`sanzaru <group> <verb>` wraps Higgsfield video, gpt-image-2.5, TTS/transcription, and podcast APIs
 for shell use. Requires `OPENAI_API_KEY` in the environment, and `HF_KEY` (a Higgsfield **API**
 key, `key_id:key_secret` — prepaid, billed separately from a Higgsfield app subscription) for video. This skill is the **shell surface**;
 the same server's MCP tools are covered by `sanzaru-mcp`, and how to *write* the prompts (video

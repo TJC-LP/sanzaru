@@ -605,9 +605,9 @@ Standard transcription tool for converting speech to text with high accuracy.
 Supports multiple models, response formats, and advanced features like timestamps.
 
 Model recommendations:
-- gpt-4o-mini-transcribe: RECOMMENDED - Fast, accurate, cost-effective (DEFAULT)
-- gpt-4o-transcribe: Maximum accuracy, slower, more expensive
-- whisper-1: Original Whisper model, rarely needed but available
+- gpt-transcribe: RECOMMENDED - OpenAI's current transcription model (DEFAULT)
+- gpt-4o-transcribe / gpt-4o-mini-transcribe: older GPT-4o models
+- whisper-1: deprecated (shuts down 2027-02-26); the only model with word or segment timestamps
 
 Supported formats: flac, mp3, mp4, mpeg, mpga, m4a, ogg, wav, webm
 
@@ -620,7 +620,7 @@ check coverage rather than trust it.
 
 Parameters:
 - input_file_name: Name of the audio file to transcribe (required)
-- model: Transcription model. Default: "gpt-4o-mini-transcribe"
+- model: Transcription model. Default: "gpt-transcribe"
 - response_format: Output format. Default: "text"
   * "text": Plain text transcription
   * "json": JSON with text
@@ -708,7 +708,7 @@ Enhancement types:
 Parameters:
 - input_file_name: Name of the audio file to transcribe (required)
 - enhancement_type: Type of enhancement. Default: "detailed"
-- model: Transcription model. Default: "gpt-4o-mini-transcribe"
+- model: Transcription model. Default: "gpt-transcribe"
 - response_format: Output format. Default: "text"
 - timestamp_granularities: Optional timestamp granularities (optional)
 

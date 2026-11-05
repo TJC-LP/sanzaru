@@ -33,7 +33,7 @@ A **stateless**, lightweight **MCP** server **and agent CLI** that wraps **Higgs
 - Crop a reference image to a video aspect ratio (image-to-video framing follows the image)
 
 ### Audio Processing
-- **Transcription**: Whisper and GPT-4o models
+- **Transcription**: `gpt-transcribe` (default), GPT-4o models and `whisper-1` (deprecated)
 - **Audio Chat**: Interactive analysis with GPT-4o
 - **Text-to-Speech**: Multi-voice TTS generation
 - **Processing**: Format conversion, compression, file management

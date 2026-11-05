@@ -75,7 +75,7 @@ class TranscriptionService:
     async def transcribe_audio(
         self,
         filename: str,
-        model: AudioModel = "gpt-4o-mini-transcribe",
+        model: AudioModel = "gpt-transcribe",
         response_format: AudioResponseFormat = "text",
         prompt: str | None = None,
         timestamp_granularities: list[Literal["word", "segment"]] | None = None,
@@ -279,7 +279,7 @@ class TranscriptionService:
         self,
         filename: str,
         enhancement_type: EnhancementType,
-        model: AudioModel = "gpt-4o-mini-transcribe",
+        model: AudioModel = "gpt-transcribe",
         response_format: AudioResponseFormat = "text",
         timestamp_granularities: list[Literal["word", "segment"]] | None = None,
     ) -> TranscriptionResult:

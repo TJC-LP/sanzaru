@@ -54,7 +54,7 @@ _AUDIO_CHAT_MODELS = [
     "gpt-audio-mini-2025-10-06",
     "gpt-audio-mini-2025-12-15",
 ]
-_TRANSCRIBE_MODELS = ["gpt-4o-mini-transcribe", "gpt-4o-transcribe", "whisper-1"]
+_TRANSCRIBE_MODELS = ["gpt-transcribe", "gpt-4o-mini-transcribe", "gpt-4o-transcribe", "whisper-1"]
 _ENHANCEMENTS = ["detailed", "storytelling", "professional", "analytical"]
 
 
@@ -173,14 +173,14 @@ def audio() -> None:
 
 @audio.command("transcribe")
 @click.argument("files", nargs=-1, required=True)
-@click.option("--model", type=click.Choice(_TRANSCRIBE_MODELS), default="gpt-4o-mini-transcribe", show_default=True)
+@click.option("--model", type=click.Choice(_TRANSCRIBE_MODELS), default="gpt-transcribe", show_default=True)
 @click.option(
     "--format",
     "response_format",
     type=click.Choice(["text", "json", "verbose_json", "srt", "vtt"]),
     default="text",
     show_default=True,
-    help="gpt-4o models support text/json only; use whisper-1 for srt/vtt/verbose_json.",
+    help="gpt-transcribe and gpt-4o models support text/json only; whisper-1 (deprecated) adds srt/vtt/verbose_json.",
 )
 @click.option("--prompt", default=None, help="Guidance prompt (mutually exclusive with --enhance).")
 @click.option("--enhance", type=click.Choice(_ENHANCEMENTS), default=None, help="Templated enhancement style.")
@@ -188,7 +188,7 @@ def audio() -> None:
     "--timestamps",
     type=click.Choice(["word", "segment"]),
     multiple=True,
-    help="whisper-1 + verbose_json only; repeatable.",
+    help="whisper-1 (deprecated) + verbose_json only; repeatable.",
 )
 @click.option("--concurrency", type=click.IntRange(1, 16), default=4, show_default=True)
 @run_async("audio.transcribe")

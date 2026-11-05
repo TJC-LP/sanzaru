@@ -117,14 +117,14 @@ class TranscribeAudioInputParamsBase(BaseInputPath):
     """Base params for transcribing audio with audio-to-text model."""
 
     model: AudioModel = Field(
-        default="gpt-4o-mini-transcribe",
-        description="The transcription model to use (e.g., 'whisper-1', 'gpt-4o-transcribe', 'gpt-4o-mini-transcribe')",
+        default="gpt-transcribe",
+        description="The transcription model to use (e.g., 'gpt-transcribe', 'gpt-4o-transcribe', 'whisper-1')",
     )
     response_format: AudioResponseFormat = Field(
         "text",
         description="The response format of the transcription model. "
         'Use `verbose_json` with `model="whisper-1"` for timestamps. '
-        "`gpt-4o-transcribe` and `gpt-4o-mini-transcribe` only support `text` and `json`.",
+        "`gpt-transcribe`, `gpt-4o-transcribe` and `gpt-4o-mini-transcribe` only support `text` and `json`.",
     )
     timestamp_granularities: list[Literal["word", "segment"]] | None = Field(
         None,
