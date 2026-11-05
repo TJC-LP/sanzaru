@@ -124,6 +124,7 @@ PODCAST_TARGET_FRAME_RATE = 44100
 
 # Model Lists (for file support detection)
 TRANSCRIPTION_MODELS: list[AudioModel] = [
+    "gpt-transcribe",
     "whisper-1",
     "gpt-4o-transcribe",
     "gpt-4o-mini-transcribe",

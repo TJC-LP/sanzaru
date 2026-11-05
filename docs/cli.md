@@ -231,9 +231,10 @@ sanzaru image create "add neon rain and a cityscape" --previous-id "$R1" -o ./ar
 ### `sanzaru audio` — synchronous audio ops (requires `sanzaru[audio]`)
 | Command | Purpose |
 |---------|---------|
-| `transcribe FILE...` | Whisper/GPT-4o transcription; `--enhance detailed\|storytelling\|professional\|analytical`, `--format`, `--timestamps`; multi-file fan-out; files over 8 min are auto-windowed (`result.chunked`) |
+| `transcribe FILE...` | Transcription, `gpt-transcribe` by default; `--model scribe_v2` (ElevenLabs) adds word times with `--timestamps word`, `whisper-1` (deprecated) with `--format verbose_json --timestamps word\|segment`; `--enhance detailed\|storytelling\|professional\|analytical`, `--format`; multi-file fan-out; OpenAI files over 8 min are auto-windowed (`result.chunked`) |
+| `align FILE TEXT` | Word start and end times for audio whose text you know (ElevenLabs forced alignment); TEXT is inline, `@file` or `-`; inline audio tags are removed first; `-o` also writes the JSON |
 | `chat FILE` | Ask questions about audio content (`--prompt`, `--system`) |
-| `speak TEXT` | TTS (`--provider`, `--model`, `--voice`, `--instructions`, `--speed`, `--voice-settings`); long text auto-chunks; `-o FILE` without an extension gets `.mp3` |
+| `speak TEXT` | TTS (`--provider`, `--model`, `--voice`, `--instructions`, `--speed`, `--voice-settings`); long text auto-chunks; `-o FILE` without an extension gets `.mp3`; `--timestamps FILE` aligns the rendered file and writes its word times |
 | `convert FILE` | To mp3/wav (`--to`); `-o FILE` without an extension gets `.<to>` |
 | `compress FILE` | Fit a size budget (`--max-mb`, default 25); `-o FILE` must carry an audio extension — the result is mp3 when re-encoded but keeps the input's format when it was already small enough |
 | `files` | List with filters (`--pattern/--format/--min-duration/...`); `--latest` prints only the newest. `--pattern` is a case-insensitive substring or glob (`"*.mp3"`, `"ep0?"`), **not a regex** — `^ $ | ( ) + \` are a usage error |
@@ -477,6 +478,16 @@ tier caps still win when set. The `-o` name must be a bare filename with an audi
 (`mp3`, `wav`, `m4a`, `flac`, `ogg`, …) and may not be a simulated run's bookkeeping
 (`simrun_<id>.json`) or the audio of a recorded act (a `<name>.json` act sidecar beside it); all
 three refusals are usage errors (exit 2) and cost nothing.
+
+#### `--timestamps`
+
+`--timestamps FILE` aligns the finished episode to the script with ElevenLabs forced alignment and
+writes a JSON file: every word's `start` and `end`, and a `turns` list with each segment's `index`,
+`speaker`, `start`, `end` and words, in seconds from the start of the file. It runs after
+stitching, so the times include pauses, dialogue pacing, loudness normalization and any `--verify`
+re-render. Inline audio tags are removed before alignment; a segment that is only a tag has no
+entry. It needs `ELEVENLABS_API_KEY` whatever the TTS provider; the envelope's `timestamps` entry
+gives the path, the word and turn counts and the alignment `loss`.
 
 #### `--verify`
 

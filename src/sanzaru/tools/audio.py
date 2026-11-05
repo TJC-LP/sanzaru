@@ -152,7 +152,7 @@ async def compress_audio(
 
 async def transcribe_audio(
     input_file_name: str,
-    model: AudioModel = "gpt-4o-mini-transcribe",
+    model: AudioModel = "gpt-transcribe",
     response_format: AudioResponseFormat = "text",
     prompt: str | None = None,
     timestamp_granularities: list[Literal["word", "segment"]] | None = None,
@@ -161,7 +161,7 @@ async def transcribe_audio(
 
     Args:
         input_file_name: Name of the input audio file to process
-        model: Transcription model (whisper-1, gpt-4o-transcribe, gpt-4o-mini-transcribe)
+        model: Transcription model (gpt-transcribe, gpt-4o-transcribe, gpt-4o-mini-transcribe, whisper-1)
         response_format: Response format (text, json, verbose_json, srt, vtt)
         prompt: Optional prompt to guide the transcription
         timestamp_granularities: Optional timestamp granularities (word, segment)
@@ -211,7 +211,7 @@ async def chat_with_audio(
 async def transcribe_with_enhancement(
     input_file_name: str,
     enhancement_type: EnhancementType = "detailed",
-    model: AudioModel = "gpt-4o-mini-transcribe",
+    model: AudioModel = "gpt-transcribe",
     response_format: AudioResponseFormat = "text",
     timestamp_granularities: list[Literal["word", "segment"]] | None = None,
 ) -> TranscriptionResult:

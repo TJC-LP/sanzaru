@@ -14,6 +14,7 @@ anyone spends realtime money on it.
 from __future__ import annotations
 
 import json
+import pathlib
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
@@ -32,7 +33,15 @@ from ._io import (
 )
 from ._output import EXIT_CONFIG, EXIT_PARTIAL, EXIT_USAGE, emit, note, success_envelope
 from ._runtime import CLIError, _classify, find_in_group, get_state, run_async
-from .audio import _ELEVENLABS_DEFAULT, _ELEVENLABS_MODELS, _PROVIDERS, _TTS_MODELS, resolve_tts_model
+from .audio import (
+    _ELEVENLABS_DEFAULT,
+    _ELEVENLABS_MODELS,
+    _PROVIDERS,
+    _TTS_MODELS,
+    prepare_timing,
+    resolve_tts_model,
+    timing_failed,
+)
 
 if TYPE_CHECKING:
     # Runtime import would pull openai/pydantic in at `sanzaru.cli` import time.
@@ -126,6 +135,14 @@ def podcast() -> None:
     "with no error. Costs one transcription per unit.",
 )
 @click.option("-o", "--output", default=None, help="Output file or directory (default: media dir).")
+@click.option(
+    "--timestamps",
+    "timestamps_path",
+    default=None,
+    metavar="FILE",
+    help="Write each turn's start and end, and every word's, in the finished episode to this local "
+    "JSON file (ElevenLabs forced alignment; needs ELEVENLABS_API_KEY with any provider).",
+)
 @click.pass_context
 @run_async("podcast.generate")
 async def podcast_generate(
@@ -136,6 +153,7 @@ async def podcast_generate(
     render_mode: str | None,
     verify: bool,
     output: str | None,
+    timestamps_path: str | None,
 ) -> int:
     """Render a podcast from a PodcastScript JSON (recommended). SCRIPT is inline JSON, @file, or - (stdin).
 
@@ -230,6 +248,7 @@ async def podcast_generate(
     session = PathSession()
     plan = plan_output(session, output, "audio", quiet=state.quiet)
     install_overrides(session)
+    timing_target = prepare_timing(timestamps_path) if timestamps_path is not None else None
 
     started = time.monotonic()
     result = await podcast_tools.generate_podcast(
@@ -242,13 +261,50 @@ async def podcast_generate(
         filename=plan.filename,
         verify=verify,
     )
+    audio_bytes: bytes | None = None
+    if timing_target is not None:
+        from ..storage import get_storage
+
+        audio_bytes = await get_storage().read("audio", result.output_file)
     final_path = await finalize_output(session, plan, result.output_file)
     payload: dict[str, object] = result.model_dump(mode="json")
     payload["file"] = {"path": final_path}
+    if timing_target is not None and audio_bytes is not None:
+        try:
+            payload["timestamps"] = await _episode_timing(parsed, result.output_file, audio_bytes, timing_target)
+        except Exception as exc:
+            raise timing_failed(exc, final_path) from exc
     reconcile_output_name(payload, final_path)
     _note_verification(result, state.quiet)
     emit(success_envelope("podcast.generate", payload, elapsed_s=time.monotonic() - started))
     return 0
+
+
+async def _episode_timing(
+    script: dict[str, object], episode: str, audio_bytes: bytes, target: pathlib.Path
+) -> dict[str, object]:
+    """Align the rendered episode to its script's turns and write the timing to `path`.
+
+    Runs on the finished file, so the times include the pauses, the dialogue
+    pacing, loudness normalization and any re-render that --verify made.
+    """
+    from ..audio.timing import align_turns
+    from .audio import timing_summary, write_timing
+
+    segments = script.get("segments")
+    turns: list[str] = []
+    speakers: list[str | None] = []
+    if isinstance(segments, list):
+        for segment in segments:
+            if isinstance(segment, dict):
+                text = segment.get("text")
+                speaker = segment.get("speaker")
+                turns.append(text if isinstance(text, str) else "")
+                speakers.append(speaker if isinstance(speaker, str) else None)
+    timing, timed_turns = await align_turns(audio_bytes, episode, turns, speakers)
+    summary = timing_summary(timing, write_timing(target, timing))
+    summary["turns"] = len(timed_turns)
+    return summary
 
 
 @podcast.command("rundown")

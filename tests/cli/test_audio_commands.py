@@ -28,6 +28,7 @@ def test_audio_transcribe_single_file(mocker):
     assert parsed["result"]["text"] == "hello world"
     assert parsed["input"] == {"index": 0, "file": "meeting.mp3"}
     assert transcribe.call_args.kwargs["input_file_name"] == "meeting.mp3"
+    assert transcribe.call_args.kwargs["model"] == "gpt-transcribe"
 
 
 @pytest.mark.integration
@@ -817,3 +818,212 @@ def test_audio_files_regex_pattern_is_a_usage_error(mocker):
     assert result.exit_code == 2
     error = json.loads(result.stdout)["error"]
     assert error["type"] == "usage" and "regex syntax" in error["message"]
+
+
+# ---------- word timing (forced alignment, Scribe) ----------
+
+
+def _timing(words, turns=None):
+    from sanzaru.audio.timing import TimedTurn, TimedWord, Timing
+
+    return Timing(
+        source="forced_alignment",
+        text=" ".join(w for w, _ in words),
+        words=[TimedWord(text=w, start=s, end=s + 0.2) for w, s in words],
+        turns=[TimedTurn(**t) for t in turns] if turns else None,
+        loss=0.6,
+    )
+
+
+@pytest.mark.integration
+def test_audio_align_reads_the_file_and_writes_the_timing(mocker, tmp_path):
+    (tmp_path / "n.mp3").write_bytes(b"mp3")
+    align = mocker.patch("sanzaru.audio.timing.align", mocker.AsyncMock(return_value=_timing([("Growth", 0.1)])))
+
+    result = CliRunner().invoke(
+        cli, ["audio", "align", str(tmp_path / "n.mp3"), "Growth", "-o", str(tmp_path / "words.json")]
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert align.call_args.args == (b"mp3", "n.mp3", "Growth")
+    parsed = json.loads(result.stdout)
+    assert parsed["result"]["words"] == [{"text": "Growth", "start": 0.1, "end": pytest.approx(0.3)}]
+    assert json.loads((tmp_path / "words.json").read_text())["source"] == "forced_alignment"
+
+
+@pytest.fixture
+def elevenlabs_client():
+    from sanzaru.config import set_elevenlabs_client
+
+    set_elevenlabs_client(object())  # type: ignore[arg-type]
+    yield
+    set_elevenlabs_client(None)
+
+
+@pytest.mark.integration
+def test_audio_speak_timestamps_align_the_rendered_file(mocker, tmp_path, elevenlabs_client):
+    async def fake_tts(text_prompt, model, voice, instructions, speed, output_file_name, provider, voice_settings):
+        (tmp_path / output_file_name).write_bytes(b"spoken")
+        return TTSResult(output_file=output_file_name)
+
+    mocker.patch("sanzaru.tools.audio.create_audio", mocker.AsyncMock(side_effect=fake_tts))
+    align = mocker.patch(
+        "sanzaru.audio.timing.align", mocker.AsyncMock(return_value=_timing([("Hello", 0.1), ("there", 0.5)]))
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        [
+            "audio",
+            "speak",
+            "[calm] Hello there",
+            "--voice",
+            "nova",
+            "-o",
+            str(tmp_path / "n.mp3"),
+            "--timestamps",
+            str(tmp_path / "n.json"),
+        ],
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert align.call_args.args == (b"spoken", "n.mp3", "[calm] Hello there")
+    stamps = json.loads(result.stdout)["result"]["timestamps"]
+    assert stamps["path"] == str((tmp_path / "n.json").resolve())
+    assert stamps["words"] == 2 and stamps["first_word_start"] == 0.1
+    assert [w["text"] for w in json.loads((tmp_path / "n.json").read_text())["words"]] == ["Hello", "there"]
+
+
+@pytest.mark.integration
+def test_podcast_generate_timestamps_align_the_episode_to_its_turns(mocker, tmp_path, elevenlabs_client):
+    script = {
+        "speakers": [{"name": "A", "voice": "ash"}, {"name": "B", "voice": "nova"}],
+        "segments": [{"speaker": "A", "text": "Why?"}, {"speaker": "B", "text": "[laughs] Because."}],
+    }
+
+    async def fake_podcast(parsed_script, model, provider, filename=None, verify=False):
+        (tmp_path / filename).write_bytes(b"episode")
+        return PodcastResult(
+            output_file=filename,
+            title="t",
+            segment_count=2,
+            estimated_duration_seconds=2.0,
+            speakers=["A", "B"],
+            transcript="",
+        )
+
+    mocker.patch("sanzaru.tools.podcast.generate_podcast", mocker.AsyncMock(side_effect=fake_podcast))
+    turns = [
+        {"index": 0, "speaker": "A", "text": "Why?", "start": 0.1, "end": 0.4, "words": []},
+        {"index": 1, "speaker": "B", "text": "Because.", "start": 0.9, "end": 1.5, "words": []},
+    ]
+    timing = _timing([("Why?", 0.1), ("Because.", 0.9)], turns)
+    align_turns = mocker.patch(
+        "sanzaru.audio.timing.align_turns", mocker.AsyncMock(return_value=(timing, timing.turns))
+    )
+
+    result = CliRunner().invoke(
+        cli,
+        ["podcast", "generate", "-", "-o", str(tmp_path / "ep.mp3"), "--timestamps", str(tmp_path / "ep.json")],
+        input=json.dumps(script),
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert align_turns.call_args.args == (b"episode", "ep.mp3", ["Why?", "[laughs] Because."], ["A", "B"])
+    stamps = json.loads(result.stdout)["result"]["timestamps"]
+    assert stamps["turns"] == 2 and stamps["words"] == 2
+    written = json.loads((tmp_path / "ep.json").read_text())
+    assert [(t["speaker"], t["start"]) for t in written["turns"]] == [("A", 0.1), ("B", 0.9)]
+
+
+@pytest.mark.integration
+def test_audio_transcribe_scribe_returns_word_times(mocker, tmp_path):
+    (tmp_path / "ep.mp3").write_bytes(b"mp3")
+    scribe = mocker.patch(
+        "sanzaru.audio.timing.transcribe_scribe", mocker.AsyncMock(return_value=_timing([("Hi", 0.1)]))
+    )
+    openai_path = mocker.patch("sanzaru.tools.audio.transcribe_audio", mocker.AsyncMock())
+
+    result = CliRunner().invoke(
+        cli, ["audio", "transcribe", "--model", "scribe_v2", "--timestamps", "word", str(tmp_path / "ep.mp3")]
+    )
+
+    assert result.exit_code == 0, result.stderr
+    assert scribe.call_args.args == (b"mp3", "ep.mp3", "scribe_v2")
+    assert not openai_path.called
+    assert json.loads(result.stdout)["result"]["words"] == [{"word": "Hi", "start": 0.1, "end": pytest.approx(0.3)}]
+
+
+@pytest.mark.integration
+def test_audio_transcribe_scribe_refuses_segment_timestamps():
+    result = CliRunner().invoke(
+        cli, ["audio", "transcribe", "--model", "scribe_v2", "--timestamps", "segment", "a.mp3"]
+    )
+
+    assert result.exit_code == 2
+    assert "word timestamps only" in result.stdout + result.stderr
+
+
+def _speak_with_timestamps(tmp_path, timestamps):
+    return CliRunner().invoke(
+        cli,
+        ["audio", "speak", "Hello", "--voice", "nova", "-o", str(tmp_path / "n.mp3"), "--timestamps", timestamps],
+    )
+
+
+@pytest.mark.integration
+def test_speak_timestamps_refuse_a_symlink_before_rendering(mocker, tmp_path, elevenlabs_client):
+    tts = mocker.patch("sanzaru.tools.audio.create_audio", mocker.AsyncMock())
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep")
+    (tmp_path / "t.json").symlink_to(victim)
+
+    result = _speak_with_timestamps(tmp_path, str(tmp_path / "t.json"))
+
+    assert result.exit_code == 2
+    assert not tts.called
+    assert victim.read_text() == "keep"
+
+
+@pytest.mark.integration
+def test_speak_timestamps_need_elevenlabs_before_rendering(mocker, tmp_path, monkeypatch):
+    from sanzaru.config import set_elevenlabs_client
+
+    set_elevenlabs_client(None)
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    tts = mocker.patch("sanzaru.tools.audio.create_audio", mocker.AsyncMock())
+
+    result = _speak_with_timestamps(tmp_path, str(tmp_path / "t.json"))
+
+    assert result.exit_code == 3
+    assert "--timestamps needs ElevenLabs" in result.stdout
+    assert not tts.called
+
+
+@pytest.mark.integration
+def test_a_failed_alignment_still_reports_the_paid_audio(mocker, tmp_path, elevenlabs_client):
+    from sanzaru.exceptions import TTSAPIError
+
+    async def fake_tts(text_prompt, model, voice, instructions, speed, output_file_name, provider, voice_settings):
+        (tmp_path / output_file_name).write_bytes(b"spoken")
+        return TTSResult(output_file=output_file_name)
+
+    mocker.patch("sanzaru.tools.audio.create_audio", mocker.AsyncMock(side_effect=fake_tts))
+    mocker.patch("sanzaru.audio.timing.align", mocker.AsyncMock(side_effect=TTSAPIError("HTTP 422")))
+
+    result = _speak_with_timestamps(tmp_path, str(tmp_path / "t.json"))
+
+    assert result.exit_code != 0
+    envelope = json.loads(result.stdout)
+    assert envelope["ok"] is False
+    assert envelope["file"]["path"] == str(tmp_path / "n.mp3")
+    assert "still written" in envelope["error"]["message"]
+    assert (tmp_path / "n.mp3").read_bytes() == b"spoken"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("fmt", ["srt", "vtt", "verbose_json"])
+def test_audio_transcribe_scribe_refuses_formats_it_cannot_return(fmt):
+    result = CliRunner().invoke(cli, ["audio", "transcribe", "--model", "scribe_v2", "--format", fmt, "a.mp3"])
+
+    assert result.exit_code == 2
