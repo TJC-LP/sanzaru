@@ -20,7 +20,6 @@ see: https://developers.openai.com/api/docs/guides/speech-to-text
 """
 
 import io
-import re
 from collections.abc import Awaitable, Callable, Sequence
 from typing import TypeVar
 
@@ -29,13 +28,10 @@ from pydantic import BaseModel, Field
 
 from ..config import get_elevenlabs_client, logger
 from ..exceptions import TTSAPIError
+from .verification import strip_audio_tags
 
 SCRIBE_MODELS = ("scribe_v2",)
 """ElevenLabs transcription models `transcribe_scribe` accepts."""
-
-_TAG = re.compile(r"\[[^\[\]\n]{1,40}\]")
-"""An inline audio tag such as `[whispers]`. ElevenLabs performs it rather than
-speaking it, so it has no time of its own in the audio."""
 
 _MAX_ATTEMPTS = 4
 _BACKOFF_BASE_SECONDS = 1.0
@@ -77,7 +73,7 @@ class Timing(BaseModel):
 
 def spoken_text(text: str) -> str:
     """`text` with inline audio tags removed and whitespace collapsed."""
-    return " ".join(_TAG.sub(" ", text).split())
+    return " ".join(strip_audio_tags(text).split())
 
 
 async def align(audio: bytes, filename: str, text: str) -> Timing:

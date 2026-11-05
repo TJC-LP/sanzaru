@@ -14,6 +14,7 @@ anyone spends realtime money on it.
 from __future__ import annotations
 
 import json
+import pathlib
 import time
 from collections.abc import Callable
 from typing import TYPE_CHECKING, cast
@@ -32,7 +33,15 @@ from ._io import (
 )
 from ._output import EXIT_CONFIG, EXIT_PARTIAL, EXIT_USAGE, emit, note, success_envelope
 from ._runtime import CLIError, _classify, find_in_group, get_state, run_async
-from .audio import _ELEVENLABS_DEFAULT, _ELEVENLABS_MODELS, _PROVIDERS, _TTS_MODELS, resolve_tts_model
+from .audio import (
+    _ELEVENLABS_DEFAULT,
+    _ELEVENLABS_MODELS,
+    _PROVIDERS,
+    _TTS_MODELS,
+    prepare_timing,
+    resolve_tts_model,
+    timing_failed,
+)
 
 if TYPE_CHECKING:
     # Runtime import would pull openai/pydantic in at `sanzaru.cli` import time.
@@ -239,6 +248,7 @@ async def podcast_generate(
     session = PathSession()
     plan = plan_output(session, output, "audio", quiet=state.quiet)
     install_overrides(session)
+    timing_target = prepare_timing(timestamps_path) if timestamps_path is not None else None
 
     started = time.monotonic()
     result = await podcast_tools.generate_podcast(
@@ -251,28 +261,34 @@ async def podcast_generate(
         filename=plan.filename,
         verify=verify,
     )
-    timing_entry: dict[str, object] | None = None
-    if timestamps_path is not None:
-        timing_entry = await _episode_timing(parsed, result.output_file, timestamps_path)
+    audio_bytes: bytes | None = None
+    if timing_target is not None:
+        from ..storage import get_storage
+
+        audio_bytes = await get_storage().read("audio", result.output_file)
     final_path = await finalize_output(session, plan, result.output_file)
     payload: dict[str, object] = result.model_dump(mode="json")
     payload["file"] = {"path": final_path}
-    if timing_entry is not None:
-        payload["timestamps"] = timing_entry
+    if timing_target is not None and audio_bytes is not None:
+        try:
+            payload["timestamps"] = await _episode_timing(parsed, result.output_file, audio_bytes, timing_target)
+        except Exception as exc:
+            raise timing_failed(exc, final_path) from exc
     reconcile_output_name(payload, final_path)
     _note_verification(result, state.quiet)
     emit(success_envelope("podcast.generate", payload, elapsed_s=time.monotonic() - started))
     return 0
 
 
-async def _episode_timing(script: dict[str, object], episode: str, path: str) -> dict[str, object]:
+async def _episode_timing(
+    script: dict[str, object], episode: str, audio_bytes: bytes, target: pathlib.Path
+) -> dict[str, object]:
     """Align the rendered episode to its script's turns and write the timing to `path`.
 
     Runs on the finished file, so the times include the pauses, the dialogue
     pacing, loudness normalization and any re-render that --verify made.
     """
     from ..audio.timing import align_turns
-    from ..storage import get_storage
     from .audio import timing_summary, write_timing
 
     segments = script.get("segments")
@@ -285,9 +301,8 @@ async def _episode_timing(script: dict[str, object], episode: str, path: str) ->
                 speaker = segment.get("speaker")
                 turns.append(text if isinstance(text, str) else "")
                 speakers.append(speaker if isinstance(speaker, str) else None)
-    audio_bytes = await get_storage().read("audio", episode)
     timing, timed_turns = await align_turns(audio_bytes, episode, turns, speakers)
-    summary = timing_summary(timing, write_timing(path, timing))
+    summary = timing_summary(timing, write_timing(target, timing))
     summary["turns"] = len(timed_turns)
     return summary
 

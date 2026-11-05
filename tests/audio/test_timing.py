@@ -155,3 +155,9 @@ async def test_a_client_error_is_not_retried(fake_client):
     with pytest.raises(TTSAPIError, match="HTTP 403"):
         await timing.align(b"mp3", "n.mp3", "Hello.")
     assert len(attempts) == 1
+
+
+@pytest.mark.unit
+def test_spoken_text_drops_long_and_wrapped_tags_like_verify():
+    assert timing.spoken_text("[speaking quietly, as if sharing a secret with you] We checked.") == "We checked."
+    assert timing.spoken_text("[slowly,\n warmly] Yes.") == "Yes."

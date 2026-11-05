@@ -9,6 +9,7 @@ for async jobs. Requires the [audio] extra (pydub, ffmpeg).
 from __future__ import annotations
 
 import dataclasses
+import os
 import pathlib
 import time
 from typing import TYPE_CHECKING, Literal, cast
@@ -26,9 +27,11 @@ from ._io import (
     finalize_output,
     install_overrides,
     plan_output,
+    prepare_output_path,
     read_content_arg,
     reconcile_output_name,
     resolve_input,
+    write_output_bytes,
 )
 from ._output import EXIT_CONFIG, EXIT_USAGE, aggregate_exit_code, emit, emit_line, error_envelope, success_envelope
 from ._runtime import CLIError, _classify, get_state, run_async
@@ -217,10 +220,15 @@ async def audio_transcribe(
 
     if prompt is not None and enhance is not None:
         raise CLIError("usage", "--prompt and --enhance are mutually exclusive", exit_code=EXIT_USAGE)
-    if model in _SCRIBE_MODELS and (prompt is not None or enhance is not None or set(timestamps) - {"word"}):
+    if model in _SCRIBE_MODELS and (
+        prompt is not None
+        or enhance is not None
+        or set(timestamps) - {"word"}
+        or response_format not in ("text", "json")
+    ):
         raise CLIError(
             "usage",
-            f"{model} takes no --prompt or --enhance and returns word timestamps only",
+            f"{model} takes no --prompt or --enhance, --format text or json only, and returns word timestamps only",
             exit_code=EXIT_USAGE,
         )
 
@@ -332,12 +340,38 @@ async def _transcribe_scribe(name: str, model: str) -> TranscriptionResult:
     )
 
 
-def write_timing(path: str, timing: Timing) -> str:
-    """Write `timing` as JSON to the local `path`; return its absolute path."""
-    target = pathlib.Path(path).expanduser().resolve()
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(timing.model_dump_json(indent=2, exclude_none=True) + "\n")
-    return str(target)
+def prepare_timing(path: str) -> pathlib.Path:
+    """Check a timing destination and the ElevenLabs client before anything is paid for.
+
+    Forced alignment runs after the render, so a missing key or an unusable
+    path found then would come after the TTS bill.
+    """
+    from ..config import get_elevenlabs_client
+
+    target = prepare_output_path(path)
+    try:
+        get_elevenlabs_client()
+    except (RuntimeError, ImportError) as exc:
+        raise CLIError("config", f"--timestamps needs ElevenLabs: {exc}", exit_code=EXIT_CONFIG) from exc
+    return target
+
+
+def write_timing(target: pathlib.Path, timing: Timing) -> str:
+    """Write `timing` as JSON to `target` without following a link; return its absolute path."""
+    data = (timing.model_dump_json(indent=2, exclude_none=True) + "\n").encode()
+    write_output_bytes(target, data)
+    return os.path.abspath(target)
+
+
+def timing_failed(exc: Exception, audio_path: str) -> CLIError:
+    """The render is paid for and on disk; report the alignment error with where the audio is."""
+    error = exc if isinstance(exc, CLIError) else _classify(exc)
+    return CLIError(
+        error.error_type,
+        f"timing failed: {error} The audio was still written and is at {audio_path}.",
+        exit_code=error.exit_code,
+        extra={**(error.extra or {}), "file": {"path": audio_path}},
+    )
 
 
 def timing_summary(timing: Timing, path: str) -> dict[str, object]:
@@ -372,6 +406,7 @@ async def audio_align(file: str, text: str, output: str | None) -> int:
     name = resolve_input(session, file, "audio", "FILE")
     install_overrides(session)
     text_content = read_content_arg(text, "TEXT")
+    target = prepare_output_path(output) if output is not None else None
 
     started = time.monotonic()
     audio_bytes = await get_storage().read("audio", name)
@@ -380,8 +415,8 @@ async def audio_align(file: str, text: str, output: str | None) -> int:
     except ValueError as exc:
         raise CLIError("usage", str(exc), exit_code=EXIT_USAGE) from exc
     payload: dict[str, object] = timing.model_dump(mode="json", exclude_none=True)
-    if output is not None:
-        payload["file"] = {"path": write_timing(output, timing)}
+    if target is not None:
+        payload["file"] = {"path": write_timing(target, timing)}
     emit(success_envelope("audio.align", payload, elapsed_s=time.monotonic() - started))
     return 0
 
@@ -460,6 +495,7 @@ async def audio_speak(
     session = PathSession()
     plan = _with_audio_suffix(plan_output(session, output, "audio", quiet=state.quiet), output, "mp3")
     install_overrides(session)
+    timing_target = prepare_timing(timestamps_path) if timestamps_path is not None else None
 
     started = time.monotonic()
     result = await audio_tools.create_audio(
@@ -472,19 +508,22 @@ async def audio_speak(
         provider=cast(TTSProviderName, provider),
         voice_settings=cast(VoiceSettingsDict, settings) if settings is not None else None,
     )
-    timing_entry: dict[str, object] | None = None
-    if timestamps_path is not None:
-        from ..audio.timing import align
+    audio_bytes: bytes | None = None
+    if timing_target is not None:
         from ..storage import get_storage
 
         audio_bytes = await get_storage().read("audio", result.output_file)
-        timing = await align(audio_bytes, result.output_file, text_content)
-        timing_entry = timing_summary(timing, write_timing(timestamps_path, timing))
     final_path = await finalize_output(session, plan, result.output_file)
     payload: dict[str, object] = result.model_dump(mode="json")
     payload["file"] = {"path": final_path}
-    if timing_entry is not None:
-        payload["timestamps"] = timing_entry
+    if timing_target is not None and audio_bytes is not None:
+        from ..audio.timing import align
+
+        try:
+            timing = await align(audio_bytes, result.output_file, text_content)
+            payload["timestamps"] = timing_summary(timing, write_timing(timing_target, timing))
+        except Exception as exc:
+            raise timing_failed(exc, final_path) from exc
     reconcile_output_name(payload, final_path)
     emit(success_envelope("audio.speak", payload, elapsed_s=time.monotonic() - started))
     return 0

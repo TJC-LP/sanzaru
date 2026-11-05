@@ -851,8 +851,17 @@ def test_audio_align_reads_the_file_and_writes_the_timing(mocker, tmp_path):
     assert json.loads((tmp_path / "words.json").read_text())["source"] == "forced_alignment"
 
 
+@pytest.fixture
+def elevenlabs_client():
+    from sanzaru.config import set_elevenlabs_client
+
+    set_elevenlabs_client(object())  # type: ignore[arg-type]
+    yield
+    set_elevenlabs_client(None)
+
+
 @pytest.mark.integration
-def test_audio_speak_timestamps_align_the_rendered_file(mocker, tmp_path):
+def test_audio_speak_timestamps_align_the_rendered_file(mocker, tmp_path, elevenlabs_client):
     async def fake_tts(text_prompt, model, voice, instructions, speed, output_file_name, provider, voice_settings):
         (tmp_path / output_file_name).write_bytes(b"spoken")
         return TTSResult(output_file=output_file_name)
@@ -886,7 +895,7 @@ def test_audio_speak_timestamps_align_the_rendered_file(mocker, tmp_path):
 
 
 @pytest.mark.integration
-def test_podcast_generate_timestamps_align_the_episode_to_its_turns(mocker, tmp_path):
+def test_podcast_generate_timestamps_align_the_episode_to_its_turns(mocker, tmp_path, elevenlabs_client):
     script = {
         "speakers": [{"name": "A", "voice": "ash"}, {"name": "B", "voice": "nova"}],
         "segments": [{"speaker": "A", "text": "Why?"}, {"speaker": "B", "text": "[laughs] Because."}],
@@ -953,3 +962,68 @@ def test_audio_transcribe_scribe_refuses_segment_timestamps():
 
     assert result.exit_code == 2
     assert "word timestamps only" in result.stdout + result.stderr
+
+
+def _speak_with_timestamps(tmp_path, timestamps):
+    return CliRunner().invoke(
+        cli,
+        ["audio", "speak", "Hello", "--voice", "nova", "-o", str(tmp_path / "n.mp3"), "--timestamps", timestamps],
+    )
+
+
+@pytest.mark.integration
+def test_speak_timestamps_refuse_a_symlink_before_rendering(mocker, tmp_path, elevenlabs_client):
+    tts = mocker.patch("sanzaru.tools.audio.create_audio", mocker.AsyncMock())
+    victim = tmp_path / "victim.txt"
+    victim.write_text("keep")
+    (tmp_path / "t.json").symlink_to(victim)
+
+    result = _speak_with_timestamps(tmp_path, str(tmp_path / "t.json"))
+
+    assert result.exit_code == 2
+    assert not tts.called
+    assert victim.read_text() == "keep"
+
+
+@pytest.mark.integration
+def test_speak_timestamps_need_elevenlabs_before_rendering(mocker, tmp_path, monkeypatch):
+    from sanzaru.config import set_elevenlabs_client
+
+    set_elevenlabs_client(None)
+    monkeypatch.delenv("ELEVENLABS_API_KEY", raising=False)
+    tts = mocker.patch("sanzaru.tools.audio.create_audio", mocker.AsyncMock())
+
+    result = _speak_with_timestamps(tmp_path, str(tmp_path / "t.json"))
+
+    assert result.exit_code == 3
+    assert "--timestamps needs ElevenLabs" in result.stdout
+    assert not tts.called
+
+
+@pytest.mark.integration
+def test_a_failed_alignment_still_reports_the_paid_audio(mocker, tmp_path, elevenlabs_client):
+    from sanzaru.exceptions import TTSAPIError
+
+    async def fake_tts(text_prompt, model, voice, instructions, speed, output_file_name, provider, voice_settings):
+        (tmp_path / output_file_name).write_bytes(b"spoken")
+        return TTSResult(output_file=output_file_name)
+
+    mocker.patch("sanzaru.tools.audio.create_audio", mocker.AsyncMock(side_effect=fake_tts))
+    mocker.patch("sanzaru.audio.timing.align", mocker.AsyncMock(side_effect=TTSAPIError("HTTP 422")))
+
+    result = _speak_with_timestamps(tmp_path, str(tmp_path / "t.json"))
+
+    assert result.exit_code != 0
+    envelope = json.loads(result.stdout)
+    assert envelope["ok"] is False
+    assert envelope["file"]["path"] == str(tmp_path / "n.mp3")
+    assert "still written" in envelope["error"]["message"]
+    assert (tmp_path / "n.mp3").read_bytes() == b"spoken"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize("fmt", ["srt", "vtt", "verbose_json"])
+def test_audio_transcribe_scribe_refuses_formats_it_cannot_return(fmt):
+    result = CliRunner().invoke(cli, ["audio", "transcribe", "--model", "scribe_v2", "--format", fmt, "a.mp3"])
+
+    assert result.exit_code == 2
