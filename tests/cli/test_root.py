@@ -99,11 +99,11 @@ _BLOCK_MCP = (
 
 @pytest.mark.integration
 def test_everything_but_the_server_imports_without_the_mcp_stack():
-    """Every module except the two MCP-facing ones imports with mcp/starlette/uvicorn absent."""
+    """Every module except the MCP-facing ones imports with mcp/starlette/uvicorn absent."""
     code = (
         _BLOCK_MCP
         + "import importlib, pkgutil, sanzaru\n"
-        + "skip = {'sanzaru.server', 'sanzaru.media_resources'}\n"
+        + "skip = {'sanzaru.server', 'sanzaru.media_resources', 'sanzaru.mcp_tasks.extension', 'sanzaru.mcp_skills'}\n"
         + "for info in pkgutil.walk_packages(sanzaru.__path__, 'sanzaru.'):\n"
         + "    if info.name in skip or '.app.' in info.name:\n"
         + "        continue\n"

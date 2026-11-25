@@ -411,6 +411,19 @@ Anything the allowlist skips still works exported in the real environment, or
 injected explicitly with `npx dotenv-cli -- <command>` — both are deliberate
 operator actions rather than a file discovered on disk.
 
+## MCP Tasks and Skills
+
+- **Skills** are on by default. The server serves `sanzaru-mcp`, `prompt-guidance` and
+  `podcast-production` as `skill://` resources through the Skills over MCP extension, so Claude
+  loads the workflow guidance only when a task needs it.
+- **Tasks** are opt-in: set `SANZARU_TASKS=1`. On a client that supports MCP tasks (Claude, Claude
+  Code), video jobs, `create_image`, podcasts, image generation, TTS and transcription return a
+  task. Claude keeps working and gets the result, with the video already downloaded, when the
+  task finishes.
+- Clients without tasks see no difference.
+
+Design, behaviour tables and limits: [docs/mcp-tasks-and-skills.md](docs/mcp-tasks-and-skills.md).
+
 ## Storage Backends
 
 | Backend | Config | Use Case |
