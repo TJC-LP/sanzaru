@@ -8,6 +8,7 @@ background task keeps running after the request that started it has returned.
 
 import importlib
 import json
+import os
 import sys
 import threading
 import time
@@ -147,9 +148,23 @@ class TestOptIn:
             sys.modules.pop("sanzaru.server", None)
 
     def test_an_unrecognised_switch_value_is_refused(self, monkeypatch, tmp_path, media):
-        with pytest.raises(RuntimeError, match="SANZARU_TASKS"):
+        from sanzaru.exceptions import ConfigurationError
+
+        with pytest.raises(ConfigurationError, match="SANZARU_TASKS"):
             _load_server(monkeypatch, tmp_path, tasks="enabled")
         sys.modules.pop("sanzaru.server", None)
+
+    def test_the_cli_reports_a_bad_switch_as_exit_3_without_a_traceback(self, tmp_path):
+        import subprocess
+
+        env = {**os.environ, "SANZARU_TASKS": "enabled", "SANZARU_MEDIA_PATH": str(tmp_path)}
+        code = "import sanzaru.cli; sanzaru.cli.cli.main([], standalone_mode=False)"
+        proc = subprocess.run(
+            [sys.executable, "-c", code], capture_output=True, text=True, env=env, stdin=subprocess.DEVNULL
+        )
+        assert proc.returncode == 3, proc.stderr
+        assert "SANZARU_TASKS='enabled' is not a recognised boolean" in proc.stderr
+        assert "Traceback" not in proc.stderr
 
     def test_discover_advertises_the_extension_when_on(self, server):
         with TestClient(server.build_http_app()) as client:
@@ -412,3 +427,139 @@ class TestIdsAndRecords:
             reject_reserved_name(name)
         with pytest.raises(ValueError, match="reserved"):
             reject_reserved_name(store.cancel_marker_name("tkv_x"))
+
+
+# ---------------------------------------------------------------------------
+# Paths that protect a submitted (billed) job, and the documented edge cases
+# ---------------------------------------------------------------------------
+
+
+def _legacy_call(client, tool, arguments):
+    """A handshake-era (stateless, pre-2026) tools/call that nonetheless carries the tasks key."""
+    body = {
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "tools/call",
+        "params": {
+            "name": tool,
+            "arguments": arguments,
+            "_meta": {"io.modelcontextprotocol/clientCapabilities": {"extensions": {TASKS: {}}}},
+        },
+    }
+    headers = {
+        "Accept": "application/json, text/event-stream",
+        "Content-Type": "application/json",
+        "host": "127.0.0.1:8000",
+    }
+    response = client.post("/mcp", json=body, headers=headers)
+    text = response.text
+    if not text.lstrip().startswith("{"):
+        text = [line[5:].strip() for line in text.splitlines() if line.startswith("data:")][-1]
+    return json.loads(text)
+
+
+@pytest.mark.integration
+class TestNeverLoseASubmittedJob:
+    def test_a_legacy_wire_never_gets_a_task_even_with_the_capability_key(self, server, mocker):
+        """The runner validates a legacy tools/call result as CallToolResult, so a task there
+        would arrive malformed, after the job was already submitted and billed."""
+        mocker.patch("sanzaru.tools.video.create_video", return_value=_QUEUED)
+        with TestClient(server.build_http_app()) as client:
+            reply = _legacy_call(client, "create_video", {"prompt": "a cat"})
+        assert "error" not in reply, reply
+        assert reply["result"].get("resultType") != "task"
+        assert _payload(reply["result"])["id"] == JOB
+
+    def test_a_failed_record_write_returns_the_job_inline(self, server, mocker):
+        mocker.patch("sanzaru.tools.video.create_video", return_value=_QUEUED)
+        mocker.patch("sanzaru.mcp_tasks.extension.store.save", side_effect=OSError("disk full"))
+        with TestClient(server.build_http_app()) as client:
+            reply = _call(client, "create_video", {"prompt": "a cat"})["result"]
+        # Same answer as with tasks off: the id survives, and wait_for can still collect it.
+        assert reply["resultType"] == "complete"
+        assert _payload(reply)["id"] == JOB
+
+    def test_a_video_task_survives_a_server_restart(self, monkeypatch, tmp_path, media, mocker):
+        mocker.patch("sanzaru.tools.video.create_video", return_value=_QUEUED)
+        mocker.patch(
+            "sanzaru.tools.video.get_video_status",
+            return_value={"id": JOB, "status": "in_progress", "done": False, "error": None, "video_url": None},
+        )
+        first = _load_server(monkeypatch, tmp_path, tasks="1")
+        with TestClient(first.build_http_app()) as client:
+            task_id = _call(client, "create_video", {"prompt": "x"})["result"]["taskId"]
+        # A fresh process: new module, new PROCESS_ID, no shared memory with the first.
+        sys.modules.pop("sanzaru.server", None)
+        second = _load_server(monkeypatch, tmp_path, tasks="1")
+        try:
+            with TestClient(second.build_http_app()) as client:
+                reply = _get(client, task_id)["result"]
+        finally:
+            sys.modules.pop("sanzaru.server", None)
+        assert reply["status"] == "working"
+        assert JOB in reply["statusMessage"]
+
+
+@pytest.mark.integration
+class TestBackgroundLifecycle:
+    def test_a_cancel_for_another_process_is_picked_up_by_the_owners_heartbeat(self, server, monkeypatch, mocker):
+        monkeypatch.setattr("sanzaru.mcp_tasks.extension.HEARTBEAT_SECONDS", 0.05)
+        release, _, body = _gate()
+        mocker.patch("sanzaru.tools.images_api.generate_image", side_effect=body)
+        with TestClient(server.build_http_app()) as client:
+            task_id = _call(client, "generate_image", {"prompt": "x"})["result"]["taskId"]
+            # As if tasks/cancel landed on a replica that does not run this task.
+            mocker.patch.object(server._task_runner, "cancel", return_value=False)
+            _post(client, "tasks/cancel", {"taskId": task_id}, name=task_id)
+            done = _until(client, task_id, lambda r: r["result"]["status"] != "working")["result"]
+        release.set()
+        assert done["status"] == "cancelled"
+
+    def test_shutdown_mid_task_records_it_failed(self, server, mocker):
+        import anyio
+
+        release, _, body = _gate()
+        mocker.patch("sanzaru.tools.images_api.generate_image", side_effect=body)
+        with TestClient(server.build_http_app()) as client:
+            task_id = _call(client, "generate_image", {"prompt": "x"})["result"]["taskId"]
+        # The lifespan exited with the work still running.
+        record = anyio.run(store.load, task_id)
+        release.set()
+        assert record.status == "failed"
+        assert record.error is not None and "shut down" in str(record.error["message"])
+
+
+@pytest.mark.unit
+class TestStore:
+    def test_a_torn_read_is_retried_rather_than_reported_unknown(self, media, monkeypatch):
+        import anyio
+
+        record = store.TaskRecord(
+            task_id=store.new_task_id("audio"), kind="background", tool="t", path_type="audio", owner=None
+        )
+        anyio.run(store.save, record)
+        path = media["audio"] / store.record_name(record.task_id)
+        whole = path.read_bytes()
+        path.write_bytes(whole[: len(whole) // 2])  # a reader caught the write halfway
+
+        real_sleep = anyio.sleep
+
+        async def finish_the_write(seconds: float) -> None:
+            path.write_bytes(whole)
+            await real_sleep(0)
+
+        monkeypatch.setattr("sanzaru.mcp_tasks.store.anyio.sleep", finish_the_write)
+        loaded = anyio.run(store.load, record.task_id)
+        assert loaded.task_id == record.task_id
+
+    def test_a_record_that_never_parses_is_unknown(self, media, monkeypatch):
+        import anyio
+
+        record = store.TaskRecord(
+            task_id=store.new_task_id("audio"), kind="background", tool="t", path_type="audio", owner=None
+        )
+        anyio.run(store.save, record)
+        (media["audio"] / store.record_name(record.task_id)).write_bytes(b"{not json")
+        monkeypatch.setattr("sanzaru.mcp_tasks.store._TORN_READ_BACKOFF_SECONDS", 0)
+        with pytest.raises(store.UnknownTaskError):
+            anyio.run(store.load, record.task_id)

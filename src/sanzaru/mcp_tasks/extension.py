@@ -50,6 +50,7 @@ from mcp.server.extension import Extension, MethodBinding
 from mcp.shared.exceptions import MCPError
 from mcp_types import CallToolRequestParams, CallToolResult, RequestParams, TextContent
 from mcp_types.jsonrpc import INTERNAL_ERROR, INVALID_PARAMS
+from mcp_types.version import MODERN_PROTOCOL_VERSIONS
 from pydantic import Field
 
 from ..config import logger
@@ -91,7 +92,17 @@ class TaskUpdateParams(TaskIdParams):
 
 
 def client_accepts_tasks(ctx: ServerRequestContext[object, object]) -> bool:
-    """Whether *this request* declared the tasks extension (SEP-2663: per request, in `_meta`)."""
+    """Whether *this request* may be answered with a task.
+
+    Two conditions, both per request. The request must be on the 2026-07-28 wire:
+    on a handshake-era connection the runner validates every `tools/call` result
+    as a `CallToolResult`, so a task there would reach the client as a malformed
+    result, and for a provider job only *after* the job was submitted and billed.
+    And the request must have declared the extension in `_meta` clientCapabilities,
+    because SEP-2663 forbids a task to a client that did not.
+    """
+    if ctx.protocol_version not in MODERN_PROTOCOL_VERSIONS:
+        return False
     meta = ctx.meta
     if not meta:
         return False
@@ -470,7 +481,15 @@ class Tasks(Extension):
             status_message=f"Submitted {job_id}",
             poll_interval_ms=route.poll_interval_ms,
         )
-        await store.save(record)
+        try:
+            await store.save(record)
+        except Exception:  # noqa: BLE001 - the job is already submitted and billed; never lose its id
+            # Higgsfield/OpenAI accepted the job before this write. Failing the call
+            # now would hide the job id from the caller with the render still billed,
+            # so answer exactly as if tasks were off: the plain result carries the id,
+            # and `wait_for` can still collect it.
+            logger.exception("%s: could not record a task for %s; returning the job inline", tool, job_id)
+            return result
         return create_task_result(record)
 
     # -- tasks/* --------------------------------------------------------------

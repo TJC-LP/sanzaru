@@ -24,7 +24,15 @@ def run_mcp_server(transport: str, host: str, port: int) -> None:
     if importlib.util.find_spec("mcp") is None:
         click.echo(f"sanzaru: the MCP server is not installed. Install it with:\n  {MCP_INSTALL_HINT}", err=True)
         sys.exit(EXIT_CONFIG)
-    from ..server import run_server  # lazy: keeps FastMCP off the CLI import path
+    from ..exceptions import ConfigurationError
+
+    try:
+        from ..server import run_server  # lazy: keeps FastMCP off the CLI import path
+    except ConfigurationError as exc:
+        # The server validates its switches while importing (SANZARU_TASKS); a bad
+        # value is the operator's to fix, so say so in one line rather than a traceback.
+        click.echo(f"sanzaru: {exc}", err=True)
+        sys.exit(EXIT_CONFIG)
 
     run_server(transport="http" if transport == "http" else "stdio", host=host, port=port)
 

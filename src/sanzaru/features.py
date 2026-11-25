@@ -186,15 +186,18 @@ def check_tasks_enabled() -> bool:
     sets (``enabled``, ``y``) is a configuration error rather than a silent off.
 
     Raises:
-        RuntimeError: For an unrecognised value.
+        ConfigurationError: For an unrecognised value. The server raises it while
+            importing, and `sanzaru` / `sanzaru serve` report it as exit 3.
     """
+    from .exceptions import ConfigurationError
+
     raw = os.environ.get(TASKS_ENV, "")
     value = raw.strip().lower()
     if value in _TRUTHY:
         return True
     if value in _FALSY:
         return False
-    raise RuntimeError(
+    raise ConfigurationError(
         f"{TASKS_ENV}={raw!r} is not a recognised boolean; use 1/true/yes/on to enable MCP tasks "
         "or 0/false/no/off to leave them off"
     )
