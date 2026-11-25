@@ -2037,8 +2037,8 @@ class TestOutputNameIsRefusedBeforeAnySynthesis:
     @pytest.mark.parametrize(
         ("bad", "why"),
         [
-            ("simrun_a1b2c3d4.json", "reserved for simulated-podcast run bookkeeping"),
-            ("simrun_other-run_2.json", "reserved for simulated-podcast run bookkeeping"),
+            ("simrun_a1b2c3d4.json", "reserved for sanzaru's own bookkeeping"),
+            ("simrun_other-run_2.json", "reserved for sanzaru's own bookkeeping"),
             ("episode.html", "must carry an audio extension"),
             ("notes.json", "must carry an audio extension"),
             ("episode", "must carry an audio extension"),

@@ -73,7 +73,15 @@ def validate_resource_id(value: str, param: str) -> str:
 # or fails its signature, and `_load_checkpoint` re-records it. Checkpoint
 # integrity is enforced where it can be exact: the signature over run id, act id
 # and an audio digest.
-_RESERVED_NAME_PATTERNS = (re.compile(r"simrun_[A-Za-z0-9_-]+\.json", re.IGNORECASE),)
+#
+# MCP task records (`sanzaru-task_<digest>.json` and its `.cancel.json` marker, see
+# `mcp_tasks/store.py`) are the other unambiguous shape. Their names are digests
+# of a secret task id, so guessing one already needs the id; the reservation is
+# the cheap second check that keeps a caller-chosen output from landing on one.
+_RESERVED_NAME_PATTERNS = (
+    re.compile(r"simrun_[A-Za-z0-9_-]+\.json", re.IGNORECASE),
+    re.compile(r"sanzaru-task_[0-9a-f]+(\.cancel)?\.json", re.IGNORECASE),
+)
 
 
 def _basename_as_storage_sees_it(filename: str) -> str:
@@ -129,8 +137,8 @@ def reject_reserved_name(filename: str, param: str = "output filename") -> str:
     name = _basename_as_storage_sees_it(filename)
     if any(pattern.fullmatch(name) for pattern in _RESERVED_NAME_PATTERNS):
         raise ValueError(
-            f"{param} {filename!r:.80} is reserved for simulated-podcast run bookkeeping "
-            "(a run manifest or act checkpoint) — choose another name"
+            f"{param} {filename!r:.80} is reserved for sanzaru's own bookkeeping "
+            "(a simulated-podcast run manifest or an MCP task record) — choose another name"
         )
     return filename
 

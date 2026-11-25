@@ -17,8 +17,16 @@ def test_the_server_sends_instructions():
 
 
 def test_instructions_stay_short():
-    # Clients may truncate; tool-specific detail belongs in tool descriptions.
-    assert len(descriptions.SERVER_INSTRUCTIONS) < 1500
+    # Clients may truncate; tool-specific detail belongs in tool descriptions and skills.
+    # The budget holds with the opt-in tasks paragraph appended, too.
+    assert len(descriptions.SERVER_INSTRUCTIONS + descriptions.TASKS_INSTRUCTIONS) < 1500
+
+
+def test_instructions_name_every_served_skill():
+    from sanzaru.mcp_skills import load_skills
+
+    for skill in load_skills():
+        assert f"`{skill.name}`" in descriptions.SERVER_INSTRUCTIONS
 
 
 def test_instructions_route_podcasts_to_generate_podcast():

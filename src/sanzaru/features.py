@@ -169,6 +169,37 @@ def check_video_generation_available() -> bool:
     return check_video_available() and check_higgsfield_available()
 
 
+#: Opt-in switch for the MCP Tasks extension (`io.modelcontextprotocol/tasks`).
+#: Off by default: the extension is new and implemented here on the SDK's generic
+#: `Extension` API rather than by the SDK itself, so a deployment turns it on deliberately.
+TASKS_ENV = "SANZARU_TASKS"
+
+_TRUTHY = frozenset({"1", "true", "yes", "on"})
+_FALSY = frozenset({"", "0", "false", "no", "off"})
+
+
+def check_tasks_enabled() -> bool:
+    """Read ``SANZARU_TASKS`` as a strict boolean.
+
+    Strict for the same reason ``SANZARU_REQUIRE_USER_CONTEXT`` is: an operator
+    who set the variable at all meant something, so a spelling outside the two
+    sets (``enabled``, ``y``) is a configuration error rather than a silent off.
+
+    Raises:
+        RuntimeError: For an unrecognised value.
+    """
+    raw = os.environ.get(TASKS_ENV, "")
+    value = raw.strip().lower()
+    if value in _TRUTHY:
+        return True
+    if value in _FALSY:
+        return False
+    raise RuntimeError(
+        f"{TASKS_ENV}={raw!r} is not a recognised boolean; use 1/true/yes/on to enable MCP tasks "
+        "or 0/false/no/off to leave them off"
+    )
+
+
 def get_available_features() -> dict[str, bool]:
     """Get a dictionary of available media features.
 

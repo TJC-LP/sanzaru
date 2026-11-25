@@ -12,25 +12,29 @@ to understand how to use each tool effectively.
 # and anything tool-specific belongs in that tool's own description.
 
 SERVER_INSTRUCTIONS = """Sanzaru generates and inspects media: video (Higgsfield), images, speech, and podcasts.
+Detail lives in skills: `sanzaru-mcp` (tool workflows), `prompt-guidance` (video and image
+prompts), `podcast-production` (podcast scripts).
 
-Podcasts: use `generate_podcast` — for a script, or for just a topic (write the script
-yourself, then render it). Prefer ElevenLabs speakers on eleven_v4 with
-config.render_mode "dialogue" and verify=true when ElevenLabs is available; otherwise
-OpenAI voices. `simulate_podcast` is EXPERIMENTAL (unscripted, the most expensive tool,
-variable results): use it only when the user explicitly wants a generated, unscripted
-conversation, and always `dry_run` first with `max_cost_usd` set.
+Podcasts: `generate_podcast`, for a script or just a topic (write the script yourself).
+Prefer ElevenLabs on eleven_v4, config.render_mode "dialogue", verify=true; else OpenAI.
+`simulate_podcast` is EXPERIMENTAL (unscripted, the most expensive tool): only when the
+user explicitly wants an unscripted conversation; `dry_run` first, `max_cost_usd` set.
 
-Images: `generate_image` for a single image (synchronous — one call, finished file).
-`create_image` starts a background job: use it for several images at once or refinement
-chains (previous_response_id), then collect every id with one `wait_for` call.
-Video (Higgsfield; default Seedance 2.5): `create_video`, `edit_video` or `extend_video`,
-then `wait_for([id], download=true)`. Every job is priced before submit and returns its
-cost; set `max_cost_usd` above a few dollars and use `dry_run` to price for free.
-Edit/extend bill the source clip too. With a reference image, prompt only the motion.
-Never loop on the get_*_status tools.
+Images: `generate_image` for one image (synchronous). `create_image` starts a background
+job, for several images or refinement chains (previous_response_id); collect ids with one
+`wait_for` call. Video (Higgsfield; default Seedance 2.5): `create_video`, `edit_video` or
+`extend_video`, then `wait_for([id], download=true)`. Jobs are priced before submit; set
+`max_cost_usd`, and `dry_run` prices for free. Edit/extend bill the source clip too. With a
+reference image, prompt only the motion. Never loop on get_*_status.
 
-Check your own output before presenting it: `inspect_image` and `inspect_video_frame`
-show you what was rendered. Present finished media with `view_media`."""
+Check output with `inspect_image` / `inspect_video_frame`; present it with `view_media`."""
+
+#: Appended to SERVER_INSTRUCTIONS when SANZARU_TASKS is on.
+TASKS_INSTRUCTIONS = """
+
+Tasks: on a client with MCP tasks, slow calls (video, create_image, podcasts, image
+generation, TTS, transcription) may return a task. The client delivers the result (a video
+task's includes the saved `file`): skip wait_for and get_*_status, and never re-submit."""
 
 
 # ==================== VIDEO TOOL DESCRIPTIONS ====================

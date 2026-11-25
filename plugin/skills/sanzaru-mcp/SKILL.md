@@ -50,6 +50,24 @@ which arguments, how to wait. For prompt craft (what to say to a video or image 
 `background="transparent"` (png/webp) and `quality` up to `"xhigh"`/`"max"`; gpt-image-2 refuses
 those before any request. `input_fidelity` is honoured only by gpt-image-1/1.5.
 
+## MCP tasks: when the client waits for you
+
+When the server runs with `SANZARU_TASKS=1` and your client supports MCP tasks (Claude and
+Claude Code do), slow calls come back as a **task** instead of a result. The client holds the
+task, keeps you working, and hands you the finished result when it is done. That covers the
+provider jobs (`create_video`, `edit_video`, `extend_video`, `create_image`) and the long
+synchronous tools (`generate_podcast`, `simulate_podcast`, `generate_image`, `edit_image`,
+`create_audio`, `transcribe_audio`, `transcribe_with_enhancement`, `chat_with_audio`).
+
+- **Do nothing to wait.** No `wait_for`, no `get_*_status`. Do other work, or tell the user it
+  is running. A video task's final result includes `file`, the downloaded filename, so the
+  render is already saved and there is no `download_video` step.
+- **Do not re-submit** a call because it became a task. That buys a second render.
+- **Cancelling** goes through the client (in Claude Code, `/tasks`). A queued video is refunded;
+  one already rendering usually finishes anyway.
+- A dry run, a refused submit (over `max_cost_usd`), or any client without tasks gets the
+  ordinary result, and everything below applies unchanged.
+
 ## Waiting on jobs — one call, not a loop
 
 `create_video`, `edit_video`, `extend_video` and `create_image` return an id immediately. Do **not** call
@@ -187,3 +205,4 @@ URI when someone asks how to reuse a file in a future conversation.
 
 - [Workflows](reference/WORKFLOWS.md) — step-by-step tool sequences for common tasks
 - `prompt-guidance` skill — how to write the prompts (video prompt anatomy, the reference-image golden rule, camera and lighting vocabulary)
+- `podcast-production` skill — writing and rendering a podcast script with `generate_podcast` (voices, direction tags, render modes, pacing)

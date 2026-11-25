@@ -114,6 +114,8 @@ ALLOWED_ENV_KEYS = frozenset(
         "SANZARU_REALTIME_ACT_BUDGET",
         "SANZARU_HIGGSFIELD_MAX_CONCURRENCY",
         "SANZARU_HIGGSFIELD_MAX_UPLOAD_MB",
+        # Feature switch: changes how results are delivered, not who may call.
+        "SANZARU_TASKS",
     }
 )
 

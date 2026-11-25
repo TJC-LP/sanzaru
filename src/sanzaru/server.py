@@ -8,6 +8,7 @@ Business logic is organized into submodules under tools/.
 """
 
 import argparse
+import contextlib
 import functools
 import importlib.metadata
 import importlib.resources
@@ -15,10 +16,11 @@ import ipaddress
 import os
 import secrets
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Literal, ParamSpec, TypeVar
 
 from mcp.server.apps import Apps, ResourceCsp
+from mcp.server.extension import Extension
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ResourceError, ToolError
 from mcp.server.mcpserver.utilities.types import Image
@@ -41,18 +43,21 @@ from starlette.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from .config import DEFAULT_IMAGE_EDIT_MODEL, DEFAULT_IMAGE_MODEL, logger
-from .descriptions import SERVER_INSTRUCTIONS
+from .descriptions import SERVER_INSTRUCTIONS, TASKS_INSTRUCTIONS
 from .dotenv_loader import load_local_dotenv
 from .exceptions import ConfigurationError
 from .features import (
     check_audio_available,
     check_image_available,
+    check_tasks_enabled,
     check_video_available,
     check_video_generation_available,
 )
 from .higgsfield.errors import HiggsfieldAPIError
 from .image_models import ImageQuality
 from .mainline_models import DEFAULT_MAINLINE_MODEL, MainlineModel
+from .mcp_skills import Skills, load_skills, skill_resources
+from .mcp_tasks.extension import TASKS_EXTENSION, BackgroundRunner, TaskRoute, Tasks
 from .storage.factory import get_storage
 from .tools.media_viewer import MEDIA_TYPE_TO_PATH_TYPE
 from .user_context import UserContext, UserContextRequiredError, reset_user_context, set_user_context
@@ -168,6 +173,49 @@ if check_video_available() or check_audio_available() or check_image_available()
     logger.info("Media viewer tools registered (2 tools)")
 
 
+# ==================== MCP TASKS (OPT-IN: SANZARU_TASKS=1) ====================
+# SEP-2663 on the SDK's generic Extension API; the full design is in mcp_tasks/extension.py.
+# Every tool a task can come from is routed here, registered or not: a route whose tool
+# is absent (no HF_KEY, no media path) is simply never matched.
+TASK_ROUTES: dict[str, TaskRoute] = {
+    # Provider-backed: the job id is the task; nothing runs in this process.
+    "create_video": TaskRoute("video", "video", poll_interval_ms=10_000),
+    "edit_video": TaskRoute("video", "video", poll_interval_ms=10_000),
+    "extend_video": TaskRoute("video", "video", poll_interval_ms=10_000),
+    "create_image": TaskRoute("image", "reference", poll_interval_ms=3_000),
+    # Background: no provider job exists, so the server runs the call itself.
+    "generate_image": TaskRoute("background", "reference", poll_interval_ms=3_000),
+    "edit_image": TaskRoute("background", "reference", poll_interval_ms=3_000),
+    "create_audio": TaskRoute("background", "audio", poll_interval_ms=3_000),
+    "generate_podcast": TaskRoute("background", "audio", poll_interval_ms=5_000),
+    "simulate_podcast": TaskRoute("background", "audio", poll_interval_ms=10_000),
+    "transcribe_audio": TaskRoute("background", "audio", poll_interval_ms=3_000),
+    "transcribe_with_enhancement": TaskRoute("background", "audio", poll_interval_ms=3_000),
+    "chat_with_audio": TaskRoute("background", "audio", poll_interval_ms=3_000),
+}
+
+TASKS_ENABLED = check_tasks_enabled()
+_task_runner = BackgroundRunner()
+
+# ==================== SKILLS OVER MCP (SEP-2640) ====================
+# Always on: static package data served as `skill://` resources plus skills/list and
+# skills/get. A client without the extension just sees a few extra resources.
+SKILLS = load_skills()
+
+_extensions: list[Extension] = [_apps, Skills(SKILLS)]
+if TASKS_ENABLED:
+    _extensions.append(Tasks(TASK_ROUTES, _task_runner))
+    logger.info("MCP tasks enabled (%s)", TASKS_EXTENSION)
+
+
+@contextlib.asynccontextmanager
+async def _lifespan(_server: MCPServer) -> AsyncIterator[dict[str, object]]:
+    # Entered once per server run (stdio) or per HTTP app (not per request, in mcp
+    # 2.x), so the runner's task group outlives the requests that start the work.
+    async with _task_runner.running():
+        yield {}
+
+
 # Transport configuration (stateless HTTP, Host/Origin policy) is not server state in
 # mcp 2.x: it is passed to `streamable_http_app()` / `run()` per call. See build_http_app.
 # `version` is stamped into every 2026-07-28 result's `_meta` serverInfo, so report the
@@ -175,9 +223,14 @@ if check_video_available() or check_audio_available() or check_image_available()
 mcp = MCPServer(
     "sanzaru",
     version=importlib.metadata.version("sanzaru"),
-    instructions=SERVER_INSTRUCTIONS,
-    extensions=[_apps],
+    instructions=SERVER_INSTRUCTIONS + (TASKS_INSTRUCTIONS if TASKS_ENABLED else ""),
+    extensions=_extensions,
+    lifespan=_lifespan if TASKS_ENABLED else None,
 )
+
+for _skill_resource in skill_resources(SKILLS):
+    mcp.add_resource(_skill_resource)
+logger.info("Skills served over MCP: %s", ", ".join(skill.name for skill in SKILLS))
 
 
 # ==================== VIDEO TOOLS (CONDITIONAL) ====================

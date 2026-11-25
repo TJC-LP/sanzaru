@@ -307,9 +307,12 @@ class TestServerWiring:
             "sanzaru://video/{filename}",
             "sanzaru://audio/{filename}",
         }
-        # The static registry holds only the viewer's UI resource: media is never
-        # enumerated into resources/list.
-        assert [str(r.uri) for r in await server.mcp.list_resources()] == ["ui://sanzaru/media-viewer.html"]
+        # The static registry holds the viewer's UI resource and the bundled skill
+        # files (package data, fixed per release): media is never enumerated into
+        # resources/list.
+        static = [str(r.uri) for r in await server.mcp.list_resources()]
+        assert "ui://sanzaru/media-viewer.html" in static
+        assert all(uri == "ui://sanzaru/media-viewer.html" or uri.startswith("skill://") for uri in static)
 
     async def test_templates_declare_binary_and_a_user_audience(self, server):
         templates = {t.uri_template: t for t in await server.mcp.list_resource_templates()}

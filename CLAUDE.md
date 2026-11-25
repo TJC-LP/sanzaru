@@ -7,7 +7,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 A stateless MCP server (`mcp.server.mcpserver.MCPServer`, mcp SDK 2.x, protocol 2026-07-28) wrapping Higgsfield's video API (Seedance 2.5, Kling 3.0) and OpenAI's image, speech and transcription APIs. OpenAI removed the Sora Videos API on 2026-09-24; 0.13.0 moved video generation to Higgsfield. Supports both stdio (for MCP clients) and HTTP streaming (for web clients) transports. Exposes MCP tools for async video/image generation with polling-based workflows.
 
 **Key Architecture Principles:**
-- **Stateless**: No database, no in-memory job tracking. Job state lives with the provider (Higgsfield for video, OpenAI for images).
+- **Stateless**: No database, no in-memory job tracking. Job state lives with the provider (Higgsfield for video, OpenAI for images); opt-in MCP task records live in the storage backend, never in memory.
+- **MCP Tasks + Skills**: opt-in tasks (`SANZARU_TASKS=1`) and always-on skills over MCP — see `docs/mcp-tasks-and-skills.md`
 - **Async job pattern**: Create → `wait_for` → Download for both videos and images (the wait runs server-side)
 - **Security sandbox**: Reference images restricted to configured media paths with path traversal protection
 - **Type-safe**: Extensive use of TypedDict and Literal types from OpenAI SDK
@@ -90,6 +91,11 @@ src/sanzaru/
 ├── dotenv_loader.py    # ./.env autoload, minus the variables that redirect credentials
 ├── user_context.py     # Per-request user context (multi-tenant support)
 ├── media_resources.py  # sanzaru://{media}/{filename} resource templates + filename completion
+├── mcp_skills.py       # Skills over MCP (SEP-2640): skills/list, skills/get, skill:// resources
+├── mcp_tasks/          # MCP Tasks (SEP-2663), opt-in via SANZARU_TASKS
+│   ├── store.py        # task records in storage: bearer-token ids, digest filenames, owner checks
+│   └── extension.py    # Tasks extension: tools/call interception, tasks/*, BackgroundRunner
+├── skills/             # MCP-served skills (package data; byte-identical copies in plugin/skills)
 ├── storage/            # Pluggable file I/O
 │   ├── protocol.py     # StorageBackend protocol + FileInfo
 │   ├── factory.py      # get_storage() factory (+ set_storage_backend override used by the CLI)
@@ -170,7 +176,8 @@ back-compat for every existing config is guarded by tests. Key design points:
   optional extras surface as `config` envelopes (exit 3) with the install command.
 - **Separate installs**: the base `sanzaru` wheel is the CLI and carries no MCP stack. `mcp`,
   `starlette` and `uvicorn` live in the `mcp` extra (included in `all` and in the `dev` group).
-  Only `server.py` and `media_resources.py` may import them at module level; `tools/inspect.py`
+  Only `server.py`, `media_resources.py`, `mcp_skills.py` and `mcp_tasks/extension.py` may import
+  them at module level (`mcp_tasks/store.py` deliberately does not); `tools/inspect.py`
   imports the SDK's `Image` inside the two MCP-facing tools because the same module hosts the
   ffmpeg helpers the Higgsfield client uses. `tests/cli/test_root.py` imports every other module
   with those packages blocked. Bare `sanzaru` / `serve` check `find_spec("mcp")` and exit 3 with
@@ -486,8 +493,34 @@ Non-obvious things that are easy to break:
   aborts a silent HTTP tool call at 5 min and backgrounds calls past 2 min)
 - The deadline *returns* (`timed_out=true` per job, last-seen status) instead of raising; call again
   to resume. Default 240 s (under the idle window), max 1800 s. `download=true` saves completed jobs
-- MCP Tasks are not used: mcp 2.x ships only the wire types and no Claude client implements the
-  extension (see `docs/async-task-tracking.md`)
+- `wait_for` remains the path for clients without MCP Tasks; with `SANZARU_TASKS=1` a client that
+  declares the extension gets tasks instead (next section)
+
+**MCP Tasks (`mcp_tasks/`, opt-in `SANZARU_TASKS=1`) and Skills (`mcp_skills.py`, always on)**
+
+Full design and the behaviour tables are in [`docs/mcp-tasks-and-skills.md`](docs/mcp-tasks-and-skills.md).
+Neither extension ships in a released `mcp` (python-sdk #2806 for Tasks; `Skills` is on main
+after 2.3.0), so both are hand-built on `Extension`/`MethodBinding`. Things that are easy to break:
+
+- **A task only for a client that declared it, on this request.** `client_accepts_tasks` reads
+  `_meta` clientCapabilities per request; SEP-2663 forbids a task to anyone else. Tasks exist
+  only on the 2026-07-28 wire (the runner passes a non-core `resultType` through only there).
+- **Provider-backed tasks hold no work.** `create_video`/`edit_video`/`extend_video`/
+  `create_image` run inline and submit; the job id becomes a task and `tasks/get` reads the
+  provider, downloading on completion. A dry run or refusal returns the plain result.
+- **Background tasks run in `BackgroundRunner`'s task group, entered from the server lifespan**
+  (once per run in mcp 2.x, not per request). `start()` is called from inside the request so
+  the spawned task inherits its contextvars, which is what scopes storage to the caller on a
+  multi-tenant backend; a test pins it. Without the lifespan, background routes run inline.
+- **`completed` vs `failed` is SEP-2663's split**: a tool that ran and failed is `completed`
+  with `isError`; `failed` is a crash, a shutdown, or a worker whose heartbeat went stale.
+- **Records are the only state**, one JSON file per task in the storage backend: the id is a
+  192-bit bearer token, the filename is its digest (reserved in `reject_reserved_name`), every
+  read checks the owner identity and answers "not found" for anyone else. Storage writes are
+  not atomic, so `store.load` re-reads a record that fails to parse before calling it unknown.
+- **Skills are package data** (`src/sanzaru/skills/`) with byte-identical copies in
+  `plugin/skills/` (a test enforces it). `sanzaru-cli` is plugin-only. Keep
+  `SERVER_INSTRUCTIONS` sufficient without skills: several Claude surfaces do not load them.
 
 **1. Higgsfield video API (`higgsfield/`, `tools/video.py`)**
 
@@ -835,6 +868,10 @@ SANZARU_REQUIRE_USER_CONTEXT=1         # Databricks backend: refuse (403) rather
 # Signs simulated-podcast manifests and checkpoints so `--resume` refuses
 # bookkeeping this installation did not write. Set it on shared filesystems.
 SANZARU_RUN_SECRET="..."
+
+# MCP Tasks (SEP-2663). Off by default; strict boolean (1/true/yes/on, 0/false/no/off,
+# anything else refuses to start). Loads from .env. See docs/mcp-tasks-and-skills.md.
+SANZARU_TASKS=1
 ```
 
 **For MCP servers (Claude Desktop):**
