@@ -134,11 +134,17 @@ class HiggsfieldClient:
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._key_id = key_id
+        # A plain-http base URL is a loopback or named credential proxy that
+        # config.higgsfield_base_url admitted by host. With trust_env, httpx would
+        # route it through HTTP_PROXY / ALL_PROXY instead and send the key in
+        # clear text to that proxy, so env proxies apply to https only.
+        # see: https://www.python-httpx.org/environment_variables/
         self._api = httpx.AsyncClient(
             base_url=base_url,
             headers={"Authorization": f"Key {key_id}:{key_secret}", "Content-Type": "application/json"},
             timeout=_TIMEOUT,
             transport=transport,
+            trust_env=not base_url.lower().startswith("http://"),
         )
         self._bare = httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True, transport=transport)
 

@@ -180,7 +180,8 @@ cannot set it), and it must be https, or plain http to `127.0.0.1`, `::1` or `lo
 else is a config error (exit 3). A proxy reached by name over plain http on a private network (a
 container sidecar, for example) needs its host listed in `HIGGSFIELD_ALLOW_HTTP_HOSTS`, a
 comma-separated list of exact host names, also read from the process environment only. No
-credentials, query or fragment are accepted for any host. Presigned uploads and output downloads
+credentials, query or fragment are accepted for any host. A plain-http base URL is reached
+directly: `HTTP_PROXY` / `ALL_PROXY` apply only to an https one. Presigned uploads and output downloads
 never use it and never carry the key.
 
 | Command | Purpose |

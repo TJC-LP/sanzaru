@@ -130,6 +130,30 @@ class TestHiggsfieldBaseUrl:
         )
         assert config.higgsfield_base_url() == "http://127.0.0.1:8103"
 
+    @pytest.mark.parametrize("value", ["http://provider-proxy-0:8443", "http://127.0.0.1:8103"])
+    def test_plain_http_api_client_ignores_env_proxies(self, mocker, value):
+        """HF_KEY on a plain-http URL must reach the named host, not an egress proxy from the env."""
+        mocker.patch.dict(
+            os.environ,
+            {
+                "HF_KEY": "kid:secret",
+                "HIGGSFIELD_BASE_URL": value,
+                "HIGGSFIELD_ALLOW_HTTP_HOSTS": "provider-proxy-0",
+                "HTTP_PROXY": "http://egress.example:3128",
+                "ALL_PROXY": "http://egress.example:3128",
+            },
+            clear=True,
+        )
+        client = config.get_higgsfield_client()
+        assert client._api.trust_env is False
+        assert client._api._mounts == {}
+
+    def test_https_api_client_still_honours_env_proxies(self, mocker):
+        mocker.patch.dict(os.environ, {"HF_KEY": "kid:secret", "HTTPS_PROXY": "http://egress.example:3128"}, clear=True)
+        client = config.get_higgsfield_client()
+        assert client._api.trust_env is True
+        assert client._api._mounts
+
     def test_client_sends_the_credential_to_the_override(self, mocker):
         mocker.patch.dict(
             os.environ, {"HF_KEY": "kid:secret", "HIGGSFIELD_BASE_URL": "http://127.0.0.1:8103"}, clear=True
