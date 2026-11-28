@@ -297,3 +297,32 @@ async def test_real_response_id_still_works(mocker):
     result = await get_image_status("resp_68d9f7a1b2c34d56789abcdef0123456")
 
     assert result["id"] == "resp_68d9f7a1b2c34d56789abcdef0123456"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("image_model", "forwarded"),
+    [(None, False), ("gpt-image-2.5-sunburst", False), ("gpt-image-2", False), ("gpt-image-1.5", True)],
+)
+async def test_image_create_strips_input_fidelity_for_models_that_reject_it(
+    mocker, tmp_reference_path, image_model, forwarded
+):
+    """input_fidelity reaches the tool only for models that honour it; gpt-image-2 and later reject it with a 400."""
+    mock_response = mocker.MagicMock()
+    mock_response.id = "resp_fidelity"
+    mock_response.status = "queued"
+    mock_response.created_at = 1234567890.0
+
+    storage = LocalStorageBackend(path_overrides={"reference": tmp_reference_path})
+    mocker.patch("sanzaru.tools.image.get_storage", return_value=storage)
+    mock_get_client = mocker.patch("sanzaru.tools.image.get_client")
+    mock_get_client.return_value.responses.create = mocker.AsyncMock(return_value=mock_response)
+
+    tool_config = {"type": "image_generation", "input_fidelity": "high"}
+    if image_model:
+        tool_config["model"] = image_model
+    await create_image(prompt="a cat", tool_config=tool_config)  # type: ignore[arg-type]
+
+    tools = mock_get_client.return_value.responses.create.call_args.kwargs["tools"]
+    assert ("input_fidelity" in tools[0]) is forwarded
+    assert tool_config["input_fidelity"] == "high"  # the caller's dict is not mutated

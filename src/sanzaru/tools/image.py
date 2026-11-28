@@ -24,7 +24,7 @@ from openai.types.responses.tool_param import ImageGeneration
 from PIL import Image
 
 from ..config import DEFAULT_IMAGE_MODEL, get_client, logger
-from ..image_models import check_background, check_quality
+from ..image_models import check_background, check_quality, honors_input_fidelity
 from ..mainline_models import DEFAULT_MAINLINE_MODEL, MainlineModel
 from ..storage import get_storage
 from ..types import ImageDownloadResult, ImageResponse
@@ -161,6 +161,11 @@ async def create_image(
     image_model = str(config.get("model", DEFAULT_IMAGE_MODEL))
     check_background(image_model, config.get("background"))
     check_quality(image_model, config.get("quality"))
+    # gpt-image-2 and later reject input_fidelity with a 400; drop it as
+    # edit_image does. `config` is a copy, so the caller's dict keeps it.
+    if "input_fidelity" in config and not honors_input_fidelity(image_model):
+        logger.debug("Ignoring input_fidelity=%s for %s (always high)", config["input_fidelity"], image_model)
+        del config["input_fidelity"]
 
     # Handle mask upload if provided
     if mask_filename:

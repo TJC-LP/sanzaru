@@ -204,7 +204,7 @@ async def wait_one_image(
     "--input-fidelity",
     type=click.Choice(["high", "low"]),
     default=None,
-    help="Ignored by gpt-image-2 (always high); honoured elsewhere.",
+    help="Honoured by gpt-image-1.5 and gpt-image-1; dropped for gpt-image-2 and later (always high).",
 )
 @click.option("--previous-id", default=None, help="Refine a previous response (iterative chains).")
 @click.option("--input-image", "input_images", multiple=True, help="Reference image (path or media-dir filename).")
@@ -530,7 +530,7 @@ async def image_generate(
     "--input-fidelity",
     type=click.Choice(["high", "low"]),
     default=None,
-    help="Ignored by gpt-image-2 (always high); honoured elsewhere.",
+    help="Honoured by gpt-image-1.5 and gpt-image-1; dropped for gpt-image-2 and later (always high).",
 )
 @click.option("-o", "--output", default=None, help="Output file or directory.")
 @click.pass_context
