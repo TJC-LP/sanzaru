@@ -43,10 +43,10 @@ which arguments, how to wait. For prompt craft (what to say to a video or image 
 | Need | Tool |
 |------|------|
 | One image from a prompt | `generate_image` — synchronous, nothing to wait for |
-| Edit or compose existing images | `edit_image` — synchronous; defaults to `gpt-image-2.5-sunburst` (editing precision) |
+| Edit or compose existing images | `edit_image` — synchronous; defaults to `gpt-image-2.6-sunburst` (editing precision) |
 | Several images in parallel, or a refinement chain | `create_image` → `wait_for` |
 
-`generate_image`/`create_image` default to `gpt-image-2.5-flare`. Both 2.5 variants accept
+`generate_image`/`create_image` default to `gpt-image-2.6-flare`. Both 2.6 variants accept
 `background="transparent"` (png/webp) and `quality` up to `"xhigh"`/`"max"`; gpt-image-2 refuses
 those before any request. `input_fidelity` is honoured only by gpt-image-1/1.5.
 
@@ -176,7 +176,7 @@ URI when someone asks how to reuse a file in a future conversation.
 2. **Using `create_image` when `generate_image` is simpler** — a single image needs no async job
 3. **Passing `aspect_ratio` with a reference image** — framing follows the image; crop it with `prepare_reference_image(aspect_ratio=...)`
 4. **Submitting an expensive render without a cap** — set `max_cost_usd` (or `dry_run=true` first); Seedance bills per second and edit/extend bill the source too
-5. **Transparent output on gpt-image-2** — it raises; the 2.5 defaults support it
+5. **Transparent output on gpt-image-2** — it raises; the 2.6 defaults (and 2.5) support it
 6. **Regex in `list_audio_files`** — `pattern` is substring or glob; regex syntax is refused with an error naming the syntax
 7. **Recording a simulated podcast without a dry run** — it is the most expensive thing sanzaru does
 8. **Fetching media bytes to deliver a file** — `view_media` shows a player and a Download button; the bytes never need to pass through you

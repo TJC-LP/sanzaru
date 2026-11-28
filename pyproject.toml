@@ -47,10 +47,10 @@ classifiers = [
 ]
 dependencies = [
   # 3.x moved the SDK onto httpx2 (OS trust store; exception `.response` is an
-  # httpx2.Response) and is the first line that knows gpt-image-2.5 and the Live
-  # API (gpt-live-1). Capped at <4 for the same reason as mcp: the import paths
-  # and parameter types below are load-bearing.
-  "openai>=3.14.0,<4",
+  # httpx2.Response). 3.46.0 is the first release whose ImageModel lists
+  # gpt-image-2.6, the default image models. Capped at <4 for the same reason as
+  # mcp: the import paths and parameter types below are load-bearing.
+  "openai>=3.46.0,<4",
   "click>=8.2.0",
   "httpx>=0.27.0",
   "anyio>=4.0.0",

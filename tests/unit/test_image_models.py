@@ -64,7 +64,7 @@ class TestBackgroundRule:
         check_background(model, "transparent")
 
     def test_the_error_names_a_model_that_can_do_it(self):
-        with pytest.raises(ValueError, match="gpt-image-2.5"):
+        with pytest.raises(ValueError, match=r"e\.g\. gpt-image-2\.6-flare"):
             check_background("gpt-image-2", "transparent")
 
     @pytest.mark.parametrize("background", ["auto", "opaque", None])
@@ -107,3 +107,36 @@ class TestInputFidelityRule:
 
     def test_mini_never_supported_it(self):
         assert honors_input_fidelity("gpt-image-1-mini") is False
+
+
+class TestGptImage26:
+    """gpt-image-2.6 Flare and Sunburst, measured against the live API on 2026-11-28.
+
+    Before they had a row, the longest-prefix lookup matched "gpt-image-2" and
+    refused transparent backgrounds and xhigh/max for both.
+    """
+
+    MODELS = ("gpt-image-2.6-flare", "gpt-image-2.6-sunburst")
+
+    @pytest.mark.parametrize("model", MODELS)
+    def test_resolves_to_its_own_family(self, model):
+        caps = capabilities_for(model)
+        assert caps is not None and caps.family == "gpt-image-2.6"
+
+    @pytest.mark.parametrize("model", MODELS)
+    def test_accepts_transparent_backgrounds(self, model):
+        check_background(model, "transparent")
+
+    @pytest.mark.parametrize("model", MODELS)
+    @pytest.mark.parametrize("quality", ["xhigh", "max"])
+    def test_accepts_extended_quality(self, model, quality):
+        check_quality(model, quality)
+
+    @pytest.mark.parametrize("model", MODELS)
+    def test_strips_input_fidelity(self, model):
+        assert honors_input_fidelity(model) is False
+
+    @pytest.mark.parametrize("model", MODELS)
+    def test_accepts_arbitrary_resolutions(self, model):
+        caps = capabilities_for(model)
+        assert caps is not None and caps.arbitrary_resolutions

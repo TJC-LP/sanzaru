@@ -92,7 +92,7 @@ class TestImageInput:
 
         custom_config = {
             "type": "image_generation",
-            "model": "gpt-image-1-mini",
+            "model": "gpt-image-1.5",
             "moderation": "low",
             "input_fidelity": "high",
             "quality": "medium",
@@ -105,7 +105,7 @@ class TestImageInput:
         # Verify custom config was passed through
         call_args = mock_client.responses.create.call_args
         tools = call_args.kwargs["tools"]
-        assert tools[0]["model"] == "gpt-image-1-mini"
+        assert tools[0]["model"] == "gpt-image-1.5"
         assert tools[0]["moderation"] == "low"
         assert tools[0]["input_fidelity"] == "high"
         assert tools[0]["quality"] == "medium"

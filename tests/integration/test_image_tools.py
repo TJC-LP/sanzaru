@@ -43,7 +43,7 @@ async def test_image_create(mocker, tmp_reference_path):
 
 @pytest.mark.integration
 async def test_image_create_defaults_to_the_generation_model(mocker, tmp_reference_path):
-    """create_image injects DEFAULT_IMAGE_MODEL (gpt-image-2.5-flare) into the tool config when the caller omits it."""
+    """create_image injects DEFAULT_IMAGE_MODEL (gpt-image-2.6-flare) into the tool config when the caller omits it."""
     mock_response = mocker.MagicMock()
     mock_response.id = "resp_default"
     mock_response.status = "queued"
@@ -58,7 +58,7 @@ async def test_image_create_defaults_to_the_generation_model(mocker, tmp_referen
 
     tools = mock_get_client.return_value.responses.create.call_args.kwargs["tools"]
     assert tools[0]["type"] == "image_generation"
-    assert tools[0]["model"] == "gpt-image-2.5-flare"
+    assert tools[0]["model"] == "gpt-image-2.6-flare"
 
 
 @pytest.mark.integration
@@ -85,7 +85,7 @@ async def test_image_create_preserves_explicit_model(mocker, tmp_reference_path)
 
 @pytest.mark.integration
 async def test_image_create_transparent_with_default_model_is_allowed(mocker, tmp_reference_path):
-    """The injected default is gpt-image-2.5, which supports transparent output, so no guard fires."""
+    """The injected default is gpt-image-2.6, which supports transparent output, so no guard fires."""
     mock_response = mocker.MagicMock()
     mock_response.id = "resp_t"
     mock_response.status = "queued"
@@ -98,13 +98,13 @@ async def test_image_create_transparent_with_default_model_is_allowed(mocker, tm
     await create_image(prompt="a logo", tool_config={"type": "image_generation", "background": "transparent"})
 
     tools = mock_get_client.return_value.responses.create.call_args.kwargs["tools"]
-    assert tools[0]["model"] == "gpt-image-2.5-flare"
+    assert tools[0]["model"] == "gpt-image-2.6-flare"
     assert tools[0]["background"] == "transparent"
 
 
 @pytest.mark.integration
 async def test_image_create_extended_quality_is_model_checked(mocker, tmp_reference_path):
-    """quality="max" is a gpt-image-2.5 feature: forwarded for the default, refused for gpt-image-2."""
+    """quality="max" is a gpt-image-2.6 feature: forwarded for the default, refused for gpt-image-2."""
     mock_response = mocker.MagicMock()
     mock_response.id = "resp_q"
     mock_response.status = "queued"
@@ -181,7 +181,7 @@ async def test_image_create_does_not_mutate_caller_tool_config(mocker, tmp_refer
 
     assert "model" not in caller_config  # caller's dict stays clean
     tools = mock_get_client.return_value.responses.create.call_args.kwargs["tools"]
-    assert tools[0]["model"] == "gpt-image-2.5-flare"
+    assert tools[0]["model"] == "gpt-image-2.6-flare"
 
 
 @pytest.mark.integration
@@ -297,3 +297,32 @@ async def test_real_response_id_still_works(mocker):
     result = await get_image_status("resp_68d9f7a1b2c34d56789abcdef0123456")
 
     assert result["id"] == "resp_68d9f7a1b2c34d56789abcdef0123456"
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    ("image_model", "forwarded"),
+    [(None, False), ("gpt-image-2.5-sunburst", False), ("gpt-image-2", False), ("gpt-image-1.5", True)],
+)
+async def test_image_create_strips_input_fidelity_for_models_that_reject_it(
+    mocker, tmp_reference_path, image_model, forwarded
+):
+    """input_fidelity reaches the tool only for models that honour it; gpt-image-2 and later reject it with a 400."""
+    mock_response = mocker.MagicMock()
+    mock_response.id = "resp_fidelity"
+    mock_response.status = "queued"
+    mock_response.created_at = 1234567890.0
+
+    storage = LocalStorageBackend(path_overrides={"reference": tmp_reference_path})
+    mocker.patch("sanzaru.tools.image.get_storage", return_value=storage)
+    mock_get_client = mocker.patch("sanzaru.tools.image.get_client")
+    mock_get_client.return_value.responses.create = mocker.AsyncMock(return_value=mock_response)
+
+    tool_config = {"type": "image_generation", "input_fidelity": "high"}
+    if image_model:
+        tool_config["model"] = image_model
+    await create_image(prompt="a cat", tool_config=tool_config)  # type: ignore[arg-type]
+
+    tools = mock_get_client.return_value.responses.create.call_args.kwargs["tools"]
+    assert ("input_fidelity" in tools[0]) is forwarded
+    assert tool_config["input_fidelity"] == "high"  # the caller's dict is not mutated

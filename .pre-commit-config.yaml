@@ -28,7 +28,7 @@ repos:
       - id: mypy
         additional_dependencies:
           - types-aiofiles
-          - openai
+          - openai>=3.46.0,<4  # match pyproject; an unpinned entry kept a cached env without gpt-image-2.6
           - httpx
           - pillow
           - mcp>=2.2.0,<3  # match pyproject; an unpinned entry kept a cached 1.x env

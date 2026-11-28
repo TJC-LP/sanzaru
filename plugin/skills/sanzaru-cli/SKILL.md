@@ -1,11 +1,11 @@
 ---
 name: sanzaru-cli
-description: Generate videos (Higgsfield — Seedance 2.5, Kling 3.0; priced before submit), images (gpt-image-2.5), speech/transcription (OpenAI or ElevenLabs), scripted podcasts (ElevenLabs v4 recommended), and experimental simulated podcasts (realtime agents that actually converse) from the shell with the sanzaru CLI. Use for long-running media jobs (create → wait → download one-shots, resumable waits, JSON envelopes, batch fan-out) instead of loading the MCP tool surface.
+description: Generate videos (Higgsfield — Seedance 2.5, Kling 3.0; priced before submit), images (gpt-image-2.6), speech/transcription (OpenAI or ElevenLabs), scripted podcasts (ElevenLabs v4 recommended), and experimental simulated podcasts (realtime agents that actually converse) from the shell with the sanzaru CLI. Use for long-running media jobs (create → wait → download one-shots, resumable waits, JSON envelopes, batch fan-out) instead of loading the MCP tool surface.
 ---
 
 # Sanzaru CLI for agents
 
-`sanzaru <group> <verb>` wraps Higgsfield video, gpt-image-2.5, TTS/transcription, and podcast APIs
+`sanzaru <group> <verb>` wraps Higgsfield video, gpt-image-2.6, TTS/transcription, and podcast APIs
 for shell use. Requires `OPENAI_API_KEY` in the environment, and `HF_KEY` (a Higgsfield **API**
 key, `key_id:key_secret` — prepaid, billed separately from a Higgsfield app subscription) for video. This skill is the **shell surface**;
 the same server's MCP tools are covered by `sanzaru-mcp`, and how to *write* the prompts (video
@@ -78,7 +78,7 @@ queued. Higgsfield keeps outputs ~7 days — download (`-o` / `--download`) anyt
   failed `.input.prompt`s).
 - `image create` — async job; use for refinement chains:
   `image create "add neon rain" --previous-id "$R1" -o v2.png`.
-- gpt-image-2.5-flare is the default (sunburst for `edit`); `--background transparent` and `--quality xhigh|max` work on both. gpt-image-2 rejects them.
+- gpt-image-2.6-flare is the default (sunburst for `edit`); `--background transparent` and `--quality xhigh|max` work on both. gpt-image-2 rejects them.
 
 ## Two TTS providers
 

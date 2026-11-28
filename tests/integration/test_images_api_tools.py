@@ -198,13 +198,13 @@ async def test_generate_image_no_b64_error(mocker, tmp_reference_path):
 
 
 # =============================================================================
-# generate_image Tests - gpt-image-2.5 / gpt-image-2
+# generate_image Tests - gpt-image-2.6 / gpt-image-2
 # =============================================================================
 
 
 @pytest.mark.integration
-async def test_generate_image_defaults_to_gpt_image_2_5_flare(mocker, tmp_reference_path):
-    """Default generation model is gpt-image-2.5-flare (fast everyday generation)."""
+async def test_generate_image_defaults_to_gpt_image_2_6_flare(mocker, tmp_reference_path):
+    """Default generation model is gpt-image-2.6-flare (fast everyday generation)."""
     mock_response = mocker.MagicMock()
     mock_data = mocker.MagicMock()
     mock_data.b64_json = base64.b64encode(b"fake png data").decode()
@@ -223,9 +223,9 @@ async def test_generate_image_defaults_to_gpt_image_2_5_flare(mocker, tmp_refere
 
     result = await generate_image(prompt="a cat")
 
-    assert result.model == "gpt-image-2.5-flare"
+    assert result.model == "gpt-image-2.6-flare"
     call_kwargs = mock_get_client.return_value.images.generate.call_args.kwargs
-    assert call_kwargs["model"] == "gpt-image-2.5-flare"
+    assert call_kwargs["model"] == "gpt-image-2.6-flare"
 
 
 @pytest.mark.integration
@@ -273,7 +273,7 @@ async def test_generate_image_gpt_image_2_rejects_transparent(mocker, tmp_refere
 
 @pytest.mark.integration
 async def test_generate_image_default_model_allows_transparent_and_max_quality(mocker, tmp_reference_path):
-    """gpt-image-2.5 supports transparent output and the xhigh/max quality levels; both reach the API."""
+    """gpt-image-2.6 supports transparent output and the xhigh/max quality levels; both reach the API."""
     mock_response = mocker.MagicMock()
     mock_data = mocker.MagicMock()
     mock_data.b64_json = base64.b64encode(b"fake png data").decode()
@@ -291,7 +291,7 @@ async def test_generate_image_default_model_allows_transparent_and_max_quality(m
     await generate_image(prompt="icon", background="transparent", quality="max")
 
     call_kwargs = mock_get_client.return_value.images.generate.call_args.kwargs
-    assert call_kwargs["model"] == "gpt-image-2.5-flare"
+    assert call_kwargs["model"] == "gpt-image-2.6-flare"
     assert call_kwargs["background"] == "transparent"
     assert call_kwargs["quality"] == "max"
 
@@ -327,8 +327,8 @@ async def test_edit_image_single_input(mocker, tmp_reference_path):
 
     result = await edit_image(prompt="add a hat", input_images=["input.png"])
 
-    # Edits default to gpt-image-2.5-sunburst (tuned for editing precision)
-    assert result.model == "gpt-image-2.5-sunburst"
+    # Edits default to gpt-image-2.6-sunburst (tuned for editing precision)
+    assert result.model == "gpt-image-2.6-sunburst"
     assert result.size == (1024, 1024)
 
     # Verify API call - single image passed as tuple, not list
@@ -368,7 +368,7 @@ async def test_edit_image_multiple_inputs(mocker, tmp_reference_path):
         input_images=["img0.png", "img1.png", "img2.png"],
     )
 
-    assert result.model == "gpt-image-2.5-sunburst"
+    assert result.model == "gpt-image-2.6-sunburst"
 
     # Verify API call - multiple images passed as list of tuples
     call_kwargs = mock_get_client.return_value.images.edit.call_args.kwargs
@@ -411,7 +411,7 @@ async def test_edit_image_with_mask(mocker, tmp_reference_path):
         mask_filename="mask.png",
     )
 
-    assert result.model == "gpt-image-2.5-sunburst"
+    assert result.model == "gpt-image-2.6-sunburst"
 
     # Verify mask was passed
     call_kwargs = mock_get_client.return_value.images.edit.call_args.kwargs
@@ -558,7 +558,7 @@ async def test_edit_image_gpt_image_2_rejects_transparent(mocker, tmp_reference_
 
 @pytest.mark.integration
 async def test_edit_image_default_model_strips_input_fidelity(mocker, tmp_reference_path):
-    """gpt-image-2.5-sunburst rejects input_fidelity (verified against the API), so the default strips it."""
+    """gpt-image-2.6-sunburst rejects input_fidelity (verified against the API), so the default strips it."""
     input_file = tmp_reference_path / "face.png"
     Image.new("RGB", (100, 100)).save(input_file, "PNG")
 
@@ -579,7 +579,7 @@ async def test_edit_image_default_model_strips_input_fidelity(mocker, tmp_refere
     await edit_image(prompt="change hair color", input_images=["face.png"], input_fidelity="high")
 
     call_kwargs = mock_get_client.return_value.images.edit.call_args.kwargs
-    assert call_kwargs["model"] == "gpt-image-2.5-sunburst"
+    assert call_kwargs["model"] == "gpt-image-2.6-sunburst"
     assert "input_fidelity" not in call_kwargs
 
 

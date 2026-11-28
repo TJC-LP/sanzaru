@@ -63,7 +63,7 @@ follows the image: crop it first with `prepare_reference_image(aspect_ratio=...)
 - Every job is priced before submit — use `dry_run` to see the cost and `max_cost_usd` to cap it
 
 ### Image generation
-- **gpt-image-2.5-flare** (generation default) / **gpt-image-2.5-sunburst** (editing default):
+- **gpt-image-2.6-flare** (generation default) / **gpt-image-2.6-sunburst** (editing default):
   state of the art, up to 4K, transparent backgrounds, `quality` up to `xhigh`/`max`
 - **gpt-image-2**: previous flagship (~99% text accuracy); no transparent output
 - **gpt-image-1.5**: older, fixed sizes; the only current model that honours `input_fidelity`

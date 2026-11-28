@@ -59,7 +59,7 @@ _GENERATE_SIZES = [
     "3840x2160",
     "2160x3840",
 ]
-_QUALITIES = ["auto", "low", "medium", "high", "xhigh", "max"]  # xhigh/max: gpt-image-2.5 only
+_QUALITIES = ["auto", "low", "medium", "high", "xhigh", "max"]  # xhigh/max: gpt-image-2.6 and 2.5 only
 _BACKGROUNDS = ["auto", "transparent", "opaque"]
 _FORMATS = ["png", "jpeg", "webp"]
 _ASPECT_RATIOS = ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"]
@@ -194,8 +194,8 @@ async def wait_one_image(
     show_default=True,
     help="Mainline model driving the image tool (the image model is --image-model).",
 )
-@click.option("--image-model", default=None, help="Image model in the tool config (default gpt-image-2.5-flare).")
-@click.option("--size", default=None, help="e.g. 1536x1024 (gpt-image-2.5/2 allow most 16-multiples).")
+@click.option("--image-model", default=None, help="Image model in the tool config (default gpt-image-2.6-flare).")
+@click.option("--size", default=None, help="e.g. 1536x1024 (gpt-image-2.6/2.5/2 allow most 16-multiples).")
 @click.option("--quality", type=click.Choice(_QUALITIES), default=None)
 @click.option("--background", type=click.Choice(_BACKGROUNDS), default=None)
 @click.option("--output-format", type=click.Choice(_FORMATS), default=None)
@@ -204,7 +204,7 @@ async def wait_one_image(
     "--input-fidelity",
     type=click.Choice(["high", "low"]),
     default=None,
-    help="Ignored by gpt-image-2 (always high); honoured elsewhere.",
+    help="Honoured by gpt-image-1.5 and gpt-image-1; dropped for gpt-image-2 and later (always high).",
 )
 @click.option("--previous-id", default=None, help="Refine a previous response (iterative chains).")
 @click.option("--input-image", "input_images", multiple=True, help="Reference image (path or media-dir filename).")
@@ -412,7 +412,7 @@ async def image_download(ctx: click.Context, response_id: str, output: str | Non
 
 @image.command("generate")
 @click.argument("prompts", nargs=-1, required=True)
-@click.option("--model", default=None, help="Image model (default gpt-image-2.5-flare).")
+@click.option("--model", default=None, help="Image model (default gpt-image-2.6-flare).")
 @click.option("--size", type=click.Choice(_GENERATE_SIZES), default="auto", show_default=True)
 @click.option("--quality", type=click.Choice(_QUALITIES), default="auto", show_default=True)
 @click.option("--background", type=click.Choice(_BACKGROUNDS), default="auto", show_default=True)
@@ -521,7 +521,7 @@ async def image_generate(
 @click.argument("prompt")
 @click.option("--input-image", "input_images", multiple=True, required=True, help="Image(s) to edit/compose.")
 @click.option("--mask", default=None, help="PNG mask with alpha channel.")
-@click.option("--model", default=None, help="Image model (default gpt-image-2.5-sunburst).")
+@click.option("--model", default=None, help="Image model (default gpt-image-2.6-sunburst).")
 @click.option("--size", type=click.Choice(_GENERATE_SIZES), default="auto", show_default=True)
 @click.option("--quality", type=click.Choice(_QUALITIES), default="auto", show_default=True)
 @click.option("--background", type=click.Choice(_BACKGROUNDS), default="auto", show_default=True)
@@ -530,7 +530,7 @@ async def image_generate(
     "--input-fidelity",
     type=click.Choice(["high", "low"]),
     default=None,
-    help="Ignored by gpt-image-2 (always high); honoured elsewhere.",
+    help="Honoured by gpt-image-1.5 and gpt-image-1; dropped for gpt-image-2 and later (always high).",
 )
 @click.option("-o", "--output", default=None, help="Output file or directory.")
 @click.pass_context
