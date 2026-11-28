@@ -82,9 +82,11 @@ logger = logging.getLogger("sanzaru")
 #:   subdirectory names, but the backend joins them into the volume path
 #:   unsanitized, so `..` in one walks out of the per-user prefix into another
 #:   tenant's files. Same rule: export them.
-#: - `HIGGSFIELD_BASE_URL` or `SANZARU_HIGGSFIELD_PRICE_*`. The base URL is where
-#:   `HF_KEY` is sent, so a planted one redirects the credential; the client
-#:   reads it from the process environment only. The price table is what
+#: - `HIGGSFIELD_BASE_URL`, `HIGGSFIELD_ALLOW_HTTP_HOSTS` or
+#:   `SANZARU_HIGGSFIELD_PRICE_*`. The base URL is where `HF_KEY` is sent and
+#:   the host list decides which plain-HTTP hosts it may be sent to, so a planted
+#:   one redirects the credential; the client reads both from the process
+#:   environment only. The price table is what
 #:   `max_cost_usd` is enforced against — the same reasoning as the realtime
 #:   prices above.
 ALLOWED_ENV_KEYS = frozenset(

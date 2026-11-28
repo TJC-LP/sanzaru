@@ -62,6 +62,7 @@ def test_a_planted_base_url_is_ignored(tmp_path, caplog):
         "ELEVENLABS_BASE_URL",
         # Where HF_KEY is sent.
         "HIGGSFIELD_BASE_URL",
+        "HIGGSFIELD_ALLOW_HTTP_HOSTS",
         "DATABRICKS_HOST",
         "HTTPS_PROXY",
         "HTTP_PROXY",

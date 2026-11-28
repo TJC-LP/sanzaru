@@ -28,7 +28,8 @@ environment (`config.higgsfield_base_url`), which is how a sandbox reaches a
 credential proxy that holds the real key. An overridable endpoint is somewhere
 the key can be sent, so the override is read from the process environment only
 (the `.env` loader never sets it) and must be https, or plain http to a loopback
-host. Tests inject an `httpx.MockTransport` instead.
+host or to a host named in `HIGGSFIELD_ALLOW_HTTP_HOSTS`. Tests inject an
+`httpx.MockTransport` instead.
 """
 
 from __future__ import annotations
@@ -133,11 +134,17 @@ class HiggsfieldClient:
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         self._key_id = key_id
+        # A plain-http base URL is a loopback or named credential proxy that
+        # config.higgsfield_base_url admitted by host. With trust_env, httpx would
+        # route it through HTTP_PROXY / ALL_PROXY instead and send the key in
+        # clear text to that proxy, so env proxies apply to https only.
+        # see: https://www.python-httpx.org/environment_variables/
         self._api = httpx.AsyncClient(
             base_url=base_url,
             headers={"Authorization": f"Key {key_id}:{key_secret}", "Content-Type": "application/json"},
             timeout=_TIMEOUT,
             transport=transport,
+            trust_env=not base_url.lower().startswith("http://"),
         )
         self._bare = httpx.AsyncClient(timeout=_TIMEOUT, follow_redirects=True, transport=transport)
 
