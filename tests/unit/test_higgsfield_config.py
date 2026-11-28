@@ -92,6 +92,44 @@ class TestHiggsfieldBaseUrl:
         with pytest.raises(RuntimeError, match="HIGGSFIELD_BASE_URL must be"):
             config.higgsfield_base_url()
 
+    @pytest.mark.parametrize(
+        ("allow", "value", "expected"),
+        [
+            ("provider-proxy-0", "http://provider-proxy-0:8443", "http://provider-proxy-0:8443"),
+            (" Provider-Proxy-0 , other ", "http://provider-proxy-0:8443/", "http://provider-proxy-0:8443"),
+            ("other,provider-proxy-1", "http://PROVIDER-PROXY-1:9000/hf", "http://PROVIDER-PROXY-1:9000/hf"),
+            ("[fd00::5]", "http://[fd00::5]:8443", "http://[fd00::5]:8443"),
+        ],
+    )
+    def test_accepts_http_to_a_host_named_in_the_allow_list(self, mocker, allow, value, expected):
+        mocker.patch.dict(os.environ, {"HIGGSFIELD_BASE_URL": value, "HIGGSFIELD_ALLOW_HTTP_HOSTS": allow}, clear=True)
+        assert config.higgsfield_base_url() == expected
+
+    @pytest.mark.parametrize(
+        ("allow", "value"),
+        [
+            ("", "http://provider-proxy-0:8443"),  # empty list allows nothing extra
+            ("provider-proxy", "http://provider-proxy-0:8443"),  # exact names, no prefix match
+            ("*", "http://provider-proxy-0:8443"),  # no wildcards
+            ("provider-proxy-0", "http://provider-proxy-0.attacker.example:8443"),
+            ("provider-proxy-0", "http://user:pw@provider-proxy-0:8443"),
+            ("provider-proxy-0", "http://provider-proxy-0:8443/?next=x"),
+            ("provider-proxy-0", "http://provider-proxy-0:8443/#frag"),
+        ],
+    )
+    def test_allow_list_admits_only_exact_hosts_and_keeps_the_other_rules(self, mocker, allow, value):
+        mocker.patch.dict(os.environ, {"HIGGSFIELD_BASE_URL": value, "HIGGSFIELD_ALLOW_HTTP_HOSTS": allow}, clear=True)
+        with pytest.raises(RuntimeError, match="HIGGSFIELD_ALLOW_HTTP_HOSTS"):
+            config.higgsfield_base_url()
+
+    def test_allow_list_does_not_change_https_or_loopback(self, mocker):
+        mocker.patch.dict(
+            os.environ,
+            {"HIGGSFIELD_BASE_URL": "http://127.0.0.1:8103", "HIGGSFIELD_ALLOW_HTTP_HOSTS": "provider-proxy-0"},
+            clear=True,
+        )
+        assert config.higgsfield_base_url() == "http://127.0.0.1:8103"
+
     def test_client_sends_the_credential_to_the_override(self, mocker):
         mocker.patch.dict(
             os.environ, {"HF_KEY": "kid:secret", "HIGGSFIELD_BASE_URL": "http://127.0.0.1:8103"}, clear=True

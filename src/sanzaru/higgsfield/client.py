@@ -28,7 +28,8 @@ environment (`config.higgsfield_base_url`), which is how a sandbox reaches a
 credential proxy that holds the real key. An overridable endpoint is somewhere
 the key can be sent, so the override is read from the process environment only
 (the `.env` loader never sets it) and must be https, or plain http to a loopback
-host. Tests inject an `httpx.MockTransport` instead.
+host or to a host named in `HIGGSFIELD_ALLOW_HTTP_HOSTS`. Tests inject an
+`httpx.MockTransport` instead.
 """
 
 from __future__ import annotations

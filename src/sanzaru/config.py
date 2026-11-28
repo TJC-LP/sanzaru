@@ -88,8 +88,10 @@ def get_client() -> AsyncOpenAI:
 # Same lazy, cached shape as the ElevenLabs seam below, for the same reason:
 # nothing pays for httpx client construction until a video tool actually runs.
 # `HIGGSFIELD_BASE_URL` overrides the API endpoint under the rules in
-# higgsfield/client.py: process environment only, https or loopback http.
+# higgsfield/client.py: process environment only, https, or http to a loopback
+# host or to a host named in `HIGGSFIELD_ALLOW_HTTP_HOSTS`.
 HIGGSFIELD_BASE_URL_ENV = "HIGGSFIELD_BASE_URL"
+HIGGSFIELD_ALLOW_HTTP_HOSTS_ENV = "HIGGSFIELD_ALLOW_HTTP_HOSTS"
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost"})
 _higgsfield_override: "HiggsfieldClient | None" = None
 _higgsfield_cached: "HiggsfieldClient | None" = None
@@ -109,9 +111,12 @@ def higgsfield_base_url() -> str:
     """The Higgsfield API base URL: `HIGGSFIELD_BASE_URL` when set, else the production API.
 
     The credential is sent to this URL, so the override must be https, or plain
-    http to a loopback host (a sandbox's credential-proxy forwarder), with no
-    userinfo, query or fragment. A trailing slash is dropped so request paths
-    join cleanly.
+    http to a loopback host (a sandbox's credential-proxy forwarder) or to a
+    host named exactly in `HIGGSFIELD_ALLOW_HTTP_HOSTS` (a comma-separated list,
+    for a proxy reached by name on a private network, such as a sidecar). Both
+    variables are read from the process environment only. No userinfo, query
+    or fragment is accepted for any host. A trailing slash is dropped so request
+    paths join cleanly.
 
     Raises:
         RuntimeError: If HIGGSFIELD_BASE_URL is set to anything else
@@ -129,12 +134,23 @@ def higgsfield_base_url() -> str:
         host = None
     clean = host is not None and parts.username is None and parts.password is None
     clean = clean and not parts.query and not parts.fragment
-    if clean and (parts.scheme == "https" or (parts.scheme == "http" and host in _LOOPBACK_HOSTS)):
+    http_hosts = _LOOPBACK_HOSTS | _allowed_http_hosts()
+    if clean and (parts.scheme == "https" or (parts.scheme == "http" and host in http_hosts)):
         return raw.rstrip("/")
     raise RuntimeError(
-        f"{HIGGSFIELD_BASE_URL_ENV} must be an https URL, or http to 127.0.0.1, ::1 or localhost, "
-        "with no credentials, query or fragment"
+        f"{HIGGSFIELD_BASE_URL_ENV} must be an https URL, or http to 127.0.0.1, ::1, localhost or a host "
+        f"named in {HIGGSFIELD_ALLOW_HTTP_HOSTS_ENV}, with no credentials, query or fragment"
     )
+
+
+def _allowed_http_hosts() -> frozenset[str]:
+    """Host names from `HIGGSFIELD_ALLOW_HTTP_HOSTS`, lowercased, with IPv6 brackets dropped.
+
+    Exact names only: `urlsplit` lowercases the URL's host, and an entry is
+    compared whole, so a prefix or a wildcard admits nothing.
+    """
+    raw = os.getenv(HIGGSFIELD_ALLOW_HTTP_HOSTS_ENV) or ""
+    return frozenset(h.strip().strip("[]").lower() for h in raw.split(",") if h.strip())
 
 
 def get_higgsfield_client() -> "HiggsfieldClient":
