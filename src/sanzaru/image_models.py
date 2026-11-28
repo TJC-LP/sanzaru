@@ -54,6 +54,20 @@ _GPT_IMAGE_2_5 = ImageCapabilities(
     qualities=_EXTENDED_QUALITIES,
     arbitrary_resolutions=True,
 )
+# gpt-image-2.6 accepts what 2.5 does. Measured against the live API on
+# 2026-11-28 for both variants: background="transparent" returned RGBA output
+# with transparent pixels, quality xhigh and max and a 1536x864 size were
+# accepted, and /v1/images/edits with input_fidelity returned 400
+# invalid_input_fidelity_model. openai 3.60's docstrings list the 2.6 ids but
+# describe these parameters only for 2.5.
+# see: https://openai.com/index/introducing-images-2-6/
+_GPT_IMAGE_2_6 = ImageCapabilities(
+    family="gpt-image-2.6",
+    transparent_background=True,
+    input_fidelity=False,
+    qualities=_EXTENDED_QUALITIES,
+    arbitrary_resolutions=True,
+)
 _GPT_IMAGE_2 = ImageCapabilities(
     family="gpt-image-2",
     transparent_background=False,
@@ -86,6 +100,8 @@ _GPT_IMAGE_1_MINI = ImageCapabilities(
 # Dated snapshots bill and behave like their base model. Longest prefix wins in
 # `capabilities_for`, so "gpt-image-1.5" is not mistaken for "gpt-image-1".
 _CAPABILITIES: dict[str, ImageCapabilities] = {
+    "gpt-image-2.6-sunburst": _GPT_IMAGE_2_6,
+    "gpt-image-2.6-flare": _GPT_IMAGE_2_6,
     "gpt-image-2.5-sunburst": _GPT_IMAGE_2_5,
     "gpt-image-2.5-flare": _GPT_IMAGE_2_5,
     "gpt-image-2": _GPT_IMAGE_2,
@@ -100,7 +116,12 @@ GPT_IMAGE_2_5_MODELS: tuple[ImageModel, ...] = ("gpt-image-2.5-sunburst", "gpt-i
 editing precision, Flare for fast everyday generation; they are priced the same
 as gpt-image-2."""
 
-TRANSPARENT_CAPABLE_EXAMPLE: ImageModel = "gpt-image-2.5-flare"
+GPT_IMAGE_2_6_MODELS: tuple[ImageModel, ...] = ("gpt-image-2.6-sunburst", "gpt-image-2.6-flare")
+"""The two gpt-image-2.6 variants (released 2026-11-04, no dated snapshot yet).
+Same split and token rates as 2.5: Sunburst for detail and edit consistency,
+Flare for speed."""
+
+TRANSPARENT_CAPABLE_EXAMPLE: ImageModel = "gpt-image-2.6-flare"
 """Named in the transparent-background error so the message stays true after a
 default change: it used to hard-code gpt-image-1.5."""
 
@@ -125,14 +146,15 @@ def check_background(model: str, background: str | None) -> None:
     if caps is not None and not caps.transparent_background:
         raise ValueError(
             f"{caps.family} does not support transparent backgrounds. "
-            f"Use a gpt-image-2.5 model (e.g. {TRANSPARENT_CAPABLE_EXAMPLE}) or gpt-image-1.5 for transparent output."
+            f"Use a gpt-image-2.6 or 2.5 model (e.g. {TRANSPARENT_CAPABLE_EXAMPLE}) or gpt-image-1.5 "
+            "for transparent output."
         )
 
 
 def check_quality(model: str, quality: str | None) -> None:
     """Raise before the request when `quality` is outside what `model` accepts.
 
-    `xhigh` and `max` exist only on gpt-image-2.5; on any other GPT image model
+    `xhigh` and `max` exist only on gpt-image-2.5 and 2.6; on any other GPT image model
     the API rejects them, and a client-side check turns that into the CLI's
     usage exit code with the accepted values spelled out.
     """

@@ -8,13 +8,13 @@ Generate high-quality images standalone or as start frames for video generation 
 
 | API | Tool | Best For |
 |-----|------|----------|
-| **Images API** | `generate_image`, `edit_image` | New generation with gpt-image-2.5 (RECOMMENDED) |
+| **Images API** | `generate_image`, `edit_image` | New generation with gpt-image-2.6 (RECOMMENDED) |
 | **Responses API** | `create_image` | Iterative refinement with `previous_response_id` |
 
 **Choose Images API when:**
 - Creating new images from scratch
 - Editing existing images
-- You want gpt-image-2.5 (state-of-the-art quality, up to 4K output, transparent backgrounds)
+- You want gpt-image-2.6 (state-of-the-art quality, up to 4K output, transparent backgrounds)
 - You want synchronous results (no polling)
 
 **Choose Responses API when:**
@@ -24,28 +24,29 @@ Generate high-quality images standalone or as start frames for video generation 
 
 ---
 
-## Images API with gpt-image-2.5 (Recommended)
+## Images API with gpt-image-2.6 (Recommended)
 
-The Images API provides synchronous image generation with OpenAI's newest gpt-image-2.5 models. **This is the recommended path for new image generation.**
+The Images API provides synchronous image generation with OpenAI's newest gpt-image-2.6 models. **This is the recommended path for new image generation.**
 
-gpt-image-2.5 ships as two variants, both priced like gpt-image-2:
+gpt-image-2.6 (released 2026-11-04) ships as two variants at the same token rates as gpt-image-2.5:
 
 | Variant | Default for | OpenAI's positioning |
 |---|---|---|
-| `gpt-image-2.5-flare` | `generate_image`, `create_image` | Fast, high-quality everyday generation |
-| `gpt-image-2.5-sunburst` | `edit_image` | Workflows where editing precision matters most |
+| `gpt-image-2.6-flare` | `generate_image`, `create_image` | Fastest everyday generation (about six seconds at `low`) |
+| `gpt-image-2.6-sunburst` | `edit_image` | Detail and consistency across edits at `medium` or `high` |
 
 Both accept `background="transparent"` (with `png` or `webp` output) and two quality levels above `high`: `"xhigh"` and `"max"`.
 
 ### Key Advantages
 - **Synchronous**: Returns immediately (no polling required)
-- **gpt-image-2.5**: State-of-the-art quality, up to 4K output, accepts thousands of valid resolutions (same size rules as gpt-image-2)
+- **gpt-image-2.6**: State-of-the-art quality, up to 4K output, accepts thousands of valid resolutions (same size rules as gpt-image-2)
 - **Token usage tracking**: Monitor costs with detailed token counts
 - **Faster**: ~3s single-pass generation vs. multi-pass legacy models
 
 ### When to pick another model
+- **gpt-image-2.5-flare / gpt-image-2.5-sunburst**: the previous generation, with the same parameters and token rates as 2.6. Pin one to keep output stable across the upgrade.
 - **gpt-image-2**: the previous flagship (~99% text accuracy). It does not support `background="transparent"` or `quality="xhigh"|"max"`, and it ignores `input_fidelity` (always high) — the wrappers raise or strip accordingly.
-- **gpt-image-1.5**: older, fixed sizes; still supports transparent output and is the only current model that honours `input_fidelity` (gpt-image-2.5 rejects the flag like gpt-image-2).
+- **gpt-image-1.5**: older, fixed sizes; still supports transparent output and is the only current model that honours `input_fidelity` (gpt-image-2.6 rejects the flag like gpt-image-2).
 
 ### Basic Generation
 
@@ -125,7 +126,7 @@ wait_for([video.id], download=True)
 
 Use the Responses API when you need iterative refinement with `previous_response_id`. This creates a conversational workflow where each image builds on the previous.
 
-**Tip:** the image model defaults to gpt-image-2.5-flare; pin another with `tool_config={"type": "image_generation", "model": "gpt-image-2.5-sunburst"}` (or `"gpt-image-2"`). Transparent backgrounds work on the default.
+**Tip:** the image model defaults to gpt-image-2.6-flare; pin another with `tool_config={"type": "image_generation", "model": "gpt-image-2.6-sunburst"}` (or `"gpt-image-2"`). Transparent backgrounds work on the default.
 
 ## Basic Workflow
 
@@ -225,7 +226,7 @@ from openai.types.responses.tool_param import ImageGeneration
 
 config = ImageGeneration(
     type="image_generation",
-    model="gpt-image-2.5-flare",      # Image model (default)
+    model="gpt-image-2.6-flare",      # Image model (default)
     size="1536x1024",                 # Image dimensions
     quality="high",                   # Quality level
     output_format="png",              # Format
@@ -241,12 +242,12 @@ resp = create_image(
 ```
 
 **tool_config fields:**
-- **model**: `"gpt-image-2.5-flare"` / `"gpt-image-2.5-sunburst"` (defaults; transparent + xhigh/max), `"gpt-image-2"` (previous flagship), `"gpt-image-1.5"` (supports transparent), `"gpt-image-1"`, `"gpt-image-1-mini"`
+- **model**: `"gpt-image-2.6-flare"` / `"gpt-image-2.6-sunburst"` (defaults; transparent + xhigh/max), `"gpt-image-2"` (previous flagship), `"gpt-image-1.5"` (supports transparent), `"gpt-image-1"`, `"gpt-image-1-mini"`
 - **size**: `"auto"`, `"1024x1024"`, `"1024x1536"`, `"1536x1024"`, plus `"2048x2048"`/`"3840x2160"` and any valid resolution on gpt-image-2
 - **quality**: `"auto"`, `"low"`, `"medium"`, `"high"`
 - **output_format**: `"png"`, `"jpeg"`, `"webp"`
 - **background**: `"auto"`, `"transparent"` (gpt-image-1/1.5 only), `"opaque"`
-- **input_fidelity**: `"high"`, `"low"` (gpt-image-1/1.5 only — gpt-image-2 and 2.5 are always high)
+- **input_fidelity**: `"high"`, `"low"` (gpt-image-1/1.5 only — gpt-image-2, 2.5 and 2.6 are always high)
 - **moderation**: `"auto"` (default), `"low"` (more permissive)
 - **action**: `"auto"` (default), `"generate"` (force new image), `"edit"` (force edit of in-context image)
 - **partial_images**: `0`-`3` — stream partial images during generation
@@ -459,7 +460,7 @@ create_image(prompt="wide shot of city skyline, rule of thirds composition, suns
 ```python
 config = ImageGeneration(
     type="image_generation",
-    model="gpt-image-2.5-flare",  # default
+    model="gpt-image-2.6-flare",  # default
     quality="high",
     output_format="png"      # Lossless
 )

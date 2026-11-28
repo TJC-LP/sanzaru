@@ -6,7 +6,7 @@ resolution-markers = [
     "python_full_version == '3.14.*'",
     "python_full_version == '3.13.*'",
     "python_full_version == '3.12.*' and sys_platform == 'emscripten'",
-    "(python_full_version < '3.13' and sys_platform != 'emscripten') or (python_full_version < '3.12' and sys_platform == 'emscripten')",
+    "python_full_version < '3.12' or (python_full_version == '3.12.*' and sys_platform != 'emscripten')",
 ]
 
 [[package]]
@@ -1196,7 +1196,7 @@ wheels = [
 
 [[package]]
 name = "openai"
-version = "3.14.0"
+version = "3.60.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
@@ -1206,9 +1206,9 @@ dependencies = [
     { name = "sniffio" },
     { name = "typing-extensions" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d0/88/472211fbaee888238d2e0657bcfdba5f64f3d38899dbfdada5e632a9758f/openai-3.14.0.tar.gz", hash = "sha256:714ba70b91ee1e78e75263694bebfeaca004432032685333a46d0e0206114bf9", size = 1635622, upload-time = "2026-09-14T23:29:10.961Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/3d/25/e8930142b7d668fac78b1d7bd278f7142ea32c233ef762f9aebef0c07ea6/openai-3.60.0.tar.gz", hash = "sha256:077657587f7d2d55b943a135c3e183f87cf7dc66644caa3c0bbc2bde1fe65de9", size = 2430829, upload-time = "2026-11-26T07:10:37.418Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/77/e9/53504fbb21b2b765f77f972d34f86a80e5b98ec274b503a8e3d557df2aac/openai-3.14.0-py3-none-any.whl", hash = "sha256:232a85a1c0ff6820534630fbfdb99313990ed80e66f39892a3abcff4130e2b16", size = 2010880, upload-time = "2026-09-14T23:29:08.978Z" },
+    { url = "https://files.pythonhosted.org/packages/33/c3/8190c2a9bc1776056b6d08b7d8d1782ad843ca3dc049b52de0f2053b546d/openai-3.60.0-py3-none-any.whl", hash = "sha256:476e79f256a4ce74848b7abae9f074352a69dca6e7e8987d565ee883a3b7e496", size = 2455657, upload-time = "2026-11-26T07:10:35.78Z" },
 ]
 
 [[package]]
@@ -1987,7 +1987,7 @@ requires-dist = [
     { name = "ffmpeg-python", marker = "extra == 'audio'" },
     { name = "httpx", specifier = ">=0.27.0" },
     { name = "mcp", marker = "extra == 'mcp'", specifier = ">=2.2.0,<3" },
-    { name = "openai", specifier = ">=3.14.0,<4" },
+    { name = "openai", specifier = ">=3.46.0,<4" },
     { name = "pillow", marker = "extra == 'image'", specifier = ">=12.0.0" },
     { name = "pydantic", specifier = ">=2.0.0" },
     { name = "pydantic-settings", specifier = ">=2.11.0" },

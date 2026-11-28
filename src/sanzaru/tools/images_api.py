@@ -24,7 +24,7 @@ from ..types import ImageGenerateResult
 from ..utils import generate_filename
 
 # Public size alias. Covers the "popular sizes" documented in OpenAI's
-# gpt-image-2 cookbook (April 2026); gpt-image-2.5 keeps the same rules. The API
+# gpt-image-2 cookbook (April 2026); gpt-image-2.5 and 2.6 keep the same rules. The API
 # actually accepts any resolution that satisfies: max edge 3840px, multiples of
 # 16px, ratio ≤3:1, 655,360 ≤ pixels ≤ 8,294,400.
 #
@@ -64,9 +64,9 @@ async def generate_image(
 
     Args:
         prompt: Text description of the image to generate (max 32k chars for GPT models)
-        model: Image generation model. Default: "gpt-image-2.5-flare"
+        model: Image generation model. Default: "gpt-image-2.6-flare"
         size: Image dimensions. Default: "auto"
-        quality: Generation quality. Default: "auto"; "xhigh" and "max" are gpt-image-2.5 only
+        quality: Generation quality. Default: "auto"; "xhigh" and "max" are gpt-image-2.6 and 2.5 only
         background: Background type. Default: "auto" (transparent unsupported on gpt-image-2)
         output_format: Output format. Default: "png"
         moderation: Content moderation level. Default: "auto"
@@ -162,14 +162,14 @@ async def edit_image(
     Args:
         prompt: Text description of desired edits (max 32k chars for GPT models)
         input_images: List of image filenames in IMAGE_PATH (up to 16 images)
-        model: Image generation model. Default: "gpt-image-2.5-sunburst" (tuned for editing precision)
+        model: Image generation model. Default: "gpt-image-2.6-sunburst" (detail and consistency across edits)
         mask_filename: Optional PNG mask with alpha channel for inpainting
         size: Output image dimensions. Default: "auto"
-        quality: Generation quality. Default: "auto"; "xhigh" and "max" are gpt-image-2.5 only
+        quality: Generation quality. Default: "auto"; "xhigh" and "max" are gpt-image-2.6 and 2.5 only
         background: Background type. Default: "auto" (transparent unsupported on gpt-image-2)
         output_format: Output format. Default: "png"
         input_fidelity: Control fidelity to input images. Honoured by gpt-image-1.5
-            and gpt-image-1; stripped for gpt-image-2 and gpt-image-2.5 (always high,
+            and gpt-image-1; stripped for gpt-image-2, 2.5 and 2.6 (always high,
             the API rejects the flag).
         filename: Custom output filename (optional, auto-generated if not provided)
 
@@ -249,7 +249,7 @@ async def edit_image(
     if mask_file:
         edit_kwargs["mask"] = mask_file
     if input_fidelity:
-        # gpt-image-2 and gpt-image-2.5 always process inputs at high fidelity and
+        # gpt-image-2, 2.5 and 2.6 always process inputs at high fidelity and
         # reject the flag; gpt-image-1/1.5 honour it (image_models.py is the table).
         if honors_input_fidelity(model):
             edit_kwargs["input_fidelity"] = input_fidelity

@@ -27,7 +27,7 @@ A **stateless**, lightweight **MCP** server **and agent CLI** that wraps **Higgs
 - One `wait_for(download=true)` call waits server-side and saves the file into your media directory
 
 ### Image Generation
-- Generate images with gpt-image-2.5 (sunburst/flare, recommended), gpt-image-2, gpt-image-1.5, or GPT-5
+- Generate images with gpt-image-2.6 (sunburst/flare, recommended), gpt-image-2, gpt-image-1.5, or GPT-5
 - Edit and compose images with up to 16 inputs
 - Iterative refinement via Responses API
 - Crop a reference image to a video aspect ratio (image-to-video framing follows the image)
@@ -116,7 +116,7 @@ uv tool install sanzaru && export OPENAI_API_KEY=sk-...
 # One command: price → submit → wait → download → print the file path
 sanzaru video create "a tabby cat stretches on a windowsill" --duration 4 --resolution 480p --max-cost 1 -o ./cat.mp4 | jq -r .result.file.path
 
-# Synchronous image generation (gpt-image-2.5), batch fan-out, JSONL output
+# Synchronous image generation (gpt-image-2.6), batch fan-out, JSONL output
 sanzaru image generate "app icon" "hero banner" --quality high -o ./art/
 
 sanzaru capabilities   # machine-readable: what's enabled here
@@ -256,7 +256,7 @@ wait_for([video.id], download=True)
 
 ### Generate with Reference Image
 ```python
-# 1. Generate reference image (gpt-image-2.5-flare, synchronous)
+# 1. Generate reference image (gpt-image-2.6-flare, synchronous)
 generate_image(
     prompt="futuristic pilot in mech cockpit",
     size="1536x1024",

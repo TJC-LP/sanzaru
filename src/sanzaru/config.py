@@ -41,12 +41,13 @@ logger = logging.getLogger("sanzaru")
 # model. Typed with the SDK's ImageModel so the values are validated against the
 # models the installed openai SDK knows about.
 #
-# gpt-image-2.5 ships as two variants at the same price as gpt-image-2: Flare is
-# OpenAI's pick for fast, high-quality everyday generation, Sunburst for
-# workflows where editing precision matters most. Per-model rules (transparent
-# backgrounds, `xhigh`/`max` quality, `input_fidelity`) live in image_models.py.
-DEFAULT_IMAGE_MODEL: ImageModel = "gpt-image-2.5-flare"
-DEFAULT_IMAGE_EDIT_MODEL: ImageModel = "gpt-image-2.5-sunburst"
+# gpt-image-2.6 ships as two variants at the same token rates as 2.5: Flare is
+# OpenAI's pick for fast everyday generation, Sunburst for detail and
+# consistency across edits. Per-model rules (transparent backgrounds,
+# `xhigh`/`max` quality, `input_fidelity`) live in image_models.py.
+# see: https://openai.com/index/introducing-images-2-6/
+DEFAULT_IMAGE_MODEL: ImageModel = "gpt-image-2.6-flare"
+DEFAULT_IMAGE_EDIT_MODEL: ImageModel = "gpt-image-2.6-sunburst"
 
 # The mainline model behind create_image lives in mainline_models.py (import-
 # light, because the CLI lists the choices at startup).

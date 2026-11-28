@@ -104,7 +104,7 @@ async def create_image(
         model: Mainline model that invokes the image tool (gpt-6-astra default; gpt-5.6-sol,
             gpt-5.6-terra, gpt-5.6-luna). This is NOT the image model — set that via tool_config["model"].
         tool_config: Optional ImageGeneration tool configuration (size, quality, model, moderation, etc.).
-            The image model defaults to DEFAULT_IMAGE_MODEL (gpt-image-2.5-flare) when "model" is not set here.
+            The image model defaults to DEFAULT_IMAGE_MODEL (gpt-image-2.6-flare) when "model" is not set here.
         previous_response_id: Optional ID to refine previous generation
         input_images: Optional list of reference image filenames from IMAGE_PATH
         mask_filename: Optional PNG mask with alpha channel for inpainting
@@ -116,18 +116,18 @@ async def create_image(
         RuntimeError: If OPENAI_API_KEY not set or IMAGE_PATH not configured
         ValueError: If previous_response_id is not a plain resource id, invalid filename,
             path traversal, mask without input_images, or a tool_config the image model rejects
-            (e.g. background="transparent" on gpt-image-2, quality="max" outside gpt-image-2.5)
+            (e.g. background="transparent" on gpt-image-2, quality="max" outside gpt-image-2.6 and 2.5)
 
     Example tool_config:
         {
             "type": "image_generation",
-            "model": "gpt-image-2.5-flare",  # default when omitted (also: gpt-image-2.5-sunburst, gpt-image-2, gpt-image-1.5, ...)
+            "model": "gpt-image-2.6-flare",  # default when omitted (also: gpt-image-2.6-sunburst, gpt-image-2.5-*, gpt-image-2, ...)
             "size": "1024x1024",
             "quality": "high",
             "moderation": "low",  # or "auto"
             "output_format": "png",
         }
-        # gpt-image-2.5 / 1.5: "background": "transparent"; gpt-image-1.5 / 1 only: "input_fidelity": "high"/"low"
+        # gpt-image-2.6 / 2.5 / 1.5: "background": "transparent"; gpt-image-1.5 / 1 only: "input_fidelity": "high"/"low"
     """
     # A body field here, not a path segment, so nothing about the request shape
     # is at stake — but a caller-minted resource id fails the same way at every

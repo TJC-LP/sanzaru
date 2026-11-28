@@ -43,7 +43,7 @@ async def test_image_create(mocker, tmp_reference_path):
 
 @pytest.mark.integration
 async def test_image_create_defaults_to_the_generation_model(mocker, tmp_reference_path):
-    """create_image injects DEFAULT_IMAGE_MODEL (gpt-image-2.5-flare) into the tool config when the caller omits it."""
+    """create_image injects DEFAULT_IMAGE_MODEL (gpt-image-2.6-flare) into the tool config when the caller omits it."""
     mock_response = mocker.MagicMock()
     mock_response.id = "resp_default"
     mock_response.status = "queued"
@@ -58,7 +58,7 @@ async def test_image_create_defaults_to_the_generation_model(mocker, tmp_referen
 
     tools = mock_get_client.return_value.responses.create.call_args.kwargs["tools"]
     assert tools[0]["type"] == "image_generation"
-    assert tools[0]["model"] == "gpt-image-2.5-flare"
+    assert tools[0]["model"] == "gpt-image-2.6-flare"
 
 
 @pytest.mark.integration
@@ -85,7 +85,7 @@ async def test_image_create_preserves_explicit_model(mocker, tmp_reference_path)
 
 @pytest.mark.integration
 async def test_image_create_transparent_with_default_model_is_allowed(mocker, tmp_reference_path):
-    """The injected default is gpt-image-2.5, which supports transparent output, so no guard fires."""
+    """The injected default is gpt-image-2.6, which supports transparent output, so no guard fires."""
     mock_response = mocker.MagicMock()
     mock_response.id = "resp_t"
     mock_response.status = "queued"
@@ -98,13 +98,13 @@ async def test_image_create_transparent_with_default_model_is_allowed(mocker, tm
     await create_image(prompt="a logo", tool_config={"type": "image_generation", "background": "transparent"})
 
     tools = mock_get_client.return_value.responses.create.call_args.kwargs["tools"]
-    assert tools[0]["model"] == "gpt-image-2.5-flare"
+    assert tools[0]["model"] == "gpt-image-2.6-flare"
     assert tools[0]["background"] == "transparent"
 
 
 @pytest.mark.integration
 async def test_image_create_extended_quality_is_model_checked(mocker, tmp_reference_path):
-    """quality="max" is a gpt-image-2.5 feature: forwarded for the default, refused for gpt-image-2."""
+    """quality="max" is a gpt-image-2.6 feature: forwarded for the default, refused for gpt-image-2."""
     mock_response = mocker.MagicMock()
     mock_response.id = "resp_q"
     mock_response.status = "queued"
@@ -181,7 +181,7 @@ async def test_image_create_does_not_mutate_caller_tool_config(mocker, tmp_refer
 
     assert "model" not in caller_config  # caller's dict stays clean
     tools = mock_get_client.return_value.responses.create.call_args.kwargs["tools"]
-    assert tools[0]["model"] == "gpt-image-2.5-flare"
+    assert tools[0]["model"] == "gpt-image-2.6-flare"
 
 
 @pytest.mark.integration
